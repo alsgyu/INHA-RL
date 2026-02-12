@@ -251,6 +251,9 @@ class WholeBodyTrackingPolicy(BasePolicy):
             self.curr_motion_timestep = self.timestep_util.timestep
 
         obs = self.prepare_obs_for_rl(robot_state_data)
+        if self.config.task.print_observations:
+            self._print_observations(obs)
+
         input_feed = {"time_step": np.array([[self.curr_motion_timestep]], dtype=np.float32), "obs": obs["actor_obs"]}
         policy_action, self.motion_command_t, self.ref_quat_xyzw_t = self.policy(input_feed)
 
