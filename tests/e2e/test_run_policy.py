@@ -99,6 +99,7 @@ def assert_run_policy_with_hsinference(config_name: str, model_path: str, timeou
             pass
 
 
+@pytest.mark.requires_inference
 @pytest.mark.parametrize(
     ("workflow_name", "config_name"),
     [
