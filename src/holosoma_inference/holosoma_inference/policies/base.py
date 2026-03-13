@@ -462,7 +462,34 @@ class BasePolicy:
                     term_values = group_obs[0, start_idx : start_idx + total_dim]
                     print(f"  {term_name:20s} (dim={term_dim:2d}, hist={history_len}): {term_values}")
                     start_idx += total_dim
+
+        # Joint table: dof_name | q (deg) | dq | action
+        self._print_joint_table(obs)
         print("========================================\n")
+
+    def _print_joint_table(self, obs: dict[str, np.ndarray]) -> None:
+        """Print a compact per-joint table: name | q(°) | dq(°/s) | act(°)."""
+        # Walk obs_terms_sorted + obs_dims to locate dof_pos / dof_vel slices
+        q = dq = None
+        for grp, buf in obs.items():
+            col = 0
+            for term in self.obs_terms_sorted.get(grp, []):
+                dim = self.obs_dims[term] * self.history_length_dict.get(grp, 1)
+                if q is None and term == "dof_pos":
+                    q = buf[0, col : col + dim] / self.obs_scales.get("dof_pos", 1.0)
+                if dq is None and term == "dof_vel":
+                    dq = buf[0, col : col + dim] / self.obs_scales.get("dof_vel", 1.0)
+                col += dim
+        act = self.scaled_policy_action[0] if self.scaled_policy_action is not None else None
+        d = np.degrees
+        w = max(len(n) for n in self.dof_names)
+        print(f"\n  {'joint':<{w}}  {'q(°)':>7}  {'dq(°/s)':>8}  {'act(°)':>7}")
+        print(f"  {'─' * (w + 29)}")
+        for i, name in enumerate(self.dof_names):
+            qi = f"{d(q[i]):7.1f}" if q is not None and i < len(q) else "    n/a"
+            di = f"{d(dq[i]):8.1f}" if dq is not None and i < len(dq) else "     n/a"
+            ai = f"{d(act[i]):7.1f}" if act is not None and i < len(act) else "    n/a"
+            print(f"  {name:<{w}}  {qi}  {di}  {ai}")
 
     def rl_inference(self, robot_state_data):
         """Perform RL inference to get policy action."""
@@ -475,6 +502,8 @@ class BasePolicy:
 
         self.last_policy_action = policy_action.copy()
         self.scaled_policy_action = policy_action * self.policy_action_scale
+        if self.config.task.debug.force_zero_action:
+            self.scaled_policy_action = np.zeros_like(self.scaled_policy_action)
 
         return self.scaled_policy_action
 
@@ -488,7 +517,10 @@ class BasePolicy:
 
         # Extract base and joint data
         current_obs_buffer_dict["base_quat"] = robot_state_data[:, 3:7]
-        current_obs_buffer_dict["base_ang_vel"] = robot_state_data[:, 7 + self.num_dofs + 3 : 7 + self.num_dofs + 6]
+        if self.config.task.debug.force_zero_angular_velocity:
+            current_obs_buffer_dict["base_ang_vel"] = np.zeros((1, 3))
+        else:
+            current_obs_buffer_dict["base_ang_vel"] = robot_state_data[:, 7 + self.num_dofs + 3 : 7 + self.num_dofs + 6]
         current_obs_buffer_dict["dof_pos"] = robot_state_data[:, 7 : 7 + self.num_dofs] - self.default_dof_angles
         current_obs_buffer_dict["dof_vel"] = robot_state_data[
             :, 7 + self.num_dofs + 6 : 7 + self.num_dofs + 6 + self.num_dofs
@@ -499,7 +531,9 @@ class BasePolicy:
         expected_len = (
             7 + self.num_dofs + 6 + self.num_dofs
         )  # base_pos(3) + quat(4) + dof_pos + lin_vel(3) + ang_vel(3) + dof_vel
-        if robot_state_data.shape[1] == expected_len + 3:
+        if self.config.task.debug.force_upright_imu:
+            current_obs_buffer_dict["projected_gravity"] = np.array([[0.0, 0.0, -1.0]])
+        elif robot_state_data.shape[1] == expected_len + 3:
             current_obs_buffer_dict["projected_gravity"] = robot_state_data[:, expected_len : expected_len + 3]
         else:
             v = np.array([[0, 0, -1]])

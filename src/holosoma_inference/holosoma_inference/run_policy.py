@@ -19,7 +19,7 @@ import tyro
 from loguru import logger
 
 from holosoma_inference.config.config_types.inference import InferenceConfig
-from holosoma_inference.config.config_values.inference import AnnotatedInferenceConfig
+from holosoma_inference.config.config_values.inference import get_annotated_inference_config
 from holosoma_inference.config.utils import TYRO_CONFIG
 from holosoma_inference.policies.dual_mode import DualModePolicy, _select_policy_class
 from holosoma_inference.utils.misc import restore_terminal_settings
@@ -183,7 +183,8 @@ def main(annotated_config=None):
     sys.argv = [sys.argv[0]] + primary_argv
 
     if annotated_config is None:
-        annotated_config = AnnotatedInferenceConfig
+        # Use factory function to lazily load extension configs
+        annotated_config = get_annotated_inference_config()
     config = tyro.cli(annotated_config, config=TYRO_CONFIG)
 
     from dataclasses import replace as _replace

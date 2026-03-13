@@ -192,6 +192,7 @@ t1_29dof = RobotConfig(
 # Default Configurations Dictionary
 # =============================================================================
 
+# Core defaults - no extension imports at module load time
 DEFAULTS = {
     "g1-29dof": g1_29dof,
     "t1-29dof": t1_29dof,
@@ -201,6 +202,29 @@ DEFAULTS = {
 Keys use hyphen-case naming convention for CLI compatibility.
 """
 
-# Auto-discover robot configs from installed extensions
-for ep in entry_points(group="holosoma.config.robot"):
-    DEFAULTS[ep.name] = ep.load()
+# Track whether extensions have been loaded
+_extensions_loaded = False
+
+
+def _load_extensions() -> None:
+    """Lazily load extension configs from entry points.
+
+    This is deferred to avoid circular imports when extensions import
+    from holosoma_inference.config at module load time.
+    """
+    global _extensions_loaded  # noqa: PLW0603
+    if _extensions_loaded:
+        return
+    _extensions_loaded = True
+    for ep in entry_points(group="holosoma.config.robot"):
+        DEFAULTS[ep.name] = ep.load()
+
+
+def get_defaults() -> dict:
+    """Get all robot config defaults, including extensions.
+
+    Returns:
+        Dictionary mapping config names to RobotConfig instances.
+    """
+    _load_extensions()
+    return DEFAULTS

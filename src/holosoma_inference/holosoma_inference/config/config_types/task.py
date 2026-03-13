@@ -6,6 +6,20 @@ from pydantic.dataclasses import dataclass
 
 
 @dataclass(frozen=True)
+class DebugConfig:
+    """Debug overrides for quick testing."""
+
+    force_upright_imu: bool = False
+    """Override projected_gravity with [0, 0, -1] (perfectly upright)."""
+
+    force_zero_angular_velocity: bool = False
+    """Override base_ang_vel with [0, 0, 0]."""
+
+    force_zero_action: bool = False
+    """Zero out the scaled policy action (robot holds default pose)."""
+
+
+@dataclass(frozen=True)
 class TaskConfig:
     """Task execution configuration for policy inference."""
 
@@ -27,8 +41,8 @@ class TaskConfig:
     domain_id: int = 0
     """DDS domain ID for communication."""
 
-    interface: str = "lo"
-    """Network interface name."""
+    interface: str = "auto"
+    """Network interface name. Use ``"auto"`` to auto-detect, or specify explicitly (e.g. ``"eth0"``)."""
 
     use_joystick: bool = False
     """Enable joystick control input."""
@@ -63,3 +77,6 @@ class TaskConfig:
 
     motion_end_timestep: int | None = None
     """Ending timestep for motion clip playback. If None, plays until the end."""
+
+    debug: DebugConfig = DebugConfig()
+    """Debug overrides for quick testing."""

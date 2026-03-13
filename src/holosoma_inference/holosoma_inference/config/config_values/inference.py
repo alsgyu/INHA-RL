@@ -65,19 +65,56 @@ g1_29dof_wbt = InferenceConfig(
     secondary=_g1_safety_secondary,
 )
 
+# Core defaults - no extension imports at module load time
 DEFAULTS = {
     "g1-29dof-loco": g1_29dof_loco,
     "t1-29dof-loco": t1_29dof_loco,
     "g1-29dof-wbt": g1_29dof_wbt,
 }
 
-# Auto-discover inference configs from installed extensions
-for ep in entry_points(group="holosoma.config.inference"):
-    DEFAULTS[ep.name] = ep.load()
+# Track whether extensions have been loaded
+_extensions_loaded = False
 
-AnnotatedInferenceConfig = Annotated[
-    InferenceConfig,
-    tyro.conf.arg(
-        constructor=tyro.extras.subcommand_type_from_defaults({f"inference:{k}": v for k, v in DEFAULTS.items()})
+
+def _load_extensions() -> None:
+    """Lazily load extension configs from entry points.
+
+    This is deferred to avoid circular imports when extensions import
+    from holosoma_inference.config at module load time.
+    """
+    global _extensions_loaded  # noqa: PLW0603
+    if _extensions_loaded:
+        return
+    _extensions_loaded = True
+    for ep in entry_points(group="holosoma.config.inference"):
+        DEFAULTS[ep.name] = ep.load()
+
+
+def get_annotated_inference_config() -> type:
+    """Build the annotated InferenceConfig type with all discovered configs.
+
+    This function loads extension configs lazily and returns a tyro-compatible
+    annotated type for CLI subcommand generation.
+
+    Returns:
+        Annotated type suitable for use with tyro.cli()
+    """
+    _load_extensions()
+    return Annotated[
+        InferenceConfig,
+        tyro.conf.arg(
+            constructor=tyro.extras.subcommand_type_from_defaults(
+                {f"inference:{k}": v for k, v in DEFAULTS.items()}
+            )
         ),
-]
+    ]
+
+
+def get_defaults() -> dict:
+    """Get all inference config defaults, including extensions.
+
+    Returns:
+        Dictionary mapping config names to InferenceConfig instances.
+    """
+    _load_extensions()
+    return DEFAULTS
