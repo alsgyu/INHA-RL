@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import re
 from typing import Any, List
 
@@ -166,34 +165,28 @@ class AdaptiveTimestepsSampler:
         motion_time_step_total: int,
         device: str,
         env_fps: int,
-        bin_size_s: float = 1.0,
-        kernel_size: int = 3,
-        decay_lambda: float = 0.001,
-        kernel_lambda: float = 0.8,
+        adaptive_kernel_size: int = 1,
+        adaptive_lambda: float = 0.8,
+        adaptive_uniform_ratio: float = 0.1,
+        adaptive_alpha: float = 0.001,
     ):
-        # TODO: think better about the decay_lambda, will 0.001 be too small?
         self.device = device
         # length of the motion in rl environment time steps
         self.motion_time_step_total = motion_time_step_total
         # fps of the rl environment
         self.env_fps = env_fps
 
-        # size of the bin in seconds
-        self.bin_size_s = bin_size_s
-        # size of the kernel for smoothing the sampling probabilities
-        self.kernel_size = kernel_size
-        self.kernel_lambda = kernel_lambda
-        # exponential decay when updating the failure counts over training steps.
+        self.adaptive_kernel_size = adaptive_kernel_size
+        self.adaptive_lambda = adaptive_lambda
+        self.adaptive_uniform_ratio = adaptive_uniform_ratio
+        self.adaptive_alpha = adaptive_alpha
 
-        self.decay_lambda = decay_lambda
+        # Match BeyondMimic binning: ~1 second bins at env FPS, with +1 tail bin.
+        self.num_bins = int(self.motion_time_step_total // max(self.env_fps, 1)) + 1
 
-        # number of bins in the motion
-        self.num_bins = math.ceil((self.motion_time_step_total / self.env_fps) / self.bin_size_s)
-
-        # initialize exponential 1d decay kernel, used for smoothing the failure counts over time.
-        assert self.kernel_size % 2 == 1, "Kernel size must be odd"
+        # Match BeyondMimic non-causal kernel.
         self.kernel = torch.tensor(
-            [self.kernel_lambda ** abs(i) for i in range((-self.kernel_size + 1) // 2, (self.kernel_size + 1) // 2)],
+            [self.adaptive_lambda**i for i in range(self.adaptive_kernel_size)],
             device=self.device,
         )
         self.kernel = self.kernel / self.kernel.sum()
@@ -209,27 +202,30 @@ class AdaptiveTimestepsSampler:
 
     def update_current_bin_failed_count(self, failed_at_time_step: torch.Tensor):
         """Update the current bin failed count with terminated time steps."""
-        failed_bin = torch.floor(failed_at_time_step / self.motion_time_step_total * self.num_bins).long()
+        failed_bin = torch.clamp(
+            (failed_at_time_step * self.num_bins) // max(self.motion_time_step_total, 1),
+            0,
+            self.num_bins - 1,
+        ).long()
         assert failed_bin.min() >= 0 and failed_bin.max() < self.num_bins, "Failed bin is out of range"
         self.current_bin_failed_count[:] = torch.bincount(failed_bin, minlength=self.num_bins)
 
     def update_bin_failed_count(self):
         """At every rl environment step, update the failed count with the current bin failed count."""
-        self.bin_failed_count = (self.decay_lambda * self.current_bin_failed_count) + (
-            1 - self.decay_lambda
+        self.bin_failed_count = (self.adaptive_alpha * self.current_bin_failed_count) + (
+            1 - self.adaptive_alpha
         ) * self.bin_failed_count
         self.current_bin_failed_count.zero_()
 
     @property
     def sampling_probabilities(self) -> torch.Tensor:
-        sampling_probabilities = self.bin_failed_count + 1e-6
+        sampling_probabilities = self.bin_failed_count + self.adaptive_uniform_ratio / float(self.num_bins)
         sampling_probabilities = torch.nn.functional.pad(
             sampling_probabilities.unsqueeze(0).unsqueeze(0),
-            (0, self.kernel_size - 1),  # Non-causal kernel
+            (0, self.adaptive_kernel_size - 1),  # Non-causal kernel
             mode="replicate",
         )
         sampling_probabilities = torch.nn.functional.conv1d(sampling_probabilities, self.kernel.view(1, 1, -1)).view(-1)
-        sampling_probabilities += 0.01
         return sampling_probabilities / sampling_probabilities.sum()
 
     def sample(self, num_samples: int) -> torch.Tensor:
@@ -343,6 +339,12 @@ class MotionCommand(CommandTermBase):
 
         # 0. Sample the time steps
         if self.motion_cfg.use_adaptive_timesteps_sampler:
+            # Match BeyondMimic behavior: update failed bins from environments
+            # that terminated before this reset, then sample new phases.
+            episode_failed = self._env.termination_manager.terminated[env_ids]
+            if torch.any(episode_failed):
+                failed_at_time_step = self.time_steps[env_ids][episode_failed]
+                self.adaptive_timesteps_sampler.update_current_bin_failed_count(failed_at_time_step)
             phase = self.adaptive_timesteps_sampler.sample(env_ids.numel())
         else:
             phase = torch.rand(env_ids.numel(), device=self.device)
@@ -487,6 +489,19 @@ class MotionCommand(CommandTermBase):
                 advance_mask = advance_mask & ~freeze_mask
 
         self.time_steps += advance_mask.long()
+
+        # BeyondMimic-style behavior: when the clip ends, resample motion and
+        # reset robot/object state without terminating the whole episode.
+        ended_env_ids = torch.where(self.time_steps >= self.motion.time_step_total)[0]
+        if ended_env_ids.numel() > 0:
+            self.reset(ended_env_ids)
+            # Flush the mutated root/dof state into the simulator so that
+            # rigid-body positions are up-to-date for downstream consumers
+            # (termination checks, observations, rewards).
+            sim = self._env.simulator
+            sim.set_actor_root_state_tensor_robots(ended_env_ids, sim.robot_root_states)
+            sim.set_dof_state_tensor_robots(ended_env_ids, sim.dof_state)  # type: ignore[attr-defined]
+            sim.refresh_sim_tensors()
 
         # 1. update body_pos_relative_w and body_quat_relative_w
         # definition of body_pos/quat_relative_w:
