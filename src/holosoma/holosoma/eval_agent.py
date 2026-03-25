@@ -6,6 +6,7 @@ import tyro
 from loguru import logger
 
 from holosoma.agents.base_algo.base_algo import BaseAlgo
+from holosoma.config_types.eval_callback import EvalCallbacksConfig
 from holosoma.config_types.experiment import ExperimentConfig
 from holosoma.utils.config_utils import CONFIG_NAME
 from holosoma.utils.eval_utils import (
@@ -28,6 +29,7 @@ def run_eval_with_tyro(
     checkpoint_cfg: CheckpointConfig,
     saved_config: ExperimentConfig,
     saved_wandb_path: str | None,
+    eval_cbs_cfg: EvalCallbacksConfig | None = None,
 ):
     # Use shared simulation environment setup
     env, device, simulation_app = setup_simulation_environment(tyro_config)
@@ -37,6 +39,12 @@ def run_eval_with_tyro(
 
     logger.info(f"Saving eval logs to {eval_log_dir}")
     tyro_config.save_config(str(eval_log_dir / CONFIG_NAME))
+
+    # Inject eval callbacks into algo config
+    if eval_cbs_cfg is not None:
+        cb_configs = eval_cbs_cfg.collect_active_callbacks()
+        if cb_configs:
+            object.__setattr__(tyro_config.algo.config, "eval_callbacks", cb_configs)
 
     assert checkpoint_cfg.checkpoint is not None
     checkpoint = load_checkpoint(checkpoint_cfg.checkpoint, str(eval_log_dir))
@@ -83,6 +91,9 @@ def run_eval_with_tyro(
 def main() -> None:
     init_eval_logging()
     checkpoint_cfg, remaining_args = tyro.cli(CheckpointConfig, return_unknown_args=True, add_help=False)
+    eval_cbs_cfg, remaining_args = tyro.cli(
+        EvalCallbacksConfig, return_unknown_args=True, add_help=False, args=remaining_args
+    )
     saved_cfg, saved_wandb_path = load_saved_experiment_config(checkpoint_cfg)
     eval_cfg = saved_cfg.get_eval_config()
     overwritten_tyro_config = tyro.cli(
@@ -92,8 +103,8 @@ def main() -> None:
         description="Overriding config on top of what's loaded.",
         config=TYRO_CONIFG,
     )
-    print("overwritten_tyro_config: ", overwritten_tyro_config)
-    run_eval_with_tyro(overwritten_tyro_config, checkpoint_cfg, saved_cfg, saved_wandb_path)
+
+    run_eval_with_tyro(overwritten_tyro_config, checkpoint_cfg, saved_cfg, saved_wandb_path, eval_cbs_cfg=eval_cbs_cfg)
 
 
 if __name__ == "__main__":

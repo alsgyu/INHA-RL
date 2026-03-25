@@ -44,6 +44,9 @@ class JointPositionActionTerm(ActionTermBase):
         # Initialize torque buffer
         self.torques = torch.zeros(env.num_envs, self._action_dim, device=env.device)
 
+        # Sub-step torque history: [num_envs, decimation, num_dof], allocated in setup().
+        self._substep_idx: int = 0
+
         # Cache previous DOF velocities for derivative control
         self._prev_dof_vel = torch.zeros(env.num_envs, env.num_dof, device=env.device)
 
@@ -85,6 +88,10 @@ class JointPositionActionTerm(ActionTermBase):
             max_delay = self.env._ctrl_delay_step_range[1]
             self.action_queue = torch.zeros(self.env.num_envs, max_delay + 1, self._action_dim, device=self.env.device)
 
+        # Allocate sub-step torque history buffer
+        decimation = self.env.simulator.simulator_config.sim.control_decimation
+        self.torques_history = torch.zeros(self.env.num_envs, decimation, self._action_dim, device=self.env.device)
+
         # IsaacGym creates randomization buffers before the action manager exists.
         # Once we reach setup(), try attaching any pre-created actuator scales.
         self._attach_actuator_randomizer_scales()
@@ -104,6 +111,7 @@ class JointPositionActionTerm(ActionTermBase):
         Args:
             actions: Raw action tensor [num_envs, action_dim]
         """
+        self._substep_idx = 0
         # Store raw actions
         assert self._raw_actions is not None
         self._raw_actions[:] = actions
@@ -147,6 +155,9 @@ class JointPositionActionTerm(ActionTermBase):
         """Apply processed actions by computing and applying torques."""
         # Compute torques using PD controller
         self.torques[:] = self._compute_torques(self._actions_after_delay)
+        # Record sub-step torques
+        self.torques_history[:, self._substep_idx] = self.torques
+        self._substep_idx += 1
         # Apply torques to simulator
         self.env.simulator.apply_torques_at_dof(self.torques)
         # Cache velocities for next derivative computation

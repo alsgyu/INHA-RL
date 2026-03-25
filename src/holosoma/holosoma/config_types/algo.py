@@ -308,6 +308,9 @@ class FastSACConfig:
     actor_obs_keys: List[str] = field(default_factory=lambda: ["actor_obs"])
     critic_obs_keys: List[str] = field(default_factory=lambda: ["critic_obs"])
 
+    eval_callbacks: Any = None
+    """Evaluation callbacks configuration."""
+
 
 @dataclass(frozen=True)
 class PPOAlgoConfig:
