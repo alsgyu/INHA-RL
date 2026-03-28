@@ -12,6 +12,7 @@ VENV_DIR=$ROOT_DIR/.venv/hsmujoco
 INSTALL_WARP=true
 INSTALL_ROBOT_SDKS=true
 PYTHON_VERSION=""
+REINSTALL=false
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -29,16 +30,31 @@ while [[ $# -gt 0 ]]; do
       PYTHON_VERSION="$2"
       shift 2
       ;;
+    --reinstall)
+      REINSTALL=true
+      echo "Reinstall requested — existing environment will be removed"
+      shift
+      ;;
     --help|-h)
-      echo "Usage: $0 [--no-warp] [--no-robot-sdks] [--python VERSION]"
+      echo "Usage: $0 [--no-warp] [--no-robot-sdks] [--python VERSION] [--reinstall]"
       echo ""
       echo "Options:"
       echo "  --no-warp          Skip MuJoCo Warp installation (CPU-only)"
       echo "  --no-robot-sdks    Skip robot SDK installation (unitree, booster)"
-      echo "  --python VERSION   Python version to use (e.g., 3.10, 3.11)"
+      echo "  --python VERSION   Python version to use (e.g., 3.10, 3.11, 3.12)"
+      echo "  --reinstall        Remove existing environment and reinstall from scratch"
       echo "  --help, -h         Show this help message"
       echo ""
       echo "Default: GPU-accelerated installation with robot SDKs"
+      echo ""
+      echo "Python auto-detection (when --python is not specified):"
+      echo "  Ubuntu 22.04 → Python 3.10 (ROS2 Humble compatible)"
+      echo "  Ubuntu 24.04 → Python 3.12 (ROS2 Jazzy compatible)"
+      echo "  Other         → system default Python"
+      echo ""
+      echo "Note: ROS2 is optional. The environment works standalone."
+      echo "      Use 'source scripts/source_mujoco_uv_setup.sh' to activate"
+      echo "      (it will source ROS2 automatically if installed)."
       echo ""
       echo "Examples:"
       echo "  # Full setup (default: with GPU acceleration + robot SDKs)"
@@ -50,12 +66,15 @@ while [[ $# -gt 0 ]]; do
       echo "  # Setup with specific Python version, no robot SDKs"
       echo "  $0 --python 3.10 --no-robot-sdks"
       echo ""
+      echo "  # Force clean reinstall with a different Python version"
+      echo "  $0 --reinstall --python 3.12 --no-warp"
+      echo ""
       echo "Note: GPU acceleration requires NVIDIA driver >= 555.58.02"
       exit 0
       ;;
     *)
       echo "Unknown option: $1"
-      echo "Usage: $0 [--no-warp] [--no-robot-sdks] [--python VERSION]"
+      echo "Usage: $0 [--no-warp] [--no-robot-sdks] [--python VERSION] [--reinstall]"
       echo "Use --help for more information"
       exit 1
       ;;
@@ -66,6 +85,12 @@ done
 SENTINEL_FILE=${VENV_DIR}/.env_uv_setup_finished_hsmujoco
 WARP_SENTINEL_FILE=${VENV_DIR}/.env_uv_setup_finished_hsmujoco_warp
 
+# Reinstall: remove existing venv and sentinels so all install blocks run fresh
+if [[ "$REINSTALL" == "true" ]] && [[ -d "$VENV_DIR" ]]; then
+  echo "Removing existing environment at $VENV_DIR..."
+  rm -rf "$VENV_DIR"
+fi
+
 # Install uv if not present
 if ! command -v uv &> /dev/null; then
   echo "Installing uv..."
@@ -75,6 +100,30 @@ if ! command -v uv &> /dev/null; then
 fi
 
 echo "uv version: $(uv --version)"
+
+# Auto-detect Python version from Ubuntu release if not explicitly set.
+# This ensures the venv matches the system Python used by ROS2:
+#   Ubuntu 22.04 (Jammy)  → Python 3.10 → ROS2 Humble
+#   Ubuntu 24.04 (Noble)  → Python 3.12 → ROS2 Jazzy
+if [[ -z "$PYTHON_VERSION" ]]; then
+  OS_NAME_DETECT="$(uname -s)"
+  if [[ "$OS_NAME_DETECT" == "Linux" && -f /etc/os-release ]]; then
+    UBUNTU_VERSION=$(grep '^VERSION_ID=' /etc/os-release | cut -d'"' -f2)
+    case "$UBUNTU_VERSION" in
+      22.04)
+        PYTHON_VERSION="3.10"
+        echo "Detected Ubuntu 22.04 → using Python 3.10 (ROS2 Humble compatible)"
+        ;;
+      24.04)
+        PYTHON_VERSION="3.12"
+        echo "Detected Ubuntu 24.04 → using Python 3.12 (ROS2 Jazzy compatible)"
+        ;;
+      *)
+        echo "Ubuntu $UBUNTU_VERSION detected — no default Python version mapped, using system default"
+        ;;
+    esac
+  fi
+fi
 
 # Base installation
 if [[ ! -f $SENTINEL_FILE ]]; then
@@ -107,6 +156,11 @@ if [[ ! -f $SENTINEL_FILE ]]; then
     fi
     uv pip install -e "$ROOT_DIR/src/holosoma"
   fi
+
+  # Pin numpy <2: mujoco-warp transitive deps can pull numpy 2.x, which breaks
+  # binary compatibility with system packages (pinocchio, ROS2 Humble, etc.)
+  # Must come after holosoma install since deps may override it.
+  uv pip install 'numpy>=1.23.5,<2'
 
   # Validate MuJoCo installation
   echo "Validating MuJoCo installation..."
