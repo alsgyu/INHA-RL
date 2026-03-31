@@ -38,7 +38,6 @@ def setup_simulator_imports(config: ExperimentConfig | RunSimConfig) -> None:
     config : ExperimentConfig | RunSimConfig
         Configuration containing simulator settings.
     """
-    print("\n\n\nsimulator type: ", config.simulator)
     set_simulator_type(config.simulator)
     simulator_type = get_simulator_type()
 
@@ -81,8 +80,12 @@ def setup_isaaclab_launcher(config: ExperimentConfig | RunSimConfig, device: str
     # Parse known arguments to get argparse params
     args_cli, unknown_args = parser.parse_known_args()
 
-    # Set values from config
-    args_cli.num_envs = config.training.num_envs
+    # Set values from config — divide by world_size for multi-GPU so each rank's
+    # AppLauncher only allocates resources for its share of environments.
+    # (The full num_envs is divided again in train_agent.train(), but AppLauncher
+    # needs the per-rank count at init time to avoid over-allocating GPU memory.)
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    args_cli.num_envs = config.training.num_envs // world_size if world_size > 1 else config.training.num_envs
     args_cli.seed = config.training.seed
     args_cli.env_spacing = config.simulator.config.scene.env_spacing
     args_cli.output_dir = config.logger.base_dir
@@ -90,6 +93,7 @@ def setup_isaaclab_launcher(config: ExperimentConfig | RunSimConfig, device: str
     if int(os.environ.get("WORLD_SIZE", "1")) > 1:
         # Distribute simulator across GPUs when using multi-gpu training
         args_cli.device = f"cuda:{int(os.environ.get('LOCAL_RANK', '0'))}"
+        args_cli.distributed = True
     elif device is not None:
         # Use the resolved device
         args_cli.device = device

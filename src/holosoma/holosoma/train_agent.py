@@ -78,7 +78,16 @@ def configure_multi_gpu() -> MultGPUConfig | None:
     if gpu_global_rank >= gpu_world_size:
         raise ValueError(f"Global rank '{gpu_global_rank}' is greater than or equal to world size '{gpu_world_size}'.")
 
-    torch.distributed.init_process_group(backend="nccl", rank=gpu_global_rank, world_size=gpu_world_size)
+    dist_backend = os.getenv("TORCH_DIST_BACKEND", "nccl")
+    dist_timeout_s = int(os.getenv("TORCH_DIST_INIT_TIMEOUT_S", "7200"))
+    from datetime import timedelta
+
+    torch.distributed.init_process_group(
+        backend=dist_backend,
+        rank=gpu_global_rank,
+        world_size=gpu_world_size,
+        timeout=timedelta(seconds=dist_timeout_s),
+    )
     torch.cuda.set_device(gpu_local_rank)
 
     multi_gpu_config: MultGPUConfig = {
@@ -170,7 +179,7 @@ def train(tyro_config: ExperimentConfig, training_context: TrainingContext | Non
         distributed_conf: MultGPUConfig | None = configure_multi_gpu()
         device: str = get_device(tyro_config, distributed_conf)
         is_distributed = distributed_conf is not None
-        is_main_process = distributed_conf is None or distributed_conf["local_rank"] == 0
+        is_main_process = distributed_conf is None or distributed_conf["global_rank"] == 0
 
         # Configure logger
         logger_cfg = tyro_config.logger
