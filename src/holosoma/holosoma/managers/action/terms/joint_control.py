@@ -90,7 +90,9 @@ class JointPositionActionTerm(ActionTermBase):
 
         # Allocate sub-step torque history buffer
         decimation = self.env.simulator.simulator_config.sim.control_decimation
-        self.torques_history = torch.zeros(self.env.num_envs, decimation, self._action_dim, device=self.env.device)
+        self.torques_substep = torch.zeros(self.env.num_envs, decimation, self._action_dim, device=self.env.device)
+        self.dof_pos_substep = torch.zeros(self.env.num_envs, decimation, self._action_dim, device=self.env.device)
+        self.dof_vel_substep = torch.zeros(self.env.num_envs, decimation, self._action_dim, device=self.env.device)
 
         # IsaacGym creates randomization buffers before the action manager exists.
         # Once we reach setup(), try attaching any pre-created actuator scales.
@@ -155,8 +157,10 @@ class JointPositionActionTerm(ActionTermBase):
         """Apply processed actions by computing and applying torques."""
         # Compute torques using PD controller
         self.torques[:] = self._compute_torques(self._actions_after_delay)
-        # Record sub-step torques
-        self.torques_history[:, self._substep_idx] = self.torques
+        # Record sub-step torques/dof_pos/dof_vel
+        self.torques_substep[:, self._substep_idx] = self.torques
+        self.dof_pos_substep[:, self._substep_idx] = self.env.simulator.dof_pos
+        self.dof_vel_substep[:, self._substep_idx] = self.env.simulator.dof_vel
         self._substep_idx += 1
         # Apply torques to simulator
         self.env.simulator.apply_torques_at_dof(self.torques)

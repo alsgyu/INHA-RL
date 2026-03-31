@@ -33,6 +33,72 @@ class RecordingCallbackConfig:
 
 
 @dataclass(frozen=True)
+class PushConfig:
+    """Settings for push perturbation during evaluation."""
+
+    enabled: bool = False
+    """Enable push perturbations."""
+
+    force_range: tuple[float, float] = (50.0, 200.0)
+    """Min and max force magnitude in Newtons."""
+
+    duration_s: tuple[float, float] = (0.1, 0.3)
+    """Min and max push duration in seconds."""
+
+    interval_s: tuple[float, float] = (3.0, 8.0)
+    """Min and max interval between pushes in seconds."""
+
+    body_names: str = "torso_link,pelvis"
+    """Comma-separated body names to push."""
+
+    env_id: int = 0
+    """Environment ID to apply pushes."""
+
+
+@dataclass(frozen=True)
+class PushCallbackConfig:
+    """Instantiation config for EvalPushCallback."""
+
+    _target_: str = "holosoma.agents.callbacks.push.EvalPushCallback"
+    """Class to instantiate."""
+
+    config: PushConfig = PushConfig()
+    """Push perturbation settings."""
+
+
+@dataclass(frozen=True)
+class PayloadConfig:
+    """Settings for wrist payload simulation during evaluation.
+
+    Applies a constant downward force on wrist/elbow links to simulate
+    the robot holding a payload (force = mass * 9.81).
+    """
+
+    enabled: bool = False
+    """Enable wrist payload forces."""
+
+    mass_kg: float = 1.0
+    """Payload mass in kg. Force is split evenly across resolved bodies."""
+
+    body_names: str = "left_wrist_yaw_link,right_wrist_yaw_link"
+    """Comma-separated wrist body names."""
+
+    env_id: int = 0
+    """Environment ID to apply payload forces."""
+
+
+@dataclass(frozen=True)
+class PayloadCallbackConfig:
+    """Instantiation config for EvalPayloadCallback."""
+
+    _target_: str = "holosoma.agents.callbacks.payload.EvalPayloadCallback"
+    """Class to instantiate."""
+
+    config: PayloadConfig = PayloadConfig()
+    """Payload simulation settings."""
+
+
+@dataclass(frozen=True)
 class EvalCallbacksConfig:
     """Container for all eval callback configs.
 
@@ -42,6 +108,12 @@ class EvalCallbacksConfig:
 
     recording: RecordingCallbackConfig = RecordingCallbackConfig()
     """Trajectory recording callback."""
+
+    push: PushCallbackConfig = PushCallbackConfig()
+    """Push perturbation callback."""
+
+    payload: PayloadCallbackConfig = PayloadCallbackConfig()
+    """Wrist payload simulation callback."""
 
     def collect_active_callbacks(self) -> dict:
         """Collect callback configs where config.enabled is True."""
