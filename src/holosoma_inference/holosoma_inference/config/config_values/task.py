@@ -19,10 +19,10 @@ locomotion = TaskConfig(
     residual_upper_body_action=False,
     domain_id=0,
     interface="lo",
-    use_joystick=False,
+    velocity_input="keyboard",
+    state_input="keyboard",
     joystick_type="xbox",
     joystick_device=0,
-    use_ros=False,
     wandb_download_dir="/tmp",
 )
 
@@ -38,10 +38,10 @@ wbt = TaskConfig(
     residual_upper_body_action=False,
     domain_id=0,
     interface="lo",
-    use_joystick=False,
+    velocity_input="keyboard",
+    state_input="keyboard",
     joystick_type="xbox",
     joystick_device=0,
-    use_ros=False,
     wandb_download_dir="/tmp",
 )
 
@@ -56,10 +56,10 @@ safety_locomotion_g1 = TaskConfig(
     residual_upper_body_action=False,
     domain_id=0,
     interface="lo",
-    use_joystick=False,
+    velocity_input="keyboard",
+    state_input="keyboard",
     joystick_type="xbox",
     joystick_device=0,
-    use_ros=False,
     wandb_download_dir="/tmp",
 )
 

@@ -80,7 +80,7 @@ Commands for controlling policies during execution.
 | Action | Keyboard | Joystick |
 |--------|----------|----------|
 | Start the policy | `]` | A button |
-| Start motion clip | `s` | Start button |
+| Start motion clip | `m` | Select+A |
 
 **Default pose**: Standing with raised arms
 
@@ -150,6 +150,57 @@ python3 src/holosoma_inference/holosoma_inference/run_policy.py inference:g1-29d
 
 The override updates the `actor_obs` buffer before the ONNX session is initialized, so any policy (locomotion or WBT) can run with longer observation histories as long as the underlying model was trained that way.
 
+
+## Input Sources
+
+The policy supports two independent input channels that can each be set to `keyboard`, `joystick`, or `ros2`:
+
+| Channel | What it controls | CLI flag |
+|---------|-----------------|----------|
+| `velocity_input` | Continuous velocity commands (linear/angular) | `--task.velocity-input` |
+| `state_input` | Discrete commands: start/stop, walk/stand, kp tuning, policy switching | `--task.state-input` |
+
+### Shortcuts (backwards compatible)
+
+For the common case where both channels use the same source:
+
+```bash
+--task.use-joystick    # Sets both channels to joystick
+--task.use-keyboard    # Sets both channels to keyboard (this is the default)
+```
+
+### Mixed input examples
+
+**ROS2 `cmd_vel` with keyboard commands** — velocity from ROS2, operator uses keyboard for start/stop:
+
+```bash
+python3 src/holosoma_inference/holosoma_inference/run_policy.py inference:g1-29dof-loco \
+    --task.model-path <path-to-model>.onnx \
+    --task.velocity-input ros2 \
+    --task.state-input keyboard \
+    --task.interface eth0
+```
+
+**Fully autonomous** — both channels from ROS2:
+
+```bash
+python3 src/holosoma_inference/holosoma_inference/run_policy.py inference:g1-29dof-loco \
+    --task.model-path <path-to-model>.onnx \
+    --task.velocity-input ros2 \
+    --task.state-input ros2 \
+    --task.interface eth0
+```
+
+### ROS2 topics
+
+| Topic | Message type | Channel | Description |
+|-------|-------------|---------|-------------|
+| `cmd_vel` | `geometry_msgs/TwistStamped` | `velocity_input` | Linear (x, y) and angular (z) velocity, clamped to [-1, 1] |
+| `holosoma/state_input` | `std_msgs/String` | `state_input` | Text commands: `walk`, `stand`, `start`, `stop`, `init` |
+
+Topic names are configurable via `--task.ros-cmd-vel-topic` and `--task.ros-state-input-topic`.
+
+**Note**: Shortcut flags (`--task.use-joystick`, `--task.use-keyboard`) cannot be combined with `--task.velocity-input` or `--task.state-input`.
 
 ## Overriding Control Gains
 

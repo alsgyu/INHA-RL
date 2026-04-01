@@ -1,6 +1,8 @@
 import numpy as np
 from termcolor import colored
 
+from holosoma_inference.inputs.api.commands import StateCommand, VelCmd
+
 from .base import BasePolicy
 
 
@@ -8,6 +10,25 @@ class LocomotionPolicy(BasePolicy):
     def __init__(self, config):
         super().__init__(config)
         self.is_standing = False
+
+    def _apply_velocity(self, vc: VelCmd) -> None:
+        """Gate velocity by stand_command — zero when standing."""
+        self._maybe_switch_to_walk_mode(vc)
+        s = self.stand_command[0, 0]
+        self.lin_vel_command[0] = (vc.lin_vel[0] * s, vc.lin_vel[1] * s)
+        self.ang_vel_command[0, 0] = vc.ang_vel * s
+
+    def _maybe_switch_to_walk_mode(self, vc: VelCmd) -> None:
+        """Auto-enter walking mode when a non-zero velocity is received."""
+        if not self.config.task.auto_walk_on_vel_cmd:
+            return
+        if self.stand_command[0, 0] == 1:
+            return
+        if abs(vc.lin_vel[0]) < 1e-3 and abs(vc.lin_vel[1]) < 1e-3 and abs(vc.ang_vel) < 1e-3:
+            return
+        self.stand_command[0, 0] = 1
+        self.base_height_command[0, 0] = self.desired_base_height
+        self.logger.info(colored("Auto-walk: non-zero velocity received", "blue"))
 
     def get_current_obs_buffer_dict(self, robot_state_data):
         current_obs_buffer_dict = super().get_current_obs_buffer_dict(robot_state_data)
@@ -45,59 +66,26 @@ class LocomotionPolicy(BasePolicy):
             self.phase = np.array([[0.0, np.pi]])
             self.is_standing = False
 
-    def handle_keyboard_button(self, keycode):
-        """Handle keyboard button presses for locomotion."""
-        # Call parent handler for common commands
-        super().handle_keyboard_button(keycode)
-
-        # Locomotion-specific commands
-        if keycode in ["w", "s", "a", "d"]:
-            self._handle_velocity_control(keycode)
-        elif keycode in ["q", "e"]:
-            self._handle_angular_velocity_control(keycode)
-        elif keycode == "=":
+    def _dispatch_command(self, cmd):
+        if cmd == StateCommand.STAND_TOGGLE:
             self._handle_stand_command()
-        elif keycode == "z":
+        elif cmd == StateCommand.ZERO_VELOCITY:
             self._handle_zero_velocity()
-
-        self._print_control_status()
-
-    def handle_joystick_button(self, cur_key):
-        """Handle joystick button presses for locomotion."""
-        # Call parent handler for common commands
-        super().handle_joystick_button(cur_key)
-
-        # Locomotion-specific commands
-        if cur_key == "start":
-            self._handle_stand_command()
-        elif cur_key == "L2":
-            self._handle_zero_velocity()
-
-    def _handle_velocity_control(self, keycode):
-        """Handle linear velocity control."""
-        if not self.stand_command[0, 0]:
-            return
-
-        if keycode == "w":
-            self.lin_vel_command[0, 0] += 0.1
-        elif keycode == "s":
-            self.lin_vel_command[0, 0] -= 0.1
-        elif keycode == "a":
-            self.lin_vel_command[0, 1] += 0.1
-        elif keycode == "d":
-            self.lin_vel_command[0, 1] -= 0.1
-
-    def _handle_angular_velocity_control(self, keycode):
-        """Handle angular velocity control."""
-        if keycode == "q":
-            self.ang_vel_command[0, 0] -= 0.1
-        elif keycode == "e":
-            self.ang_vel_command[0, 0] += 0.1
+        elif cmd == StateCommand.WALK:
+            self.stand_command[0, 0] = 1
+            self.base_height_command[0, 0] = self.desired_base_height
+            self.logger.info("ROS2 command: walk")
+        elif cmd == StateCommand.STAND:
+            self.stand_command[0, 0] = 0
+            self.logger.info("ROS2 command: stand")
+        else:
+            super()._dispatch_command(cmd)
 
     def _handle_stand_command(self):
         """Handle stand command toggle."""
         self.stand_command[0, 0] = 1 - self.stand_command[0, 0]
         if self.stand_command[0, 0] == 0:
+            self._velocity_input.zero()
             self.ang_vel_command[0, 0] = 0.0
             self.lin_vel_command[0, 0] = 0.0
             self.lin_vel_command[0, 1] = 0.0
@@ -108,6 +96,7 @@ class LocomotionPolicy(BasePolicy):
 
     def _handle_zero_velocity(self):
         """Handle zero velocity command."""
+        self._velocity_input.zero()
         self.ang_vel_command[0, 0] = 0.0
         self.lin_vel_command[0, 0] = 0.0
         self.lin_vel_command[0, 1] = 0.0

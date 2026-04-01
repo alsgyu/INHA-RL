@@ -407,22 +407,13 @@ class WholeBodyTrackingPolicy(BasePolicy):
         else:
             self.logger.info(colored("Starting motion clip", "blue"))
 
-    def handle_keyboard_button(self, keycode):
-        """Add new keyboard button to start and end the motion clips"""
-        if keycode == "s":
-            self._handle_start_motion_clip()
-        else:
-            super().handle_keyboard_button(keycode)
+    def _dispatch_command(self, cmd):
+        from holosoma_inference.inputs.api.commands import StateCommand
 
-    def handle_joystick_button(self, cur_key):
-        """Handle joystick button presses for WBT-specific controls."""
-        if cur_key == "start":
-            # Start playing motion clip
+        if cmd == StateCommand.START_MOTION_CLIP:
             self._handle_start_motion_clip()
         else:
-            # Delegate all other buttons to base class
-            super().handle_joystick_button(cur_key)
-        super()._print_control_status()
+            super()._dispatch_command(cmd)
 
     def _capture_robot_yaw_offset(self):
         """Capture robot yaw when policy starts to use as reference offset."""

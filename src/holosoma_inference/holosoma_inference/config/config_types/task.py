@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic.dataclasses import dataclass
+
+InputSource = Literal["keyboard", "interface", "joystick", "ros2"]
+
+DEFAULT_VELOCITY_INPUT: InputSource = "keyboard"
+DEFAULT_STATE_INPUT: InputSource = "keyboard"
 
 
 @dataclass(frozen=True)
@@ -47,14 +54,41 @@ class TaskConfig:
     interface: str = "auto"
     """Network interface name. Use ``"auto"`` to auto-detect, or specify explicitly (e.g. ``"eth0"``)."""
 
+    velocity_input: InputSource = DEFAULT_VELOCITY_INPUT
+    """Source for velocity commands."""
+
+    state_input: InputSource = DEFAULT_STATE_INPUT
+    """Source for non-velocity inputs (start/stop, walk/stand, tuning)."""
+
+    use_keyboard: bool = False
+    """Shortcut: set both velocity_input and state_input to "keyboard".
+
+    Cannot be combined with explicit input settings.
+    """
+
     use_joystick: bool = False
-    """Enable joystick control input."""
+    """Shortcut: set both velocity_input and state_input to "joystick".
+
+    Cannot be combined with explicit input settings.
+    """
 
     joystick_type: str = "xbox"
     """Joystick type."""
 
     joystick_device: int = 0
     """Joystick device index."""
+
+    ros_cmd_vel_topic: str = "cmd_vel"
+    """ROS2 topic name for velocity commands (used when velocity_input is "ros2")."""
+
+    ros_state_input_topic: str = "holosoma/state_input"
+    """ROS2 topic name for discrete commands (used when state_input is "ros2")."""
+
+    ros_vel_timeout: float = 1.0
+    """Seconds without a velocity message before zeroing commands. Set to 0 to disable."""
+
+    auto_walk_on_vel_cmd: bool = False
+    """Automatically enter walking mode when a non-zero velocity command is received."""
 
     use_sim_time: bool = False
     """Use synchronized simulation time for WBT policies."""
@@ -69,9 +103,6 @@ class TaskConfig:
     residual_upper_body_action: bool = False
     """Whether to use residual control for upper body."""
 
-    use_ros: bool = False
-    """Use ROS2 for rate limiting."""
-
     print_observations: bool = False
     """Print observation vectors for debugging."""
 
@@ -83,3 +114,31 @@ class TaskConfig:
 
     debug: DebugConfig = DebugConfig()
     """Debug overrides for quick testing."""
+
+    def __post_init__(self):
+        """Resolve use_keyboard/use_joystick shortcuts into velocity_input/state_input."""
+        if self.use_keyboard and self.use_joystick:
+            raise ValueError(
+                "Cannot combine --task.use-keyboard with --task.use-joystick. "
+                "Use one shortcut or set --task.velocity-input and --task.state-input individually."
+            )
+
+        shortcut: InputSource | None = None
+        flag_name: str | None = None
+        if self.use_joystick:
+            shortcut = "interface"
+            flag_name = "joystick"
+        elif self.use_keyboard:
+            shortcut = "keyboard"
+            flag_name = "keyboard"
+
+        if shortcut is not None:
+            has_custom_input = self.velocity_input != DEFAULT_VELOCITY_INPUT or self.state_input != DEFAULT_STATE_INPUT
+            if has_custom_input:
+                raise ValueError(
+                    f"Cannot combine --task.use-{flag_name} with --task.velocity-input or "
+                    "--task.state-input. Use either the shortcut flag or the individual "
+                    "input settings, not both."
+                )
+            object.__setattr__(self, "velocity_input", shortcut)
+            object.__setattr__(self, "state_input", shortcut)
