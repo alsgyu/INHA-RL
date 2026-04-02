@@ -33,5 +33,7 @@ __pycache__
 
 # Gas Town (added by gt)
 .runtime/
-.claude/commands/
+.claude/
 .logs/
+holosoma_config.yaml
+wandb-metadata.json

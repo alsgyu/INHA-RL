@@ -121,6 +121,8 @@ class BaseTask:
         # so it can be applied during env creation (before prepare_sim).
         # For IsaacSim: The manager will be initialized later (scene is already created in __init__)
         is_isaacgym_manager = hasattr(self.simulator, "gym")
+        # IsaacGym needs tasks callback before termination to avoid physics instabilities
+        self._update_tasks_before_termination = is_isaacgym_manager
         if is_isaacgym_manager:
             self.randomization_manager = RandomizationManager(randomization_config, self, self.device)
             if self.randomization_manager is not None:
@@ -428,6 +430,15 @@ class BaseTask:
         self._update_counters_each_step()
 
         self._pre_compute_observations_callback()
+
+        # IsaacGym requires the original callback ordering (before termination
+        # and reward) to avoid numerical instabilities in its GPU physics
+        # pipeline. IsaacSim doesn't suffer from this issue, but WBT needs the callback
+        # AFTER reset so that WBT termination checks see the actual tracking error
+        # before the command manager advances the motion clip.
+        if self._update_tasks_before_termination:
+            self._update_tasks_callback()
+
         self._check_termination()
         self._compute_reward()
         self._update_log_dict()
@@ -443,10 +454,8 @@ class BaseTask:
         if refresh_env_ids.numel() > 0:
             self._refresh_envs_after_reset(refresh_env_ids)
 
-        # Update commands, curriculum, and interval randomization AFTER reset,
-        # so that termination is checked on actual physics state before
-        # clip-end resets erase it.
-        self._update_tasks_callback()
+        if not self._update_tasks_before_termination:
+            self._update_tasks_callback()
 
         self._compute_observations()
 

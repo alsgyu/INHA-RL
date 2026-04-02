@@ -13,6 +13,7 @@ from holosoma.utils.simulator_config import SimulatorType
 class WholeBodyTrackingManager(BaseTask):
     def __init__(self, tyro_config, *, device):
         super().__init__(tyro_config, device=device)
+        assert not hasattr(self.simulator, "gym"), "WBT requires IsaacSim — IsaacGym is not supported."
 
     def _init_buffers(self):
         """Initialize torch tensors which will contain simulation states and processed quantities"""
