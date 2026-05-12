@@ -1,8 +1,9 @@
 import platform
+import sys
 
 from setuptools import find_packages, setup
 
-UNITREE_VERSION = "0.1.1"
+UNITREE_VERSION = "0.1.3"
 UNITREE_REPO = "https://github.com/amazon-far/unitree_sdk2"
 BOOSTER_VERSION = "0.1.0"
 BOOSTER_REPO = "https://github.com/amazon-far/booster_robotics_sdk"
@@ -12,16 +13,32 @@ PLATFORM_MAP = {
     "aarch64": "linux_aarch64",
 }
 
+# Supported Python cp tags — the SDK wheel build matrix publishes these tags.
+# Keep this list in sync with the wheel asset matrix on the amazon-far release.
+_SUPPORTED_PY_TAGS = {(3, 8), (3, 10), (3, 11), (3, 12)}
+_py = (sys.version_info.major, sys.version_info.minor)
+if _py not in _SUPPORTED_PY_TAGS:
+    _supported = ", ".join(f"{maj}.{min}" for maj, min in sorted(_SUPPORTED_PY_TAGS))
+    raise RuntimeError(
+        f"holosoma_inference[unitree,booster] has no prebuilt SDK wheel for "
+        f"Python {_py[0]}.{_py[1]}. Supported versions: {_supported}."
+    )
+cp_tag = f"cp{_py[0]}{_py[1]}"
+
 platform_tag = PLATFORM_MAP.get(platform.machine(), "linux_x86_64")
 
 unitree_extras = []
 unitree_url = (
-    f"{UNITREE_REPO}/releases/download/{UNITREE_VERSION}/unitree_sdk2-{UNITREE_VERSION}-cp310-cp310-{platform_tag}.whl"
+    f"{UNITREE_REPO}/releases/download/{UNITREE_VERSION}/"
+    f"unitree_sdk2-{UNITREE_VERSION}-{cp_tag}-{cp_tag}-{platform_tag}.whl"
 )
 unitree_extras.append(f"unitree_sdk2 @ {unitree_url}")
 
 booster_extras = []
-booster_url = f"{BOOSTER_REPO}/releases/download/{BOOSTER_VERSION}/booster_robotics_sdk-{BOOSTER_VERSION}-cp310-cp310-{platform_tag}.whl"  # noqa: E501
+booster_url = (
+    f"{BOOSTER_REPO}/releases/download/{BOOSTER_VERSION}/"
+    f"booster_robotics_sdk-{BOOSTER_VERSION}-{cp_tag}-{cp_tag}-{platform_tag}.whl"
+)
 booster_extras.append(f"booster_robotics_sdk @ {booster_url}")
 
 
