@@ -81,6 +81,7 @@ setup(
     entry_points={
         "holosoma.sdk": [
             "unitree = holosoma_inference.sdk.unitree.unitree_interface:UnitreeInterface",
+            "unitree_mp = holosoma_inference.sdk.unitree.unitree_interface_mp:UnitreeInterfaceMP",
             "booster = holosoma_inference.sdk.booster.booster_interface:BoosterInterface",
         ],
         "holosoma.config.robot": [
