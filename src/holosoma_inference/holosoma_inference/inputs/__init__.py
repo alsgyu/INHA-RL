@@ -17,8 +17,13 @@ def create_input(policy: BasePolicy, source: InputSource, role: str) -> VelCmdPr
     if not policy.use_joystick and source in ("interface", "joystick"):
         source = "keyboard"
 
-    if source in ("interface", "joystick"):
+    if source == "interface":
         return InterfaceInput(policy.interface)
+
+    if source == "joystick":
+        from holosoma_inference.inputs.impl.usb_joystick import UsbJoystickInput
+
+        return UsbJoystickInput(device_index=policy.config.task.joystick_device)
 
     if source == "keyboard":
         vel_keys = KEYBOARD_VELOCITY_LOCOMOTION if role == "velocity" else None

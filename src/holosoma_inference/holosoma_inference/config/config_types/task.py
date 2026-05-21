@@ -67,9 +67,20 @@ class TaskConfig:
     """
 
     use_joystick: bool = False
-    """Shortcut: set both velocity_input and state_input to "joystick".
+    """Shortcut: set both velocity_input and state_input to "interface".
+
+    Reads from the SDK's wireless controller (the dongle/controller shipped
+    with Unitree G1, Booster T1, etc.). For host-side USB gamepads
+    (Xbox/Logitech via /dev/input/event*), use ``use_usb_joystick`` instead.
 
     Cannot be combined with explicit input settings.
+    """
+
+    use_usb_joystick: bool = False
+    """Shortcut: set both velocity_input and state_input to "joystick".
+
+    Reads a USB gamepad on the host via evdev (``/dev/input/event*``).
+    Linux-only. Cannot be combined with explicit input settings.
     """
 
     joystick_type: str = "xbox"
@@ -113,16 +124,29 @@ class TaskConfig:
     """Debug overrides for quick testing."""
 
     def __post_init__(self):
-        """Resolve use_keyboard/use_joystick shortcuts into velocity_input/state_input."""
-        if self.use_keyboard and self.use_joystick:
+        """Resolve use_keyboard/use_joystick/use_usb_joystick shortcuts into velocity_input/state_input."""
+        active_shortcuts = [
+            name
+            for name, enabled in (
+                ("keyboard", self.use_keyboard),
+                ("joystick", self.use_joystick),
+                ("usb-joystick", self.use_usb_joystick),
+            )
+            if enabled
+        ]
+        if len(active_shortcuts) > 1:
+            joined = ", ".join(f"--task.use-{n}" for n in active_shortcuts)
             raise ValueError(
-                "Cannot combine --task.use-keyboard with --task.use-joystick. "
+                f"Cannot combine multiple input shortcuts ({joined}). "
                 "Use one shortcut or set --task.velocity-input and --task.state-input individually."
             )
 
         shortcut: InputSource | None = None
         flag_name: str | None = None
-        if self.use_joystick:
+        if self.use_usb_joystick:
+            shortcut = "joystick"
+            flag_name = "usb-joystick"
+        elif self.use_joystick:
             shortcut = "interface"
             flag_name = "joystick"
         elif self.use_keyboard:

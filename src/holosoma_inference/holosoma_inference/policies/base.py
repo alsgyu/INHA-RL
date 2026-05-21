@@ -149,10 +149,12 @@ class BasePolicy:
         if hasattr(self, "_shared_hardware_source"):
             self.interface = self._shared_hardware_source.interface
             return
-        # Derive use_joystick for SDK: True if interface/joystick is used for either channel
+        # The SDK's own wireless-controller path is only needed when an
+        # "interface" channel is selected.  The "joystick" channel is read
+        # via host-side evdev (UsbJoystickInput) and does not touch the SDK.
         vel = self.config.task.velocity_input
         other = self.config.task.state_input
-        need_joystick = bool({"interface", "joystick"} & {vel, other})
+        need_joystick = "interface" in {vel, other}
         self.interface = create_interface(
             self.robot_config,
             self.config.task.domain_id,
