@@ -456,7 +456,11 @@ class AdaptiveTimestepsSampler:
             self.num_bins - 1,
         ).long()
         assert failed_bin.min() >= 0 and failed_bin.max() < self.num_bins, "Failed bin is out of range"
-        self.current_bin_failed_count[:] = torch.bincount(failed_bin, minlength=self.num_bins)
+        # Accumulate (not overwrite): reset() may be called more than once per env
+        # step — once for termination-driven resets and again for clip-ended resets
+        # in MotionCommand.step() — before update_bin_failed_count() folds + zeroes
+        # this buffer. Overwriting clobbered the earlier wave's failures.
+        self.current_bin_failed_count += torch.bincount(failed_bin, minlength=self.num_bins).float()
 
     def update_bin_failed_count(self):
         """At every rl environment step, update the failed count with the current bin failed count."""
@@ -481,11 +485,24 @@ class AdaptiveTimestepsSampler:
         # inside of each bin, randomly sample a time step, ignoring the borders
         return (sampled_bins + torch.rand(num_samples, device=self.device)) / self.num_bins
 
+    def sample_global_time_steps(self, num_samples: int) -> torch.Tensor:
+        """Sample absolute (global) frame indices in [0, motion_time_step_total).
+
+        The bins live in the GLOBAL concatenated-motion frame space, so a sampled
+        phase must be mapped back to a global frame index — NOT reinterpreted as a
+        per-motion fraction of an unrelated clip. The caller derives the motion id
+        from which clip's [start, end) interval the returned index falls into, so
+        the failure-prioritized location stays attached to the motion it came from.
+        """
+        phase = self.sample(num_samples)
+        global_idx = (phase * self.motion_time_step_total).long()
+        return global_idx.clamp_(0, self.motion_time_step_total - 1)
+
     def get_stats(self):
         # Metrics
         prob = self.sampling_probabilities
         H = -(prob * (prob + 1e-12).log()).sum()
-        H_norm = H / np.log(self.num_bins)
+        H_norm = H / np.log(max(self.num_bins, 2))  # guard num_bins==1 (log(1)=0 -> nan)
         pmax, imax = prob.max(dim=0)
         self.metrics["sampling_entropy"] = H_norm
         self.metrics["sampling_top1_prob"] = pmax
@@ -597,30 +614,52 @@ class MotionCommand(CommandTermBase):
         if env_ids.numel() == 0:
             return
 
-        # 0. Sample the time steps
+        n = env_ids.numel()
+        num_motions = self.motion.num_motions
+
+        # 0. Sample the time steps (and, for the adaptive sampler, the motion id).
+        adaptive_global_idx = None
         if self.motion_cfg.use_adaptive_timesteps_sampler:
             # Match BeyondMimic behavior: update failed bins from environments
             # that terminated before this reset, then sample new phases.
-            episode_failed = self._env.termination_manager.terminated[env_ids]
-            if torch.any(episode_failed):
-                failed_at_time_step = self.time_steps[env_ids][episode_failed]
-                self.adaptive_timesteps_sampler.update_current_bin_failed_count(failed_at_time_step)
-            phase = self.adaptive_timesteps_sampler.sample(env_ids.numel())
+            # Gate the failure-stat update on training mode so evaluation episodes
+            # don't contaminate the training sampler's failure distribution
+            # (the is_evaluating phase-zeroing below only affects sampling, not stats).
+            if not self._env.is_evaluating:
+                episode_failed = self._env.termination_manager.terminated[env_ids]
+                if torch.any(episode_failed):
+                    failed_at_time_step = self.time_steps[env_ids][episode_failed]
+                    self.adaptive_timesteps_sampler.update_current_bin_failed_count(failed_at_time_step)
+            # The sampler bins failures over the GLOBAL concatenated-motion frame
+            # axis, so it must return a global frame index here. The motion id is
+            # then derived from that index (NOT chosen independently), keeping the
+            # failure-prioritized phase attached to the motion it was recorded on.
+            adaptive_global_idx = self.adaptive_timesteps_sampler.sample_global_time_steps(n)
+            phase = None
         else:
-            phase = torch.rand(env_ids.numel(), device=self.device)
+            phase = torch.rand(n, device=self.device)
 
         if self._env.is_evaluating:
-            phase = torch.zeros_like(phase)
+            phase = torch.zeros_like(phase) if phase is not None else None
+            adaptive_global_idx = None  # eval starts every env at its motion's first frame
 
-        # For multi-motion: randomly assign each env to a motion, sample within that motion's range
-        n = env_ids.numel()
-        num_motions = self.motion.num_motions
-        self.motion_ids[env_ids] = torch.randint(0, num_motions, (n,), device=self.device)
-        start_idx = self.motion.motion_start_idx[self.motion_ids[env_ids]]
-        end_idx = self.motion.motion_end_idx[self.motion_ids[env_ids]]
-        motion_len = end_idx - start_idx
-
-        self.time_steps[env_ids] = start_idx + (phase * (motion_len - 1).float()).long()
+        if adaptive_global_idx is not None:
+            # Map global frame index -> (motion_id, time_step). searchsorted on the
+            # per-motion end indices yields the clip whose [start, end) contains it.
+            motion_ids = torch.searchsorted(self.motion.motion_end_idx, adaptive_global_idx, right=True)
+            motion_ids = motion_ids.clamp_(0, num_motions - 1)
+            self.motion_ids[env_ids] = motion_ids
+            start_idx = self.motion.motion_start_idx[motion_ids]
+            end_idx = self.motion.motion_end_idx[motion_ids]
+            self.time_steps[env_ids] = adaptive_global_idx.clamp(start_idx, end_idx - 1)
+        else:
+            # Uniform path (or eval): randomly assign each env to a motion, sample
+            # a phase within that motion's range.
+            self.motion_ids[env_ids] = torch.randint(0, num_motions, (n,), device=self.device)
+            start_idx = self.motion.motion_start_idx[self.motion_ids[env_ids]]
+            end_idx = self.motion.motion_end_idx[self.motion_ids[env_ids]]
+            motion_len = end_idx - start_idx
+            self.time_steps[env_ids] = start_idx + (phase * (motion_len - 1).float()).long()
 
         # Handle start_at_timestep_zero_prob (reset to start of assigned motion)
         prob = self.motion_cfg.start_at_timestep_zero_prob
@@ -819,8 +858,9 @@ class MotionCommand(CommandTermBase):
             + quat_apply(delta_quat_w, self.body_pos_w - ref_pos_w_repeat, w_last=True)
         )
 
-        ### 1.3 update the adaptive timesteps sampler
-        if self.motion_cfg.use_adaptive_timesteps_sampler:
+        ### 1.3 update the adaptive timesteps sampler (training only — eval episodes
+        ### must not decay/fold failure stats into the training sampler).
+        if self.motion_cfg.use_adaptive_timesteps_sampler and not self._env.is_evaluating:
             self.adaptive_timesteps_sampler.update_bin_failed_count()
 
     @property
