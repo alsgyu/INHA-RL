@@ -709,6 +709,19 @@ class BasePolicy:
                 kd_override=kd_override,
             )
 
+        # Telemetry hook: fires every control tick in every state (policy,
+        # stiff-hold, init ramp) with the final executed command. Default
+        # no-op; override to publish feedback (e.g. ROS topics) without
+        # touching the control loop.
+        self._on_command_sent(self.cmd_q, robot_state_data)
+
+    def _on_command_sent(self, cmd_q, robot_state_data) -> None:
+        """Hook called after each executed command is sent. Override to observe.
+
+        cmd_q: (num_dofs,) full-body joint command actually sent this tick.
+        robot_state_data: (1, state_dim) latest robot state used this tick.
+        """
+
     def _get_manual_command(self, robot_state_data):
         """Optional manual command when policy control is disabled."""
         return

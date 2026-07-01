@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic.dataclasses import dataclass
 
-InputSource = Literal["keyboard", "interface", "joystick", "ros2"]
+InputSource = Literal["keyboard", "interface", "joystick", "ros2", "injected"]
 
 DEFAULT_VELOCITY_INPUT: InputSource = "keyboard"
 DEFAULT_STATE_INPUT: InputSource = "keyboard"
@@ -24,6 +24,45 @@ class DebugConfig:
 
     force_zero_action: bool = False
     """Zero out the scaled policy action (robot holds default pose)."""
+
+
+@dataclass(frozen=True)
+class Ros2DepthConsumerConfig:
+    """Config for the ROS2 depth-image consumer (``Ros2DepthConsumer``).
+
+    Defaults match the on-robot image_server preprocessing the policy was
+    trained against. Leave ``topics`` empty to disable the depth sensor.
+    """
+
+    topics: tuple[str, ...] = ()
+    """Raw depth topic(s) (``sensor_msgs/Image``, encoding ``32FC1``, metric
+    meters). Empty disables the sensor. One per camera, in stack order (front
+    first, back second). Multi-camera frames are time-synchronized; the policy
+    reads a preprocessed ``(N, 1, resized_height, resized_width)`` stack via
+    ``self._injected_sensors["depth"].get_latest()``."""
+
+    resized_height: int = 27
+    """Target height (bicubic resize) before clip+normalize."""
+
+    resized_width: int = 48
+    """Target width (bicubic resize) before clip+normalize."""
+
+    near_clip: float = 0.1
+    """Near clip (m); depth is normalized to [-0.5, 0.5] over [near, far]."""
+
+    far_clip: float = 2.0
+    """Far clip (m); depth is normalized to [-0.5, 0.5] over [near, far]."""
+
+    frame_delay_ms: float = 0.0
+    """Modeled depth latency to re-introduce, in absolute milliseconds.
+
+    The ROS2 depth transport is effectively instantaneous (sub-1ms), but the
+    policy was trained with the on-robot image_server's inherent capture/serve
+    latency baked in. ``get_latest()`` holds back frames so it returns the
+    freshest frame at least this old, reproducing that delay independent of
+    publish rate (a fixed ms value is robust across fps, unlike a frame count).
+    ``0.0`` (default) keeps freshest-frame behavior. Pin this per-policy from a
+    preset to match the delay the model was trained with (e.g. ``200.0``)."""
 
 
 @dataclass(frozen=True)
@@ -48,11 +87,19 @@ class TaskConfig:
     gait_period: float = 1.0
     """Gait cycle period in seconds."""
 
+    skip_stiff_prompt: bool = False
+    """WBT: skip the blocking stdin prompt before entering stiff hold and enter
+    immediately. Default False keeps the interactive 'Press Enter to continue'
+    safety pause; non-interactive launches (e.g. the ROS2 service node) set True."""
+
     domain_id: int = 0
     """DDS domain ID for communication."""
 
     interface: str = "auto"
     """Network interface name. Use ``"auto"`` to auto-detect, or specify explicitly (e.g. ``"eth0"``)."""
+
+    depth: Ros2DepthConsumerConfig = Ros2DepthConsumerConfig()
+    """Depth-image consumer config (empty ``topics`` disables it)."""
 
     velocity_input: InputSource = DEFAULT_VELOCITY_INPUT
     """Source for velocity commands."""

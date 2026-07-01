@@ -160,6 +160,11 @@ def _split_secondary_args(argv: list[str]) -> tuple[list[str], list[str]]:
 def main(annotated_config=None):
     """Main entry point. Extensions can pass their own AnnotatedInferenceConfig."""
     import argparse
+    import os
+
+    # Interactive entrypoint: default to DEBUG so per-tick logs (e.g. Motion
+    # timestep) are visible. Service mode keeps the loguru default (INFO).
+    os.environ.setdefault("LOGURU_LEVEL", "DEBUG")
 
     from holosoma_inference.config.config_values.inference import DEFAULTS
 
