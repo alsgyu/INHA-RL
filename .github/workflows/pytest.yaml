@@ -102,3 +102,20 @@ jobs:
           source scripts/source_isaacsim_setup.sh
           pip install -e src/holosoma_inference
           pytest -s src/holosoma_inference/
+
+  service-integration-tests:
+    # The service's contract is its ROS2 topic API, so these run in a real ROS2
+    # Jazzy workspace (the inference-tests env above has no rclpy/colcon and
+    # would only skip them). Builds the minimal test image and runs it.
+    name: Run Service Integration Tests (ROS2)
+    runs-on: codebuild-holosoma-cpu-build-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - name: Build service test image
+        run: |
+          docker build \
+            -f src/holosoma_inference/holosoma_inference_service/docker/Dockerfile.test \
+            -t holosoma-service-test .
+      - name: Run service integration tests
+        run: docker run --rm holosoma-service-test
