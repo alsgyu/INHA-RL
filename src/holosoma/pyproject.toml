@@ -64,6 +64,12 @@ where = ["."]
 
 [tool.pytest.ini_options]
 markers = [
-    "isaacsim: marks tests as requiring Isaac Sim (deselect with '-m \"not isaacsim\"')",
-    "multi_gpu: marks tests as requiring multiple GPUs (deselect with '-m \"not multi_gpu\"')",
+    "isaacgym: needs the Isaac Gym backend",
+    "isaacsim: needs the Isaac Sim backend",
+    "mujoco: needs the MuJoCo backend (either ClassicBackend or WarpBackend)",
+    "mujoco_classic: needs the MuJoCo ClassicBackend (CPU)",
+    "mujoco_warp: needs the MuJoCo WarpBackend (CUDA)",
+    "no_sim: pure test, no simulator backend (CPU-only)",
+    "multi_gpu: needs multiple GPUs",
+    "requires_inference: needs the inference environment",
 ]

@@ -82,7 +82,8 @@ jobs:
         - environment: mujoco
           dockerfile: 'docker/mujoco.Dockerfile'
           runner_prefix: 'codebuild-holosoma-a10g-x1-gpu-build'
-        #TODO: add mujoco warp
+          # WARP=true builds the GPU MuJoCo-Warp backend
+          build_args: WARP=true
         # Thor (Jetson) images — aarch64 SBSA, built natively on an ARM runner.
         # Single Dockerfile, two targets; each pushes its own image.
         - environment: thor-inference
@@ -131,6 +132,7 @@ jobs:
           file: "${{ matrix.dockerfile }}"
           target: "${{ matrix.target }}"
           push: true
+          build-args: "${{ matrix.build_args }}"
           tags: "${{ steps.tags.outputs.tags }}"
           cache-from: type=registry,ref=${{ steps.name.outputs.image_path  }}:buildcache
           cache-to: type=registry,ref=${{ steps.name.outputs.image_path }}:buildcache,mode=max

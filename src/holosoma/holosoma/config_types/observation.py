@@ -13,7 +13,8 @@ class ObsTermCfg:
     """Configuration for a single observation term."""
 
     func: str
-    """Import path to the observation function (e.g. ``holosoma.managers.observation.terms.locomotion:base_lin_vel``)."""
+    """Import path to the observation function, e.g.
+    ``holosoma.managers.observation.terms.locomotion:base_lin_vel``."""
 
     params: dict[str, Any] = field(default_factory=dict)
     """Additional keyword arguments forwarded to ``func``."""

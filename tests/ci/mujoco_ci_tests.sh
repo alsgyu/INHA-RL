@@ -1,14 +1,17 @@
 #!/bin/bash
-# CI runs this inside holosoma docker
+# CI runs this inside the holosoma-mujoco docker image (hsmujoco conda env,
+# MuJoCo + GPU-accelerated MuJoCo-Warp).
 set -ex
 
 cd /workspace/holosoma
 
-source scripts/source_isaacgym_setup.sh
+source scripts/source_mujoco_setup.sh
 pip install -e 'src/holosoma[unitree,booster]'
 pip install -e src/holosoma_inference
 
-marker="isaacgym"
+# Runs both MuJoCo backends: mujoco_warp cells use the GPU, mujoco_classic cells run on CPU
+# within this image. The mujoco_classic/mujoco_warp sub-tags imply the mujoco umbrella (conftest).
+marker="mujoco"
 if [[ "$HOLOSOMA_MULTIGPU" == "True" ]]; then
    marker="$marker and multi_gpu"
 elif [[ "$HOLOSOMA_MULTIGPU" == "False" ]]; then

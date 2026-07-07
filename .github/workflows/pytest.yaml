@@ -20,9 +20,9 @@ jobs:
     strategy:
       fail-fast: false # continue on one test failing
       matrix:
-        simulator: [isaacgym, isaacsim]
+        simulator: [isaacgym, isaacsim, mujoco]
         multigpu: ["False"]
-        # no multigpu isaacsim tests for now
+        # no multigpu isaacsim/mujoco tests for now
         include:
         - simulator: isaacgym
           multigpu: "True"
@@ -119,3 +119,23 @@ jobs:
             -t holosoma-service-test .
       - name: Run service integration tests
         run: docker run --rm holosoma-service-test
+
+  no-sim-tests:
+    name: Run No-Simulator Tests
+    runs-on: codebuild-holosoma-cpu-build-${{ github.run_id }}-${{ github.run_attempt }}
+    container:
+      # Pure tests, no GPU/sim libs needed; runs in the isaacsim env on a CPU runner.
+      image: 982423663241.dkr.ecr.us-west-2.amazonaws.com/holosoma:latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - name: Pytest
+        id: pytest
+        shell: bash
+        run: |
+          ln -s /root/.holosoma_deps "$HOME/.holosoma_deps"
+          if [[ ! -L /workspace/holosoma ]]; then
+            rm -rf /workspace/holosoma
+            ln -sfF "$GITHUB_WORKSPACE" /workspace/holosoma
+          fi
+          bash tests/ci/no_sim_ci_tests.sh

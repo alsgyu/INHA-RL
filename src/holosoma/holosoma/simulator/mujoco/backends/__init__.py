@@ -17,8 +17,6 @@ Or install dependencies manually:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from .base import IMujocoBackend
 from .classic_backend import ClassicBackend
 
@@ -26,16 +24,13 @@ from .classic_backend import ClassicBackend
 WARP_AVAILABLE = False
 WarpBackend: type[IMujocoBackend] | None = None
 
-if TYPE_CHECKING:
-    from .warp_backend import WarpBackend as WarpBackendType
-else:
-    try:
-        from .warp_backend import WarpBackend
+try:
+    from .warp_backend import WarpBackend
 
-        WARP_AVAILABLE = True
-    except ImportError:
-        # Warp dependencies not available - this is expected for CPU-only installs
-        # WarpBackend will remain None and WARP_AVAILABLE will be False
-        pass
+    WARP_AVAILABLE = True
+except ImportError:
+    # Warp dependencies not available - this is expected for CPU-only installs
+    # WarpBackend will remain None and WARP_AVAILABLE will be False
+    pass
 
 __all__ = ["WARP_AVAILABLE", "ClassicBackend", "IMujocoBackend", "WarpBackend"]

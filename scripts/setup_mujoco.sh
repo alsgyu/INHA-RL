@@ -18,6 +18,11 @@ MUJOCO_WARP_COMMIT="09ec1da"
 
 # Parse command-line arguments
 INSTALL_WARP=true  # Default: install warp (GPU-accelerated)
+# Skip the runtime NVIDIA driver check before the Warp install. The check needs
+# nvidia-smi, which is unavailable inside `docker build` (no GPU at build time);
+# the GPU is required at run time, not install time. Settable via env for the
+# Dockerfile build-arg path.
+SKIP_DRIVER_CHECK=${SKIP_DRIVER_CHECK:-false}
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -26,12 +31,18 @@ while [[ $# -gt 0 ]]; do
       echo "MuJoCo Warp (GPU) installation disabled - CPU-only mode"
       shift
       ;;
+    --skip-driver-check)
+      SKIP_DRIVER_CHECK=true
+      shift
+      ;;
     --help|-h)
-      echo "Usage: $0 [--no-warp]"
+      echo "Usage: $0 [--no-warp] [--skip-driver-check]"
       echo ""
       echo "Options:"
-      echo "  --no-warp      Skip MuJoCo Warp installation (CPU-only)"
-      echo "  --help, -h     Show this help message"
+      echo "  --no-warp            Skip MuJoCo Warp installation (CPU-only)"
+      echo "  --skip-driver-check  Skip the NVIDIA driver check (for GPU-less"
+      echo "                       build environments; GPU still required at run time)"
+      echo "  --help, -h           Show this help message"
       echo ""
       echo "Default: GPU-accelerated installation (WarpBackend + ClassicBackend)"
       echo ""
@@ -226,7 +237,9 @@ if [[ "$INSTALL_WARP" == "true" ]] && [[ ! -f $WARP_SENTINEL_FILE ]]; then
   DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1)
 
   # Check if driver exists and meets minimum version
-  if [ -z "$DRIVER_VERSION" ] || [[ "$DRIVER_VERSION" < "$MIN_DRIVER_VERSION" ]]; then
+  if [[ "$SKIP_DRIVER_CHECK" == "true" ]]; then
+    echo "Skipping NVIDIA driver check (--skip-driver-check); GPU required at run time"
+  elif [ -z "$DRIVER_VERSION" ] || [[ "$DRIVER_VERSION" < "$MIN_DRIVER_VERSION" ]]; then
     echo ""
     echo "❌ ERROR: NVIDIA driver not found or too old!"
     echo ""
@@ -254,7 +267,9 @@ if [[ "$INSTALL_WARP" == "true" ]] && [[ ! -f $WARP_SENTINEL_FILE ]]; then
     exit 1
   fi
 
-  echo "✓ NVIDIA driver version: $DRIVER_VERSION (meets minimum $MIN_DRIVER_VERSION)"
+  if [[ -n "$DRIVER_VERSION" ]]; then
+    echo "✓ NVIDIA driver version: $DRIVER_VERSION (meets minimum $MIN_DRIVER_VERSION)"
+  fi
 
   if [[ ! -d $WORKSPACE_DIR/mujoco_warp ]]; then
     git clone https://github.com/google-deepmind/mujoco_warp.git $WORKSPACE_DIR/mujoco_warp && \

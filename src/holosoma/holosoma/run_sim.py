@@ -34,7 +34,7 @@ def run_simulation(config: RunSimConfig):
     if config.device == "cpu":
         # Check if using Warp backend (requires CUDA)
         if hasattr(config.simulator.config, "mujoco_backend"):
-            from holosoma.config_types.simulator import MujocoBackend  # noqa: PLC0415 -- deferred
+            from holosoma.config_types.simulator import MujocoBackend
 
             if config.simulator.config.mujoco_backend == MujocoBackend.WARP:
                 logger.info("Auto-detected MuJoCo Warp backend - setting device to cuda:0")

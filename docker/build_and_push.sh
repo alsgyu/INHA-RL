@@ -19,18 +19,19 @@ ECR_REPO="${ECR_REPO:-982423663241.dkr.ecr.us-west-2.amazonaws.com}"
 TAG="${IMAGE_TAG:-$(date +%Y_%m%d_%H%M)}"
 
 # ── Image definitions ────────────────────────────────────────────────
-# Each entry: "key|dockerfile|image_name|json_key"
+# Each entry: "key|dockerfile|image_name|json_key|build_args"
 #   key        — short name used for positional filtering
 #   dockerfile — path relative to repo root
 #   image_name — ECR image name (without registry prefix)
 #   json_key   — key in docker_images.json
+#   build_args — optional space-separated docker --build-arg values (may be empty)
 IMAGES=(
-  "holosoma|docker/Dockerfile|holosoma|holosoma"
-  "isaacsim|docker/isaacsim.Dockerfile|holosoma-isaacsim|hs-isaacsim"
-  "isaacgym|docker/isaacgym.Dockerfile|holosoma-isaacgym|hs-isaacgym"
-  "mujoco|docker/mujoco.Dockerfile|holosoma-mujoco|hs-mujoco"
-  "retargeting|src/holosoma_retargeting/docker/Dockerfile|holosoma-retargeting|hs-retargeting"
-  "inference|src/holosoma_inference/docker/Dockerfile|holosoma-inference|hs-inference"
+  "holosoma|docker/Dockerfile|holosoma|holosoma|"
+  "isaacsim|docker/isaacsim.Dockerfile|holosoma-isaacsim|hs-isaacsim|"
+  "isaacgym|docker/isaacgym.Dockerfile|holosoma-isaacgym|hs-isaacgym|"
+  "mujoco|docker/mujoco.Dockerfile|holosoma-mujoco|hs-mujoco|WARP=true"
+  "retargeting|src/holosoma_retargeting/docker/Dockerfile|holosoma-retargeting|hs-retargeting|"
+  "inference|src/holosoma_inference/docker/Dockerfile|holosoma-inference|hs-inference|"
 )
 
 # ── Parse flags ──────────────────────────────────────────────────────
@@ -113,7 +114,7 @@ SUCCEEDED=()
 FAILED=()
 
 for entry in "${IMAGES[@]}"; do
-  IFS='|' read -r key dockerfile image_name json_key <<< "$entry"
+  IFS='|' read -r key dockerfile image_name json_key build_args <<< "$entry"
 
   if ! matches_filter "$key"; then
     continue
@@ -129,7 +130,13 @@ for entry in "${IMAGES[@]}"; do
     tags+=(-t "${full_image}:latest")
   fi
 
-  if run env DOCKER_BUILDKIT=1 docker build "${tags[@]}" -f "${dockerfile}" "${ROOT_REPO}"; then
+  # optional per-image --build-arg values (e.g. mujoco: WARP=true)
+  build_arg_flags=()
+  for ba in $build_args; do
+    build_arg_flags+=(--build-arg "$ba")
+  done
+
+  if run env DOCKER_BUILDKIT=1 docker build "${tags[@]}" "${build_arg_flags[@]}" -f "${dockerfile}" "${ROOT_REPO}"; then
     echo "    Built: ${image_name}"
 
     echo "    Pushing ${image_name}..."
@@ -161,7 +168,7 @@ if [[ -f "$JSON_FILE" ]] && [[ ${#SUCCEEDED[@]} -gt 0 ]] && ! $DRY_RUN; then
   echo ""
   echo "==> Updating ${JSON_FILE}"
   for entry in "${IMAGES[@]}"; do
-    IFS='|' read -r key _ image_name json_key <<< "$entry"
+    IFS='|' read -r key _ image_name json_key _ <<< "$entry"
 
     if ! matches_filter "$key"; then
       continue
