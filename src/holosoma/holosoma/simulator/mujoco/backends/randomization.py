@@ -1,20 +1,27 @@
-"""MuJoCo Warp domain randomization utilities.
+"""MuJoCo domain randomization utilities (both backends).
 
 Adapted from mjlab (Apache 2.0): https://github.com/mujocolab/mjlab/blob/main/src/mjlab/sim/randomization.py
 See THIRD_PARTY_LICENSES for full license text.
 
-Provides functions for randomizing model fields across batched environments
-in GPU-accelerated MuJoCo Warp simulations.
+Provides ``randomize_field`` for randomizing model fields, which works on BOTH MuJoCo
+backends: the WarpBackend (GPU, vectorized across the per-world-expanded model via the
+WarpBridge) and the single-env ClassicBackend (CPU, writing the one ``mujoco.MjModel`` field
+in place). ``expand_model_fields`` and its Warp kernel are WarpBackend-only — they tile a
+single-world model across environments and are a no-op for the single-env ClassicBackend.
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable, Literal, cast
+from typing import TYPE_CHECKING, Any, Callable, Literal, cast
 
 import mujoco
-import mujoco_warp as mjwarp
 import torch
 import warp as wp
+
+from holosoma.utils.sampler import DistributionLike, DistributionSpec, TermSampler, quantiles
+
+if TYPE_CHECKING:
+    import mujoco_warp as mjwarp
 
 
 @wp.kernel(module="unique")
@@ -81,7 +88,11 @@ def expand_model_fields(
         return dst
 
     for field in model.__dataclass_fields__:
-        if field in fields_to_expand:
+        # Skip fields already expanded: re-tiling REALLOCATES the array (setattr below), which
+        # would invalidate a captured CUDA step-graph that still points at the old array. Making
+        # this idempotent lets the runtime static-move path call it safely (it's a no-op once the
+        # field was expanded at setup); only the first expansion per field allocates.
+        if field in fields_to_expand and field not in model._expanded_fields:  # type: ignore[attr-defined]
             array = getattr(model, field)
             setattr(model, field, tile(array))
             # Register this field as expanded for validation
@@ -144,32 +155,76 @@ def resolve_entity_ids(mj_model: mujoco.MjModel, names: list[str], entity_type: 
     return indices
 
 
+def _field_view(simulator: Any, field: str) -> torch.Tensor:
+    """A writable ``[num_worlds, ...]`` torch view of MuJoCo model ``field`` on either backend.
+
+    WarpBackend: the per-world bridge view (already ``[num_envs, ...]``). ClassicBackend: the single
+    CPU ``MjModel`` field wrapped as a torch view with a length-1 world axis prepended, so callers
+    index it identically. ``from_numpy`` aliases the live model on Classic, so writes land on the
+    model ``mj_step`` reads.
+    """
+    if hasattr(simulator.backend, "warp_model_bridge"):
+        return getattr(simulator.backend.warp_model_bridge, field)
+    return torch.from_numpy(getattr(simulator.backend.model, field)).unsqueeze(0)
+
+
+def scale_inertia_by_mass_ratio(
+    simulator: Any, body_ids: torch.Tensor, mass_before: torch.Tensor, *, min_mass: float = 1e-6
+) -> None:
+    """Scale ``body_inertia`` rows for ``body_ids`` by each body's CURRENT/``mass_before`` ratio.
+
+    The MuJoCo half of the cross-backend ``recompute_inertia`` contract: after a mass write, multiply
+    each body's diagonal inertia (``body_inertia`` is ``[nbody, 3]`` principal moments) by the factor
+    its mass changed by, so a uniform-density mass change scales inertia consistently with the Isaac
+    backends. Multiplicative => commutes with a separate inertia-shape DR term (order-independent).
+
+    ``mass_before`` is the ``[num_worlds, len(body_ids)]`` mass snapshot taken BEFORE the mass write.
+    """
+    mass_now = _field_view(simulator, "body_mass")[:, body_ids]  # [num_worlds, n_body]
+    ratio = (mass_now / mass_before.clamp(min=min_mass)).to(torch.float64)  # body_inertia is float64-backed
+    inertia = _field_view(simulator, "body_inertia")  # [num_worlds, nbody, 3]
+    inertia[:, body_ids, :] *= ratio.to(inertia.dtype).unsqueeze(-1)
+
+
 def randomize_field(
     simulator: Any,
     field: str,
-    ranges: tuple[float, float] | dict[int, tuple[float, float]],
+    ranges: DistributionLike | dict[int, DistributionLike],
+    sampler: TermSampler,
     env_ids: torch.Tensor | None = None,
     entity_ids: torch.Tensor | None = None,
     entity_names: list[str] | None = None,
     entity_type: str | None = None,
-    distribution: Literal["uniform", "log_uniform", "gaussian"] = "uniform",
     operation: Literal["add", "scale", "abs"] = "abs",
-):
-    """Unified model randomization function for MuJoCo Warp.
+    axis_base: int = 0,
+    num_buckets: int | None = None,
+) -> None:
+    """Unified model randomization for the MuJoCo backends (WarpBackend GPU + ClassicBackend CPU).
 
-    Randomizes physics parameters in the MuJoCo model for specified environments
-    and entities. Supports vectorized operations for efficient GPU execution.
+    Randomizes physics parameters in the MuJoCo model for specified environments and entities.
+    On the WarpBackend this is vectorized across the per-world-expanded model via the
+    WarpBridge; on the single-env ClassicBackend it writes the one ``mujoco.MjModel`` field
+    directly (one sample — there is only one environment). The indexing/sampling logic is
+    shared: the classic field is wrapped as a ``[1, ...]`` view so the same code path applies.
 
     Parameters
     ----------
     simulator : Any
-        The simulator instance with backend.warp_model_bridge
+        The simulator instance (WarpBackend exposes backend.warp_model_bridge; ClassicBackend
+        exposes backend.model).
     field : str
         Model field name to randomize (e.g., 'body_mass', 'geom_friction', 'body_ipos')
     ranges : Union[Tuple[float, float], Dict[int, Tuple[float, float]]]
-        Range(s) for randomization. Can be:
-        - Single tuple (min, max) for scalar fields or all axes
+        Range(s) for randomization. Each value is a ``[lo, hi]`` pair or a
+        ``{kind, low, high, mean, std}`` spec dict. Can be:
+        - Single range for scalar fields or all axes
         - Dict mapping axis indices to ranges for vector fields
+    sampler : TermSampler
+        Bound keyed sampler (from the randomization manager). Supplies the draws so the result is
+        reproducible per (term, env, episode); entity ids key per-entity independence.
+    axis_base : int
+        Offset added to each axis's keying coordinate. Lets a term that calls ``randomize_field``
+        more than once (e.g. mass link-scale then base-add) keep those calls on separate streams.
     env_ids : Optional[torch.Tensor]
         Environment IDs to randomize (default: all environments)
     entity_ids : Optional[torch.Tensor]
@@ -179,10 +234,16 @@ def randomize_field(
     entity_type : Optional[str]
         Type of entity for name resolution (e.g., 'body', 'geom')
         Required if entity_names is provided, otherwise inferred from field
-    distribution : Literal["uniform", "log_uniform", "gaussian"]
-        Distribution to sample from (default: "uniform")
     operation : Literal["add", "scale", "abs"]
         Operation to apply: add to current, scale current, or set absolute value
+    num_buckets : Optional[int]
+        Quantization knob mirroring the PhysX backends' material bucketing, for a config that wants
+        the SAME staircase discretization on MuJoCo. ``None`` (default): draw continuously — MuJoCo
+        writes the model field directly and has no per-scene material cap, so continuous is the true
+        marginal. An int: quantize each axis's draw onto ``num_buckets`` stratified quantile values of
+        its distribution (a shared per-axis table, keyed-shuffled, then each (env, entity) picks a
+        bucket) — the same n-atom staircase the IsaacSim material writer produces. Only the VALUE set
+        is discretized; per-entity granularity is unchanged. Applies to any field/operation.
 
     Raises
     ------
@@ -227,7 +288,8 @@ def randomize_field(
     # -----------------------------------------------------------
     # 1. Retrieve the Field and Determine Shapes
     # -----------------------------------------------------------
-    model_field = getattr(simulator.backend.warp_model_bridge, field)
+    is_warp = hasattr(simulator.backend, "warp_model_bridge")
+    model_field = _field_view(simulator, field)
     full_shape = model_field.shape
 
     ndim = len(full_shape)
@@ -237,10 +299,10 @@ def randomize_field(
     # -----------------------------------------------------------
     # 1.5. Validate Field Expansion
     # -----------------------------------------------------------
-    # Check if field has been explicitly expanded via expand_model_fields()
-    # when there are multiple environments
+    # Per-env expansion (and its validation) only applies to the WarpBackend with >1 env. The
+    # single-env ClassicBackend writes the model field in place — no expansion needed.
     num_envs = simulator.num_envs
-    if num_envs > 1:
+    if is_warp and num_envs > 1:
         mjw_model = simulator.backend.mjw_model
         expanded_fields: set[str] = getattr(mjw_model, "_expanded_fields", set())
 
@@ -265,26 +327,31 @@ def randomize_field(
         entity_ids = entity_ids.to(device, dtype=torch.long)
 
     # -- Target Axes & Ranges --
+    # Keep the raw per-axis ranges (each a [lo, hi] pair OR a {kind/low/high/mean/std} spec dict)
+    # rather than flattening to a float tensor, so an explicit-(mean,std) gaussian survives to the
+    # sampler. ``ranges`` itself may be a dict KEYED BY AXIS INDEX (int -> range) for a vector field;
+    # disambiguate that from a single spec-dict range by inspecting the keys.
     target_axes: torch.Tensor | None = None
+    is_axis_map = isinstance(ranges, dict) and len(ranges) > 0 and all(isinstance(k, int) for k in ranges)
+    if isinstance(ranges, dict) and len(ranges) == 0:
+        raise ValueError("randomize_field: `ranges` is an empty dict; pass at least one axis -> range.")
 
+    range_leaves: list[DistributionLike]
     if ndim == 3:
         # Vector field
-        if isinstance(ranges, dict):
-            axes_list = sorted(ranges.keys())
+        if is_axis_map:
+            axis_map = cast("dict[int, DistributionLike]", ranges)
+            axes_list = sorted(axis_map.keys())
             target_axes = torch.tensor(axes_list, device=device, dtype=torch.long)
-            range_vals = [ranges[ax] for ax in axes_list]
+            range_leaves = [axis_map[ax] for ax in axes_list]
         else:
             target_axes = torch.arange(full_shape[2], device=device, dtype=torch.long)
-            range_vals = [ranges] * full_shape[2]
-
-        axis_ranges = torch.tensor(range_vals, device=device, dtype=torch.float32)
-
+            range_leaves = [cast("DistributionLike", ranges)] * full_shape[2]
     else:
         # Scalar field
-        if isinstance(ranges, dict):
+        if is_axis_map:
             raise ValueError("Cannot specify axis dict for a scalar (2D) field.")
-        target_axes = None
-        axis_ranges = torch.tensor([ranges], device=device, dtype=torch.float32)
+        range_leaves = [cast("DistributionLike", ranges)]
 
     # -----------------------------------------------------------
     # 3. Create Broadcasting Views
@@ -302,33 +369,44 @@ def randomize_field(
     # -----------------------------------------------------------
     # 4. Generate Random Values
     # -----------------------------------------------------------
-    n_e = len(env_ids)
-    n_n = len(entity_ids)
-    n_a = len(target_axes) if target_axes is not None else 1
-
-    lo = axis_ranges[:, 0].view(1, 1, -1)
-    hi = axis_ranges[:, 1].view(1, 1, -1)
-    shape = (n_e, n_n, n_a)
-
-    if distribution == "uniform":
-        rv = torch.rand(shape, device=device)
-        random_values = lo + (hi - lo) * rv
-
-    elif distribution == "log_uniform":
-        log_lo = torch.log(lo)
-        log_hi = torch.log(hi)
-        rv = torch.rand(shape, device=device)
-        random_values = torch.exp(log_lo + (log_hi - log_lo) * rv)
-
-    elif distribution == "gaussian":
-        mean = 0.5 * (lo + hi)
-        std = (hi - lo) / 6.0
-        random_values = torch.randn(shape, device=device) * std + mean
+    # Sample each axis through the bound TermSampler so a MuJoCo config means exactly what it does on
+    # every other backend AND is reproducible per (term, env, episode). Entity ids are the stable MuJoCo
+    # indices (body/geom/dof), passed as a ``[1, n_n]`` coord so a per-entity draw lands on the trailing
+    # dimension and survives iteration-order changes; ``axis_base + k`` is the int STREAM coord keeping
+    # the K axis leaves on independent streams. Validation (log_uniform positivity, high>=low) fires at
+    # spec construction, raising a clean error instead of silently writing NaN. Stack the per-axis draws
+    # back into the (n_e, n_n, n_a) layout the indexer expects.
+    if num_buckets is None:
+        per_axis = [
+            sampler.draw(
+                leaf, env_ids=env_ids, coords=(axis_base + k, entity_ids[None, :]), device=device
+            )  # (n_e, n_n)
+            for k, leaf in enumerate(range_leaves)
+        ]
     else:
-        raise ValueError(f"Unknown distribution: {distribution}")
+        # Bucketed: quantize each axis onto num_buckets stratified quantile values (mirrors the PhysX
+        # material writer). Fill a per-axis bucket table with the spec's quantiles, shuffle it with a
+        # KEYED permutation (distinct stream coord axis_base + k so axes are not rank-aligned), then let
+        # each (env, entity) pick a bucket via the keyed draw_int. Per-entity granularity is preserved —
+        # only the VALUE set is discretized, matching IsaacSim's staircase.
+        per_axis = []
+        for k, leaf in enumerate(range_leaves):
+            column = quantiles(DistributionSpec.parse(leaf), num_buckets, device)[
+                sampler.permute(num_buckets, (axis_base + k,))
+            ]
+            bucket_ids = sampler.draw_int(
+                0, num_buckets - 1, env_ids=env_ids, coords=(axis_base + k, entity_ids[None, :])
+            )  # (n_e, n_n)
+            per_axis.append(column[bucket_ids])
+    random_values = torch.stack(per_axis, dim=-1)  # (n_e, n_n, n_a)
 
     if target_axes is None:
         random_values = random_values.squeeze(-1)
+
+    # Match the destination dtype: the WarpBridge fields are float32, but the ClassicBackend's
+    # fields are views of float64 numpy arrays — an "abs" assignment of float32 into a float64
+    # destination raises a dtype-mismatch in torch's index_put. Casting here is a no-op on Warp.
+    random_values = random_values.to(model_field.dtype)
 
     # -----------------------------------------------------------
     # 5. Apply Operation

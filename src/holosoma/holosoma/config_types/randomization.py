@@ -7,6 +7,21 @@ from typing import Any
 
 from pydantic.dataclasses import dataclass
 
+from holosoma.config_types.distribution import DistributionLike
+
+
+@dataclass(frozen=True)
+class BaseComRange:
+    """Per-axis CoM-offset ranges for ``randomize_base_com_startup`` (added to the torso CoM, metres).
+
+    Each axis is a ``[lo, hi]`` pair (uniform), spec dict, or :class:`DistributionSpec`. Offsets
+    are typically signed and small, e.g. ``BaseComRange(x=[-0.025, 0.025], y=[-0.05, 0.05], z=[-0.05, 0.05])``.
+    """
+
+    x: DistributionLike = (0.0, 0.0)
+    y: DistributionLike = (0.0, 0.0)
+    z: DistributionLike = (0.0, 0.0)
+
 
 @dataclass(frozen=True)
 class RandomizationTermCfg:

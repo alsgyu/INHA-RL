@@ -27,6 +27,8 @@ robot_state_dr_at_setup = {
     ),
 }
 
+# IsaacSim-only object physics DR (the robot's RobotConfig.object). Randomizes the spawned object's
+# material, mass, and inertia through the same keyed sampler the robot terms use.
 object_state_dr_at_setup = {
     "randomize_object_rigid_body_material_startup": RandomizationTermCfg(
         func="holosoma.managers.randomization.terms.locomotion:randomize_object_rigid_body_material_startup",
@@ -46,15 +48,10 @@ object_state_dr_at_setup = {
         func="holosoma.managers.randomization.terms.locomotion:randomize_object_rigid_body_inertia_startup",
         params={
             "inertia_distribution_params_dict": {
-                # In beyondmimic, only Ixx is randomized, which is probably a bug instead of a feature.
-                # Here, we want to reproduce their work. User should feel free to randomize all terms.
+                # Only Ixx is randomized, reproducing beyondmimic. Unnamed components default to
+                # the identity scale [1.0, 1.0]; name more to randomize them.
                 "Ixx": [0.5, 1.5],
-                "Iyy": [1.0, 1.0],
-                "Izz": [1.0, 1.0],
-                "Ixy": [1.0, 1.0],
-                "Iyz": [1.0, 1.0],
-                "Ixz": [1.0, 1.0],
-            }
+            },
         },
     ),
 }
@@ -128,16 +125,9 @@ g1_29dof_wbt_randomization = RandomizationManagerCfg(
 )
 
 g1_29dof_wbt_randomization_w_object = RandomizationManagerCfg(
-    setup_terms={
-        **base_setup_terms,
-        **object_state_dr_at_setup,
-    },
-    reset_terms={
-        **base_reset_terms,
-    },
-    step_terms={
-        **base_step_terms,
-    },
+    setup_terms={**base_setup_terms, **object_state_dr_at_setup},
+    reset_terms={**base_reset_terms},
+    step_terms={**base_step_terms},
 )
 
 __all__ = ["g1_29dof_wbt_randomization", "g1_29dof_wbt_randomization_w_object"]

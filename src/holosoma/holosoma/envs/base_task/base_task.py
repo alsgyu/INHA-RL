@@ -99,6 +99,13 @@ class BaseTask:
         self.dim_actions = robot_config.actions_dim
         self.device = device
 
+        # Domain-randomization keying state (read by the randomization manager to bind TermSamplers).
+        # base_seed makes every DR draw value = f(seed, term, env, episode); the per-env episode
+        # counter (incremented on reset, BEFORE the reset DR runs) keys async per-env resets. Set here
+        # (before any manager is constructed) so setup-stage DR already sees them.
+        self.dr_base_seed = training_config.seed
+        self.dr_episode_count = torch.zeros(self.num_envs, dtype=torch.long, device="cpu")
+
         self.terrain_manager = TerrainManager(terrain_config, self, device)
         self.simulator: BaseSimulator = SimulatorClass(
             tyro_config=full_sim_config, terrain_manager=self.terrain_manager, device=device
@@ -248,6 +255,9 @@ class BaseTask:
 
         # Reset all managers AFTER state changes
         if self.randomization_manager is not None:
+            # Advance the per-env episode counter BEFORE reset DR draws, so each env's k-th reset is
+            # keyed by episode == k (independent of when, or alongside whom, it reset).
+            self.dr_episode_count[env_ids.to("cpu")] += 1
             self.randomization_manager.reset(env_ids)
 
         if self.action_manager is not None:
