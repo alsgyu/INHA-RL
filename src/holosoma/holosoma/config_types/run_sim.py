@@ -15,10 +15,12 @@ from typing_extensions import Annotated
 
 import holosoma.config_values.robot
 import holosoma.config_values.run_sim
+import holosoma.config_values.scene
 import holosoma.config_values.terrain
 from holosoma.config_types.experiment import TrainingConfig
 from holosoma.config_types.logger import DisabledLoggerConfig, LoggerConfig
 from holosoma.config_types.robot import RobotConfig
+from holosoma.config_types.scene import SceneConfig
 from holosoma.config_types.simulator import SimulatorConfig
 from holosoma.config_types.terrain import TerrainManagerCfg
 from holosoma.config_types.video import VideoConfig
@@ -63,6 +65,11 @@ class RunSimConfig:
         TerrainManagerCfg,
         tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.terrain.DEFAULTS)),
     ] = holosoma.config_values.terrain.terrain_locomotion_plane
+
+    scene: Annotated[
+        SceneConfig,
+        tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.scene.DEFAULTS)),
+    ] = holosoma.config_values.scene.empty
 
     # Minimal configs needed for FullSimConfig
     training: TrainingConfig = field(default_factory=default_training_config)

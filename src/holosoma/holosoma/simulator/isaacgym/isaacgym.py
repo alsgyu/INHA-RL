@@ -14,10 +14,15 @@ from torch import Tensor
 from holosoma.config_types.full_sim import FullSimConfig
 from holosoma.managers.terrain import TerrainManager
 from holosoma.simulator.base_simulator.base_simulator import BaseSimulator
-from holosoma.simulator.isaacgym.physics import apply_mass_from_config, apply_rigid_shape_properties
+from holosoma.simulator.isaacgym.physics import (
+    apply_mass_from_config,
+    apply_physx_asset_options,
+    apply_rigid_shape_properties,
+)
 from holosoma.simulator.isaacgym.urdf_scene_loader import URDFSceneLoader
 from holosoma.simulator.isaacgym.video_recorder import IsaacGymVideoRecorder
 from holosoma.simulator.shared.object_registry import ObjectType
+from holosoma.simulator.shared.root_states_view import UnifiedRootStatesView
 from holosoma.simulator.shared.terrain import Terrain
 from holosoma.simulator.shared.virtual_gantry import (
     GantryCommand,
@@ -84,6 +89,9 @@ class IsaacGym(BaseSimulator):
     def __init__(self, tyro_config: FullSimConfig, terrain_manager: TerrainManager, device: str):
         super().__init__(tyro_config, terrain_manager, device)
 
+        # Gym viewer handle; created by setup_viewer() (skipped when headless), so it stays
+        # None on headless runs and render() must tolerate that.
+        self.viewer = None
         self.visualize_viewer = False
 
         # For force visualization
@@ -176,7 +184,7 @@ class IsaacGym(BaseSimulator):
         gymutil.parse_sim_config(dataclasses.asdict(self.simulator_config.sim), sim_params)
         return sim_params
 
-    def get_supported_scene_formats(self):
+    def get_supported_scene_formats(self) -> list[str]:
         """See base class.
 
         IsaacGym-specific notes:
@@ -257,21 +265,18 @@ class IsaacGym(BaseSimulator):
         """
         Load scene files using the new unified configuration structure
         """
-        if not hasattr(self.simulator_config, "scene") or self.simulator_config.scene is None:
+        if self.scene_config is None:
             return
 
-        scene_config = self.simulator_config.scene
-
-        # Check if we have scene files to load
-        if not hasattr(scene_config, "scene_files") or not scene_config.scene_files:
-            logger.info("No scene files configured for loading")
+        if not self.scene_config.scene_files and not self.scene_config.rigid_objects:
+            logger.info("No scene files or rigid objects configured for loading")
             return
 
         # Initialize URDF scene loader
         if not hasattr(self, "urdf_scene_loader"):
             self.urdf_scene_loader = URDFSceneLoader(self.gym, self.sim, self.device)
 
-        assets, initial_states = self.urdf_scene_loader.load_scene_files(scene_config)
+        assets, _ = self.urdf_scene_loader.load_scene_files(self.scene_config)
         self.object_assets.update(assets)
         logger.info(f"IsaacGym: Loaded {len(assets)} scene objects from scene files")
 
@@ -285,17 +290,13 @@ class IsaacGym(BaseSimulator):
         def set_value_if_not_none(prev_value, new_value):
             return new_value if new_value is not None else prev_value
 
+        # Asset-import knobs that stay on RobotAssetConfig (no PhysicsConfig analogue).
         asset_config_options = [
             "default_dof_drive_mode",
             "collapse_fixed_joints",
             "replace_cylinder_with_capsule",
             "flip_visual_attachments",
             "fix_base_link",
-            "density",
-            "angular_damping",
-            "linear_damping",
-            "max_angular_velocity",
-            "max_linear_velocity",
             "armature",
             "thickness",
             "disable_gravity",
@@ -303,6 +304,11 @@ class IsaacGym(BaseSimulator):
         for option in asset_config_options:
             option_value = set_value_if_not_none(getattr(asset_options, option), getattr(asset_cfg, option))
             setattr(asset_options, option, option_value)
+
+        # density + the PhysX solver knobs (damping / velocity caps) come from the shared link_physics
+        # via the same helper the object path uses (physics.apply_physx_asset_options), so a robot link
+        # and a scene object map the physx/density load-time options identically. None keeps defaults.
+        apply_physx_asset_options(asset_options, asset_cfg.link_physics)
 
         self.robot_asset = self.gym.load_asset(self.sim, gym_asset_root, gym_asset_file, asset_options)
         return self.robot_asset
@@ -368,9 +374,10 @@ class IsaacGym(BaseSimulator):
         self.commands = torch.zeros(self.num_envs, 9, device=self.device, dtype=torch.float32)
         logger.info(f"Initialized command system with shape: {self.commands.shape}")
 
-        # After building, register objects and setup mappings/indexes
-        if self.has_scene_objects:
-            self._register_objects()
+        # After building, register objects and setup mappings/indexes. Unconditional (like
+        # MuJoCo/IsaacSim): a robot-only scene still registers "robot" so the unified
+        # get/set_actor_states API works on every backend.
+        self._register_objects()
 
         # Invoke startup randomization for domain randomization
         # This must happen AFTER all envs are created but BEFORE prepare_sim()
@@ -420,6 +427,15 @@ class IsaacGym(BaseSimulator):
         if self.simulator_config.sim.physx.enable_dof_force_sensors:
             self.gym.enable_actor_dof_force_sensors(env_ptr, robot_handle)
         self._body_list = self.gym.get_actor_rigid_body_names(env_ptr, robot_handle)
+
+        # Apply the robot's shared link_physics friction/restitution/compliance to all robot shapes
+        # via the apply_rigid_shape_properties seam objects use (isaacgym sub-config; ignores the
+        # rest), uniform across shapes (body_names='.*'). This is the spawn-time baseline; if friction
+        # DR is enabled it composes over this at startup (operation='abs'). density + the PhysX damping
+        # /velocity knobs already landed at asset load (link_physics.density / .physx). Whole-robot
+        # mass is not applied here (it would clobber every link); per-link mass is a deferred feature.
+        if self.robot_config.asset.link_physics is not None:
+            apply_rigid_shape_properties(self.gym, env_ptr, robot_handle, self.robot_config.asset.link_physics, "robot")
 
         dof_props_asset = self.gym.get_asset_dof_properties(self.robot_asset)
         if self.robot_config.apply_dof_armature_in_isaacgym:
@@ -603,8 +619,11 @@ class IsaacGym(BaseSimulator):
         self.jacobian = gymtorch.wrap_tensor(_jacobian)
         self.massmatrix = gymtorch.wrap_tensor(_massmatrix)
 
-        bodies_per_env = self._rigid_body_state.shape[0] // self.num_envs
-        self._rigid_body_state_reshaped = self._rigid_body_state.view(self.num_envs, bodies_per_env, 13)
+        # Full per-env rigid-body width (robot + any scene bodies); the robot occupies
+        # the first num_bodies rows. Stored so force application (e.g. the virtual gantry)
+        # can size tensors to the real buffer width, not just the robot's body count.
+        self.bodies_per_env = self._rigid_body_state.shape[0] // self.num_envs
+        self._rigid_body_state_reshaped = self._rigid_body_state.view(self.num_envs, self.bodies_per_env, 13)
         self._rigid_body_pos = self._rigid_body_state_reshaped[..., : self.num_bodies, 0:3]
         self._rigid_body_rot = self._rigid_body_state_reshaped[..., : self.num_bodies, 3:7]
         self._rigid_body_vel = self._rigid_body_state_reshaped[..., : self.num_bodies, 7:10]
@@ -616,12 +635,14 @@ class IsaacGym(BaseSimulator):
 
         self.refresh_sim_tensors()
 
-        self.all_root_states: Tensor = gymtorch.wrap_tensor(actor_root_state)
+        # _root_states_raw is the raw gym buffer passed to the C-API (gymtorch.unwrap_tensor)
+        # and viewed by robot_root_states. all_root_states is the unified all-actors view.
+        self._root_states_raw: Tensor = gymtorch.wrap_tensor(actor_root_state)
+        self.all_root_states = UnifiedRootStatesView(self)  # type: ignore[assignment]
         num_actors = self._get_num_actors_per_env()
 
-        # Use baseline tensor view approach to maintain memory sharing
-        # This ensures robot_root_states shares the same memory as all_root_states
-        self.robot_root_states = self.all_root_states.view(self.num_envs, num_actors, actor_root_state.shape[-1])[
+        # robot_root_states shares memory with the raw root-state buffer.
+        self.robot_root_states = self._root_states_raw.view(self.num_envs, num_actors, actor_root_state.shape[-1])[
             ..., 0, :
         ]
 
@@ -630,9 +651,13 @@ class IsaacGym(BaseSimulator):
         self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
         self.dof_pos = self.dof_state.view(self.num_envs, -1, 2)[..., 0]
         self.dof_vel = self.dof_state.view(self.num_envs, -1, 2)[..., 1]
-        self.contact_forces = gymtorch.wrap_tensor(net_contact_forces).view(
-            self.num_envs, -1, 3
-        )  # shape: num_envs, num_bodies, xyz axis
+        # Slice to robot bodies only (the first num_bodies rows), matching _rigid_body_*
+        # above and contact_forces_history below. The net-contact tensor spans all actor
+        # bodies (robot + any spawned objects), so an unsliced view would be wider than
+        # the robot-only history buffer.
+        self.contact_forces = gymtorch.wrap_tensor(net_contact_forces).view(self.num_envs, -1, 3)[
+            :, : self.num_bodies, :
+        ]  # shape: num_envs, num_bodies, xyz axis
         # To be compatible with isaacsim, we add the contact forces history
         self.contact_forces_history = torch.zeros(
             self.num_envs, self.simulator_config.contact_sensor_history_length, self.num_bodies, 3, device=self.device
@@ -647,6 +672,16 @@ class IsaacGym(BaseSimulator):
             self.base_linear_acc = torch.zeros(self.num_envs, 3, device=self.device)
             self.prev_base_lin_vel = torch.zeros(self.num_envs, 3, device=self.device)
 
+        # Apply each free object's configured initial velocity now that the root-state tensor
+        # is acquired. Pose is already set at spawn (create_actor), so re-writing it (merged
+        # with the velocity) is a cheap round-trip; set_actor_states wants the full 13-vector.
+        free_names = self.object_registry.get_names_by_type(ObjectType.INDIVIDUAL)
+        if free_names and self.num_envs > 0:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+            poses = self.get_actor_initial_poses(free_names, env_ids)  # [n*num_envs, 7]
+            vels = self.get_actor_initial_velocities(free_names, env_ids)  # [n*num_envs, 6]
+            self.set_actor_states(free_names, env_ids, torch.cat([poses, vels], dim=1))
+
     def refresh_sim_tensors(self):
         self.gym.refresh_dof_state_tensor(self.sim)
         self.gym.refresh_actor_root_state_tensor(self.sim)
@@ -659,12 +694,12 @@ class IsaacGym(BaseSimulator):
         self.gym.refresh_jacobian_tensors(self.sim)
         self.gym.refresh_mass_matrix_tensors(self.sim)
 
-    def clear_contact_forces_history(self, env_id):
-        if len(env_id) > 0:
-            self.contact_forces_history[env_id, :, :, :] = 0.0
+    def clear_contact_forces_history(self, env_ids: torch.Tensor) -> None:
+        if len(env_ids) > 0:
+            self.contact_forces_history[env_ids, :, :, :] = 0.0
 
     def _get_num_actors_per_env(self):
-        return self.all_root_states.shape[0] // self.num_envs
+        return self._root_states_raw.shape[0] // self.num_envs
         # num_actors = (
         #     self.root_states.shape[0] - self.total_num_objects
         # ) // self.num_envs
@@ -792,6 +827,12 @@ class IsaacGym(BaseSimulator):
         self.gym.viewer_camera_look_at(self.viewer, None, cam_pos, cam_target)
 
     def render(self, sync_frame_time=True):
+        # No viewer in headless mode (setup_viewer() is skipped), so every viewer call below
+        # would dereference a None handle. Skipping render() drops only the interactive
+        # window and its debug overlay; the gantry's forces are applied in
+        # simulate_at_each_physics_step(), independent of rendering.
+        if self.viewer is None:
+            return
         # check for window closed
         if self.gym.query_viewer_has_closed(self.viewer):
             sys.exit()
@@ -985,54 +1026,71 @@ class IsaacGym(BaseSimulator):
         # IsaacGym applies state changes immediately, so no pending updates to write
 
     def _register_objects(self):
-        """Register ALL objects with unified registry for IsaacGym using pre-calculated world coordinates."""
-
-        # Convert gym_object_indices lists to tensors
+        """Finalize per-actor gym indices, then register via the shared registry path."""
+        # Convert gym_object_indices lists to tensors (IsaacGym-specific index map).
         for object_name in self.gym_object_indices:
             indices_list = self.gym_object_indices[object_name]
             self.gym_object_indices[object_name] = torch.tensor(indices_list, device=self.device, dtype=torch.long)
             logger.debug(f"Finalized gym_object_indices for '{object_name}': {self.gym_object_indices[object_name]}")
 
-        # gym_object_indices is already created and finalized, just register with ObjectRegistry
-        # The actual indexing will be done through gym_object_indices
-        robot_count = 1
-        scene_count = 0
-        individual_count = len(self.object_handles)
-        self.object_registry.setup_ranges(self.num_envs, robot_count, scene_count, individual_count)
+        self._register_scene_assets()
 
-        # Register robot with pre-calculated init/default starting pose per env
-        pos = torch.tensor(self.robot_config.init_state["pos"], device=self.device, dtype=torch.float32)
-        rot = torch.tensor(self.robot_config.init_state["rot"], device=self.device, dtype=torch.float32)
-        base_pose = torch.cat([pos, rot])  # [7] - base pose without env_origins
+    @property
+    def scene_file_static_names(self) -> set[str]:
+        """Names of scene-file (1->N) bodies the URDF welds static (file-driven). Empty
+        when the scene has no files, so the loader may be absent; guard its presence."""
+        loader = getattr(self, "urdf_scene_loader", None)
+        return set(loader.scene_file_static_names) if loader else set()
 
-        robot_init_poses = torch.zeros(self.num_envs, 7, device=self.device, dtype=torch.float32)
-        for env_id in range(self.num_envs):
-            robot_init_poses[env_id] = base_pose.clone()
-            # Do NOT add env origins to robot because they're currently baked into create_actor()
-            # robot_init_poses[env_id, :3] += self.env_origins[env_id]  # Add env_origin to position
+    def _collect_spawned_actors(self):
+        """Describe each spawned actor's WORLD initial pose for the registry. IsaacGym's live
+        root-state tensor (and thus get_actor_states) is world-frame (env_origins are baked in
+        at create_actor() time), so the registry stores WORLD poses too, matching
+        MuJoCo/IsaacSim's "world coordinates, env_origins already applied". This adds env_origins
+        to each object's per-env position here, and set_actor_states writes its (world) input
+        straight through with NO origin re-add. Object poses come from the loader (a scene file
+        expands 1->N into object_handles); a body is static per its standalone ``fixed`` flag or
+        the file's joint structure (scene_file_static_names), the rest are free. The robot's
+        config pose is registered WORLD too (origins added), so ``get_actor_initial_poses`` is
+        world-frame for every actor including "robot".
+        """
+        pos = torch.tensor(self.robot_config.init_state.pos, device=self.device, dtype=torch.float32)
+        rot = torch.tensor(self.robot_config.init_state.rot, device=self.device, dtype=torch.float32)
+        robot_pose = torch.cat([pos, rot]).unsqueeze(0).expand(self.num_envs, 7).clone()
+        robot_pose[:, :3] += self.env_origins
 
-        self.object_registry.register_object(
-            name="robot", object_type=ObjectType.ROBOT, position_in_type=0, initial_poses=robot_init_poses
-        )
-
-        # Register scene objects with pre-calculated init/default starting pose per env
-        for position, obj_name in enumerate(self.object_handles.keys()):
-            base_pose = self.urdf_scene_loader.get_initial_pose(obj_name)[:7]  # [x,y,z,qx,qy,qz,qw]
-            base_pose_tensor = torch.tensor(base_pose, device=self.device, dtype=torch.float32)
-
-            object_init_poses = torch.zeros(self.num_envs, 7, device=self.device, dtype=torch.float32)
-            for env_id in range(self.num_envs):
-                object_init_poses[env_id] = base_pose_tensor.clone()
-                # object_init_poses[env_id, :3] += self.env_origins[env_id]
-
-            self.object_registry.register_object(
-                name=obj_name,
-                object_type=ObjectType.INDIVIDUAL,
-                position_in_type=position,
-                initial_poses=object_init_poses,
+        static_names = {
+            name for name, obj in self.scene_config.rigid_objects.items() if obj.fixed
+        } | self.scene_file_static_names
+        # object_handles is a superset of scene_config.rigid_objects: it also holds scene-file
+        # (1->N) bodies, which have no standalone config. Map name -> config so each spawned
+        # handle can look up its configured velocity (None for scene-file bodies; zero for
+        # fixed bodies, enforced by RigidObjectConfig).
+        cfg_by_name = dict(self.scene_config.rigid_objects)
+        items = []
+        for obj_name in self.object_handles:
+            base_pose = (
+                torch.tensor(
+                    self.urdf_scene_loader.get_initial_pose(obj_name)[:7], device=self.device, dtype=torch.float32
+                )
+                .unsqueeze(0)
+                .expand(self.num_envs, 7)
+                .clone()
             )
-
-        self.object_registry.finalize_registration()
+            # Register WORLD poses: add each env's origin to the position columns (orientation is
+            # origin-invariant). This is what makes get_actor_initial_poses return world coords and
+            # lets set_actor_states accept world input directly, uniform across all backends.
+            base_pose[:, :3] += self.env_origins
+            obj = cfg_by_name.get(obj_name)
+            velocity = (
+                torch.tensor([*obj.linear_velocity, *obj.angular_velocity], device=self.device, dtype=torch.float32)
+                .unsqueeze(0)
+                .expand(self.num_envs, 6)
+                if obj is not None
+                else None
+            )
+            items.append((obj_name, obj_name in static_names, base_pose, velocity))
+        return robot_pose, items
 
     def set_actor_root_state_tensor(self, set_env_ids, root_states):
         """Sets the **robot** state -- backwards compatible method
@@ -1119,39 +1177,28 @@ class IsaacGym(BaseSimulator):
         env_ids : EnvIds
             Environment IDs to update
         states : ActorStates
-            New actor states [num_objects * num_envs, 13]
+            New actor states [len(names) * num_envs, 13], **WORLD frame** (pass world coords
+            directly, env_origins are NOT re-added).
         write_updates : bool
             Ignored for IsaacGym, writes are always immediate
 
+        Notes
+        -----
+        ``names`` may include ``"robot"``: the robot's live root state is world-frame
+        (origins baked in at create_actor), so a world-frame robot state writes straight
+        through like an object.
         """
         if len(names) == 0 or len(env_ids) == 0:
             return
 
-        if not self.has_scene_objects:
-            raise ValueError("Scene has zero objects")
-
-        if "robot" in names:
-            raise NotImplementedError(
-                "Cannot set 'robot' state, missing fix for handling 'env_origins'."
-                " Use 'set_actor_root_state_tensor' for backwards compatibilty"
-            )
-
         actor_indices = self._get_gym_object_indices(names, env_ids)
 
-        # Keep environment origins logic since we are not (yet) using create_env lower/upper
-        num_actors = len(names)
-        num_envs = len(env_ids)
-        states_reshaped = states.view(num_envs, num_actors, 13)
-
-        # Apply env origins automatically. We shouldn't need this when we use lower/upper correctly.
-        # NOTE: applying env origin offsets breaks the robot because robot state has env origins baked
-        #       during setup. This is not the case for IsaacSim because of the AllRootStatesProxy mapper.
-        env_origins = self.env_origins[env_ids].unsqueeze(1).expand(-1, num_actors, -1)
-        states_reshaped[:, :, 0:3] += env_origins
-
-        # Apply to simulation -- both are required
-        self.all_root_states[actor_indices] = states_reshaped.view(-1, 13)
-        self._set_actor_root_state_tensor_by_index(actor_indices, states_reshaped.view(-1, 13))
+        # `states` is WORLD-frame and IsaacGym's root-state tensor is world-frame (origins baked
+        # in at create_actor), so write straight through with no env_origins re-add. `states` and
+        # `actor_indices` are both NAME-MAJOR / ENV-MINOR (all envs for names[0], then names[1],
+        # ...), aligned row-for-row, so a non-contiguous env_ids subset addresses exactly its rows.
+        self._root_states_raw[actor_indices] = states
+        self._set_actor_root_state_tensor_by_index(actor_indices, states)
 
     def get_actor_indices(self, names: str | ActorNames, env_ids: EnvIds | None = None) -> ActorIndices:
         """Get actor indices for specified objects across environments.
@@ -1171,14 +1218,12 @@ class IsaacGym(BaseSimulator):
         if isinstance(names, str):
             names = [names]
 
-        if len(names) == 0 or not env_ids:
-            return torch.empty(0, dtype=torch.long, device=self.device)
-
-        if not self.has_scene_objects:
-            raise ValueError("Scene has zero objects")
-
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self.device)
+
+        # NOTE: use len(), not truthiness; a tensor like tensor([0]) is falsy yet valid.
+        if len(names) == 0 or len(env_ids) == 0:
+            return torch.empty(0, dtype=torch.long, device=self.device)
 
         return self._get_gym_object_indices(names, env_ids)
 
@@ -1200,11 +1245,9 @@ class IsaacGym(BaseSimulator):
         if len(names) == 0 or len(env_ids) == 0:
             return torch.empty(0, 13, device=self.device)
 
-        if not self.has_scene_objects:
-            raise ValueError("Scene has zero objects")
-
         indices = self.get_actor_indices(names, env_ids)
-        return self.all_root_states[indices]
+        # Read the raw buffer directly (indexing all_root_states would route back here).
+        return self._root_states_raw[indices]
 
     def _get_gym_object_indices(self, objects: list[str], env_ids: torch.Tensor) -> torch.Tensor:
         """Get IsaacGym actor indices for objects across environments.
@@ -1271,6 +1314,20 @@ class IsaacGym(BaseSimulator):
         # Use ObjectRegistry tensor-based interface for fast lookup
         return self.object_registry.get_initial_poses_batch(names, env_ids)
 
+    def get_actor_initial_velocities(self, names: ActorNames, env_ids: EnvIds | None = None) -> torch.Tensor:
+        """Get initial velocities for actors (the sibling of get_actor_initial_poses).
+
+        Returns [len(names) * len(env_ids), 6] world-frame [vx,vy,vz,wx,wy,wz], same row order as
+        get_actor_initial_poses (so the two concatenate into the 13-vector set_actor_states wants).
+        """
+        if not names:
+            return torch.empty(0, 6, device=self.device, dtype=torch.float32)
+
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+
+        return self.object_registry.get_initial_velocities_batch(names, env_ids)
+
     def apply_physics_properties_to_actor(self, env_ptr: int, actor_handle: int, object_name: str) -> None:
         """Apply physics properties to an actor.
 
@@ -1295,8 +1352,10 @@ class IsaacGym(BaseSimulator):
         if not self.urdf_scene_loader.object_physics_configs:
             return
 
+        # object_physics_configs holds live PhysicsConfig objects (always truthy), so test
+        # for absence with `is None`, not falsiness.
         physics_config = self.urdf_scene_loader.object_physics_configs.get(object_name, None)
-        if not physics_config:
+        if physics_config is None:
             return
 
         apply_rigid_shape_properties(self.gym, env_ptr, actor_handle, physics_config, object_name)
@@ -1309,10 +1368,31 @@ class IsaacGym(BaseSimulator):
         # Convert indices to int32 as required by IsaacGym
         actor_indices_int32 = actor_indices.to(torch.int32)
 
-        # Pass the full tensor to IsaacGym - it will only update the specified indices
+        # Pass the full raw tensor to IsaacGym - it will only update the specified indices
         self.gym.set_actor_root_state_tensor_indexed(
             self.sim,
-            gymtorch.unwrap_tensor(self.all_root_states),  # Full tensor
+            gymtorch.unwrap_tensor(self._root_states_raw),  # Full raw buffer
             gymtorch.unwrap_tensor(actor_indices_int32),
             len(actor_indices_int32),
         )
+
+    def get_actor_states_by_index(self, indices: ActorIndices) -> ActorStates:
+        """See base class.
+
+        The raw root-state buffer spans all actors in world frame, so indexing it returns the
+        13-vector state for any actor (robot or object).
+        """
+        if len(indices) == 0:
+            return torch.empty(0, 13, device=self.device)
+        return self._root_states_raw[indices]
+
+    def set_actor_states_by_index(self, indices: ActorIndices, states: ActorStates, write_updates: bool = True) -> None:
+        """See base class.
+
+        Writes into the raw world-frame buffer and flushes via the indexed gym API.
+        ``write_updates`` is ignored; IsaacGym writes are immediate.
+        """
+        if len(indices) == 0:
+            return
+        self._root_states_raw[indices] = states
+        self._set_actor_root_state_tensor_by_index(indices, states)

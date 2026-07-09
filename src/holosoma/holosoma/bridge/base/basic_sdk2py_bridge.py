@@ -6,6 +6,7 @@ import pygame
 from loguru import logger
 
 from holosoma.config_types.robot import RobotConfig
+from holosoma.utils.rotations import quat_rotate_inverse
 from holosoma.utils.safe_torch_import import torch
 
 
@@ -292,7 +293,12 @@ class BasicSdk2Bridge(ABC):
                 - acceleration: linear acceleration [ax, ay, az] (3 elements)
         """
         quat_holosoma = self.simulator.robot_root_states[0, 3:7]  # [x, y, z, w]
-        gyro = self.simulator.robot_root_states[0, 10:13]  # Angular velocity
+        # robot_root_states[:, 10:13] is WORLD-frame angular velocity on every backend (the
+        # unified contract). A physical IMU gyro reports angular velocity in the BODY frame,
+        # so rotate world -> body using the base orientation. This is backend-agnostic and
+        # keeps the gyro body-frame on MuJoCo, IsaacGym, and IsaacSim alike.
+        ang_vel_world = self.simulator.robot_root_states[0, 10:13]
+        gyro = quat_rotate_inverse(quat_holosoma.unsqueeze(0), ang_vel_world.unsqueeze(0), w_last=True).squeeze(0)
 
         if not hasattr(self.simulator, "base_linear_acc"):
             logger.warning(

@@ -14,6 +14,7 @@ from holosoma.managers.reward import RewardManager
 from holosoma.managers.termination import TerminationManager
 from holosoma.managers.terrain import TerrainManager
 from holosoma.simulator.base_simulator.base_simulator import BaseSimulator
+from holosoma.simulator.shared.object_registry import ObjectType
 from holosoma.utils.helpers import get_class
 from holosoma.utils.safe_torch_import import torch
 from holosoma.utils.torch_utils import to_torch
@@ -88,6 +89,7 @@ class BaseTask:
         full_sim_config = FullSimConfig(
             simulator=simulator_config.config,
             robot=robot_config,
+            scene=tyro_config.scene,
             training=training_config,
             logger=tyro_config.logger,
             experiment_dir=str(experiment_dir),
@@ -297,6 +299,7 @@ class BaseTask:
         self._reset_buffers_callback(env_ids, target_buf)
         self._reset_tasks_callback(env_ids)
         self._reset_robot_states_callback(env_ids, target_states)
+        self._reset_objects_callback(env_ids)
         self._fill_extras(env_ids)
 
     def render(self, sync_frame_time=True):
@@ -393,6 +396,28 @@ class BaseTask:
         Subclasses must implement this to place robots back into their initial configuration.
         """
         raise NotImplementedError("Subclasses must implement `_reset_robot_states_callback` to reset simulator states.")
+
+    def _reset_objects_callback(self, env_ids):
+        """Reset registered rigid objects to their initial pose and velocity.
+
+        Default implementation iterates the simulator's registered rigid objects and
+        writes each back to its configured initial pose (env_origins already applied) and
+        initial velocity, via the unified actor API, so objects do not accumulate drift
+        across episodes.
+
+        A subclass that manages objects itself (e.g. an object-tracking task that resets
+        objects from motion data) may override this. No-op for robot-only scenes.
+        """
+        object_names = self.simulator.object_registry.get_names_by_type(ObjectType.INDIVIDUAL)
+        if not object_names:
+            return
+
+        init_poses = self.simulator.get_actor_initial_poses(object_names, env_ids)  # [n*len(env_ids), 7]
+        init_vels = self.simulator.get_actor_initial_velocities(object_names, env_ids)  # [n*len(env_ids), 6]
+        states = torch.zeros(init_poses.shape[0], 13, device=self.device)
+        states[:, :7] = init_poses  # pose
+        states[:, 7:] = init_vels  # configured initial velocity
+        self.simulator.set_actor_states(object_names, env_ids, states)
 
     def _fill_extras(self, env_ids):
         """Populate per-episode extras after a reset."""

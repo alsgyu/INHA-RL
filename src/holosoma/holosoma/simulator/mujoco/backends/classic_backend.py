@@ -9,13 +9,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import mujoco
 import numpy as np
 import torch
 from loguru import logger
 
-import mujoco
-
-from .base import IMujocoBackend
+from .base import IMujocoBackend, holosoma_to_mj_quat, mj_to_holosoma_quat
 
 if TYPE_CHECKING:
     from holosoma.config_types.full_sim import FullSimConfig
@@ -98,16 +97,18 @@ class ClassicBackend(IMujocoBackend):
         """
         return
 
-    def refresh_sim_tensors(self, contact_history_tensor: torch.Tensor) -> None:
-        """Update contact forces using manual extraction.
+    def compute_contact_forces(self) -> torch.Tensor:
+        """Return net per-body contact forces for ALL model bodies (CPU extraction).
 
-        Extracts contact forces from MuJoCo's contact system using mj_contactForce,
-        accumulates them per body, and updates the contact history.
+        Extracts contact forces from MuJoCo's contact system using mj_contactForce
+        and accumulates them per body (Newton's 3rd law). Full-model-width
+        [1, model.nbody, 3]; the simulator gathers robot-only rows and rotates the
+        history. (Single environment for ClassicBackend.)
 
-        Parameters
-        ----------
-        contact_history_tensor : torch.Tensor
-            Contact force history buffer [num_envs, history_len, num_bodies, 3]
+        Returns
+        -------
+        torch.Tensor
+            Contact forces [1, model.nbody, 3].
         """
         # Reset force accumulator
         self._force_tensor.fill_(0.0)
@@ -135,10 +136,7 @@ class ClassicBackend(IMujocoBackend):
             if b2 < self.model.nbody:
                 self._force_tensor[0, b2] += force
 
-        # Update history: shift old values right, add current at position 0
-        contact_history_tensor[:] = torch.cat(
-            [self._force_tensor.clone().unsqueeze(1), contact_history_tensor[:, :-1]], dim=1
-        )
+        return self._force_tensor
 
     def create_root_view(self, addrs: dict) -> BaseMujocoView:
         """Create root state view using existing tensor_views.
@@ -223,21 +221,6 @@ class ClassicBackend(IMujocoBackend):
 
         return create_dof_acceleration_view(self.data.qacc, indices, 1, num_dof, self.device)
 
-    def create_force_view(self, num_bodies: int) -> torch.Tensor:
-        """Return pre-allocated contact force tensor.
-
-        Parameters
-        ----------
-        num_bodies : int
-            Number of bodies (for validation)
-
-        Returns
-        -------
-        torch.Tensor
-            Contact force tensor [1, num_bodies, 3]
-        """
-        return self._force_tensor
-
     def create_dof_state_view(self, dof_addrs: dict, num_dof: int) -> BaseMujocoView:
         """Create DOF state view using CPU numpy arrays.
 
@@ -321,54 +304,16 @@ class ClassicBackend(IMujocoBackend):
         )
 
     def set_root_state(self, env_ids: torch.Tensor, root_states: torch.Tensor, root_addrs: dict) -> None:
-        """Set robot root states using CPU numpy arrays.
+        """Set robot root states. The robot root is an actor freejoint, so this
+        delegates to set_actor_state at the robot's qpos/qvel addresses, then runs
+        mj_forward to update derived quantities.
 
-        Converts tensors to numpy, writes to MuJoCo data arrays,
-        and calls mj_forward to update derived quantities.
-
-        Parameters
-        ----------
-        env_ids : torch.Tensor
-            Environment IDs to update (must be single environment)
-        root_states : torch.Tensor
-            Root states [num_selected_envs, 13] in holosoma format:
-            [x, y, z, qx, qy, qz, qw, vx, vy, vz, wx, wy, wz]
-        root_addrs : dict
-            Address dictionary with 'robot_qpos_addr' and 'robot_qvel_addr'
-
-        Raises
-        ------
-        AssertionError
-            If multiple environments specified
+        root_states is [num_selected_envs, 13] in holosoma format; root_addrs carries
+        'robot_qpos_addr' and 'robot_qvel_addr'.
         """
-        # ClassicBackend only supports single environment
-        assert len(env_ids) <= 1, f"ClassicBackend only supports single environment, got {len(env_ids)}"
-
-        if len(env_ids) == 0:
-            return
-
-        # Extract state components (convert to numpy)
-        state = root_states[0]
-        pos = state[:3].detach().cpu().numpy()
-        quat_holo = state[3:7].detach().cpu().numpy()  # [qx, qy, qz, qw]
-        lin_vel = state[7:10].detach().cpu().numpy()
-        ang_vel = state[10:13].detach().cpu().numpy()
-
-        # Convert quaternion: holosoma [qx,qy,qz,qw] -> MuJoCo [qw,qx,qy,qz]
-        quat_mj = np.array([quat_holo[3], quat_holo[0], quat_holo[1], quat_holo[2]])
-
-        # Get addresses
-        qpos_addr = root_addrs["robot_qpos_addr"]
-        qvel_addr = root_addrs["robot_qvel_addr"]
-
-        # Write to MuJoCo data arrays
-        self.data.qpos[qpos_addr : qpos_addr + 3] = pos
-        self.data.qpos[qpos_addr + 3 : qpos_addr + 7] = quat_mj
-        self.data.qvel[qvel_addr : qvel_addr + 3] = lin_vel
-        self.data.qvel[qvel_addr + 3 : qvel_addr + 6] = ang_vel
-
-        # Update derived quantities
-        mujoco.mj_forward(self.model, self.data)
+        self.set_actor_state(env_ids, root_states, root_addrs["robot_qpos_addr"], root_addrs["robot_qvel_addr"])
+        if len(env_ids) > 0:
+            mujoco.mj_forward(self.model, self.data)
 
     def set_dof_state(self, env_ids: torch.Tensor, dof_states: torch.Tensor, dof_addrs: dict) -> None:
         """Set DOF states using CPU numpy arrays.
@@ -413,3 +358,63 @@ class ClassicBackend(IMujocoBackend):
 
         # Update derived quantities
         mujoco.mj_forward(self.model, self.data)
+
+    def get_actor_state(self, env_ids: torch.Tensor, qpos_addr: int, qvel_addr: int) -> torch.Tensor:
+        """Read an actor's freejoint state from CPU qpos/qvel (single environment)."""
+        assert len(env_ids) <= 1, f"ClassicBackend only supports single environment, got {len(env_ids)}"
+        if len(env_ids) == 0:
+            return torch.empty(0, 13, device=self.device)
+
+        pos = self.data.qpos[qpos_addr : qpos_addr + 3]
+        quat_mj = self.data.qpos[qpos_addr + 3 : qpos_addr + 7]  # [qw, qx, qy, qz]
+        lin_vel = self.data.qvel[qvel_addr : qvel_addr + 3]
+        ang_vel = self.data.qvel[qvel_addr + 3 : qvel_addr + 6]  # body-local
+        quat_holo = mj_to_holosoma_quat(quat_mj)  # -> [qx, qy, qz, qw]
+        state = torch.tensor([*pos, *quat_holo, *lin_vel, *ang_vel], dtype=torch.float32, device=self.device)
+        return state.unsqueeze(0)  # [1, 13]
+
+    def set_actor_state(self, env_ids: torch.Tensor, states: torch.Tensor, qpos_addr: int, qvel_addr: int) -> None:
+        """Write an actor's freejoint state into CPU qpos/qvel (single environment)."""
+        assert len(env_ids) <= 1, f"ClassicBackend only supports single environment, got {len(env_ids)}"
+        if len(env_ids) == 0:
+            return
+
+        state = states[0]
+        pos = state[:3].detach().cpu().numpy()
+        quat_holo = state[3:7].detach().cpu().numpy()  # [qx, qy, qz, qw]
+        lin_vel = state[7:10].detach().cpu().numpy()
+        ang_vel = state[10:13].detach().cpu().numpy()
+        quat_mj = holosoma_to_mj_quat(quat_holo)
+
+        self.data.qpos[qpos_addr : qpos_addr + 3] = pos
+        self.data.qpos[qpos_addr + 3 : qpos_addr + 7] = quat_mj
+        self.data.qvel[qvel_addr : qvel_addr + 3] = lin_vel
+        self.data.qvel[qvel_addr + 3 : qvel_addr + 6] = ang_vel
+        # Caller decides whether to mj_forward (set_actor_states_by_index does so once).
+
+    def set_static_body_world_pose(
+        self,
+        body_ids: list[int],
+        positions: torch.Tensor,
+        quats: torch.Tensor | None = None,
+        env_ids: torch.Tensor | None = None,
+    ) -> None:
+        """Place welded (jointless) bodies at a world pose (single environment).
+
+        Sibling of WarpBackend.set_static_body_world_pose: a static body's pose lives in the
+        model's ``body_pos``/``body_quat`` (no qpos slice). ``positions`` is
+        ``[len(env_ids)=1, len(body_ids), 3]``; ``quats`` (xyzw) is the matching ``[..., 4]`` or
+        ``None`` to leave orientation as compiled. ``env_ids`` is ignored (single env). Works at
+        setup and mid-rollout — ``mj_forward`` re-runs collision so the next ``mj_step`` sees the
+        body at its new pose.
+        """
+        pos = positions[0].detach().cpu().numpy()  # [len(body_ids), 3]
+        for i, body_id in enumerate(body_ids):
+            self.model.body_pos[body_id] = pos[i]
+        if quats is not None:
+            # quats is a torch.Tensor here, but holosoma_to_mj_quat's return widens to the np|torch
+            # union (only mypy sees the union; when torch is unstubbed it is Any and this is a no-op).
+            quat_mj = holosoma_to_mj_quat(quats[0]).detach().cpu().numpy()  # type: ignore[union-attr]  # [len(body_ids), 4] wxyz
+            for i, body_id in enumerate(body_ids):
+                self.model.body_quat[body_id] = quat_mj[i]
+        mujoco.mj_forward(self.model, self.data)  # refresh xpos/xquat from the new body_pos/quat

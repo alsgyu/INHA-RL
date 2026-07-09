@@ -136,7 +136,7 @@ class UndesiredContacts(RewardTermBase):
         super().__init__(cfg, env)
         self.env = env
         pattern = cfg.params.get("undesired_contacts_body_names", "")
-        body_names = self.env.simulator.body_names  # type: ignore[attr-defined]
+        body_names = self.env.simulator.body_names
         undesired_contacts_body_names = [body_name for body_name in body_names if re.match(pattern, body_name)]
         # The default empty pattern "" matches every body, so an empty result can only come from an
         # explicit, non-empty pattern that matched nothing: warn

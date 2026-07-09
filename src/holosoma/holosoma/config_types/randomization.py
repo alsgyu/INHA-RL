@@ -7,7 +7,11 @@ from typing import Any
 
 from pydantic.dataclasses import dataclass
 
-from holosoma.config_types.distribution import DistributionLike
+# One randomized scalar's range: a [lo, hi] pair, a {kind, low, high, mean, std} dict, or a
+# DistributionSpec. Defined in the import-light distribution module (no torch), so this config schema
+# names the same range type the sampler parses via DistributionSpec.parse. DistributionSpec is
+# imported so pydantic can resolve the forward reference inside the DistributionLike union.
+from holosoma.config_types.distribution import DistributionLike, DistributionSpec  # noqa: F401
 
 
 @dataclass(frozen=True)

@@ -19,6 +19,7 @@ import holosoma.config_values.observation
 import holosoma.config_values.randomization
 import holosoma.config_values.reward
 import holosoma.config_values.robot
+import holosoma.config_values.scene
 import holosoma.config_values.simulator
 import holosoma.config_values.termination
 import holosoma.config_values.terrain
@@ -31,6 +32,7 @@ from holosoma.config_types.observation import ObservationManagerCfg
 from holosoma.config_types.randomization import RandomizationManagerCfg
 from holosoma.config_types.reward import RewardManagerCfg
 from holosoma.config_types.robot import RobotConfig
+from holosoma.config_types.scene import SceneConfig
 from holosoma.config_types.simulator import SimulatorConfig
 from holosoma.config_types.termination import TerminationManagerCfg
 from holosoma.config_types.terrain import TerrainManagerCfg
@@ -117,6 +119,10 @@ class ExperimentConfig:
         TerrainManagerCfg,
         tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.terrain.DEFAULTS)),
     ] = holosoma.config_values.terrain.terrain_locomotion_plane
+    scene: Annotated[
+        SceneConfig,
+        tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.scene.DEFAULTS)),
+    ] = holosoma.config_values.scene.empty
     observation: Annotated[
         ObservationManagerCfg | None,
         tyro.conf.arg(

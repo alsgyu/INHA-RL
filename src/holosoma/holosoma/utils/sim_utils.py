@@ -87,10 +87,10 @@ def setup_isaaclab_launcher(config: ExperimentConfig | RunSimConfig, device: str
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     args_cli.num_envs = config.training.num_envs // world_size if world_size > 1 else config.training.num_envs
     args_cli.seed = config.training.seed
-    args_cli.env_spacing = config.simulator.config.scene.env_spacing
+    args_cli.env_spacing = config.scene.env_spacing
     args_cli.output_dir = config.logger.base_dir
     args_cli.headless = config.training.headless
-    if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+    if world_size > 1:
         # Distribute simulator across GPUs when using multi-gpu training
         args_cli.device = f"cuda:{int(os.environ.get('LOCAL_RANK', '0'))}"
         args_cli.distributed = True
@@ -224,20 +224,21 @@ def setup_simulation_environment(
         # For run_sim.py, we'll create the simulator directly instead of using environment wrapper
         logger.info("Direct simulation mode - creating simulator directly, without experiment config")
 
-        # Create FullSimConfig from RunSimConfig
-        # Extract SimulatorInitConfig from SimulatorConfig
+        # Create FullSimConfig from RunSimConfig.
         full_config = FullSimConfig(
-            simulator=config.simulator.config,  # Extract .config from SimulatorConfig
+            simulator=config.simulator.config,
             robot=config.robot,
+            scene=config.scene,
             training=config.training,
             logger=config.logger,
             experiment_dir=None,
         )
 
-        # For compatibility, minimal proxy for TerrainManager since it depends on env
+        # For compatibility, minimal proxy for TerrainManager since it depends on env.
+        # Carries the requested num_envs through to the terrain manager.
         class EnvProxy:
-            def __init__(self, device):
-                self.num_envs = 1
+            def __init__(self, device, num_envs):
+                self.num_envs = num_envs
                 self.device = device
 
         # For compatibility, wrap in a minimal object that has .sim attribute
@@ -255,7 +256,7 @@ def setup_simulation_environment(
                     self.sim.close()
 
         # Use terrain configuration from RunSimConfig
-        terrain_manager = TerrainManager(config.terrain, env=EnvProxy(device), device=device)
+        terrain_manager = TerrainManager(config.terrain, env=EnvProxy(device, config.training.num_envs), device=device)
 
         # Create simulator using get_class() to avoid circular imports
         simulator_class = get_class(config.simulator._target_)

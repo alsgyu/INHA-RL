@@ -12,6 +12,7 @@ from loguru import logger
 from holosoma.config_types.command import MotionConfig, NoiseToInitialPoseConfig
 from holosoma.envs.wbt.wbt_manager import WholeBodyTrackingManager
 from holosoma.managers.command.base import CommandTermBase
+from holosoma.simulator.shared.object_registry import ObjectType
 from holosoma.utils.file_cache import cached_open
 from holosoma.utils.path import resolve_data_file_path
 from holosoma.utils.rotations import (
@@ -293,6 +294,16 @@ class MultiMotionLoader:
 
         # Object support: only if ALL motions have objects
         self.has_object = all(ld.has_object for ld in loaders)
+        n_with_object = sum(ld.has_object for ld in loaders)
+        if 0 < n_with_object < len(loaders):
+            # A subset of files carry object data but not all — we disable object tracking for the
+            # whole run and discard the object data those files DID contain. Warn rather than drop
+            # silently, since the user authored that object motion and it looks like it "worked".
+            logger.warning(
+                f"MultiMotionLoader: {n_with_object}/{len(loaders)} motion files contain object "
+                f"tracking data, but not all do; object tracking is DISABLED for the whole run and "
+                f"the object data from those files is discarded. Provide object data in all files or none."
+            )
         if self.has_object:
             self._object_pos_w = torch.cat([ld._object_pos_w for ld in loaders], dim=0)
             self._object_quat_w = torch.cat([ld._object_quat_w for ld in loaders], dim=0)
@@ -545,7 +556,7 @@ class MotionCommand(CommandTermBase):
         robot_body_names = self._env.simulator._body_list  # type: ignore[attr-defined]
         robot_body_names_alias = [FAKE_BODY_NAME_ALIASES.get(bn, bn) for bn in robot_body_names]
 
-        robot_joint_names = self._env.simulator.dof_names  # type: ignore[attr-defined]
+        robot_joint_names = self._env.simulator.dof_names
 
         # 1. load motion data
         assert self.motion_cfg.motion_file or self.motion_cfg.motion_dir, (
@@ -585,13 +596,12 @@ class MotionCommand(CommandTermBase):
 
         # 3. get the name of the object, or indices of the object
         if self.motion.has_object:
-            # cache the object_index_in_simulator
-            self.object_name = "object"  # hardcoded object name
-            self.object_indices_in_simulator = self._env.simulator.get_actor_indices(self.object_name, env_ids=None)
-
-            assert self._env.simulator.get_simulator_type() == SimulatorType.ISAACSIM, (
-                "Object is only supported in IsaacSim"
-            )
+            # Derive the object name from the registered rigid object (object names vary
+            # per scene, e.g. "box").
+            rigid_object_names = self._env.simulator.object_registry.get_names_by_type(ObjectType.INDIVIDUAL)
+            if not rigid_object_names:
+                raise RuntimeError("Set 'has_object' to true, but loaded no rigid bodies in the scene.")
+            self.object_name = rigid_object_names[0]
 
         # 4. get the adaptive timesteps sampler
         if self.motion_cfg.use_adaptive_timesteps_sampler:
@@ -778,7 +788,7 @@ class MotionCommand(CommandTermBase):
 
             object_states = torch.cat(
                 [target_obj_pos, obj_ori, obj_lin_vel, torch.zeros_like(obj_lin_vel)], dim=-1
-            )  # (num_envs, 7)
+            )  # (num_envs, 13): pos(3) + quat(4) + lin_vel(3) + ang_vel(3)
             # 4.3 set the object states in simulator
             self._env.simulator.set_actor_states([self.object_name], env_ids, object_states)
 
@@ -1010,17 +1020,27 @@ class MotionCommand(CommandTermBase):
     #########################################################################################
     ## Object from simulator
     #########################################################################################
+    def _simulator_object_states(self) -> torch.Tensor:
+        """Current object states [num_envs, 13] via the unified actor API.
+
+        Reads through ``get_actor_states`` rather than indexing ``all_root_states``
+        directly: on MuJoCo ``all_root_states`` is robot-only, so indexing it with an
+        object index would be out of bounds. The unified API resolves the object's own
+        per-env state on every backend.
+        """
+        return self._env.simulator.get_actor_states([self.object_name], env_ids=None)
+
     @property
     def simulator_object_pos_w(self) -> torch.Tensor:
-        return self._env.simulator.all_root_states[self.object_indices_in_simulator][:, :3]
+        return self._simulator_object_states()[:, :3]
 
     @property
     def simulator_object_quat_w(self) -> torch.Tensor:
-        return self._env.simulator.all_root_states[self.object_indices_in_simulator][:, 3:7]
+        return self._simulator_object_states()[:, 3:7]
 
     @property
     def simulator_object_lin_vel_w(self) -> torch.Tensor:
-        return self._env.simulator.all_root_states[self.object_indices_in_simulator][:, 7:10]
+        return self._simulator_object_states()[:, 7:10]
 
     #########################################################################################
     ## Methods that does not fit into setup/step/reset pattern

@@ -21,16 +21,18 @@ from .base import IMujocoBackend
 from .classic_backend import ClassicBackend
 
 # Try to import WarpBackend - gracefully handle if warp not installed
-WARP_AVAILABLE = False
-WarpBackend: type[IMujocoBackend] | None = None
-
 try:
     from .warp_backend import WarpBackend
 
     WARP_AVAILABLE = True
 except ImportError:
-    # Warp dependencies not available - this is expected for CPU-only installs
-    # WarpBackend will remain None and WARP_AVAILABLE will be False
-    pass
+    # Warp dependencies not available (expected for CPU-only installs). Bind WarpBackend to a
+    # never-instantiated sentinel subclass so `isinstance(backend, WarpBackend)` is a safe False
+    # everywhere without per-callsite None guards.
+    class WarpBackend(IMujocoBackend):  # type: ignore[no-redef]  # optional-import sentinel
+        """Sentinel stand-in when Warp is unavailable; never instantiated."""
+
+    WARP_AVAILABLE = False
+
 
 __all__ = ["WARP_AVAILABLE", "ClassicBackend", "IMujocoBackend", "WarpBackend"]

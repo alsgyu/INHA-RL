@@ -1,6 +1,10 @@
 """Whole Body Tracking randomization presets for the G1 robot."""
 
-from holosoma.config_types.randomization import RandomizationManagerCfg, RandomizationTermCfg
+from holosoma.config_types.randomization import (
+    BaseComRange,
+    RandomizationManagerCfg,
+    RandomizationTermCfg,
+)
 
 robot_state_dr_at_setup = {
     "randomize_robot_rigid_body_material_startup": RandomizationTermCfg(
@@ -14,7 +18,7 @@ robot_state_dr_at_setup = {
     "randomize_base_com_startup": RandomizationTermCfg(
         func="holosoma.managers.randomization.terms.locomotion:randomize_base_com_startup",
         params={
-            "base_com_range": {"x": [-0.025, 0.025], "y": [-0.05, 0.05], "z": [-0.05, 0.05]},
+            "base_com_range": BaseComRange(x=[-0.025, 0.025], y=[-0.05, 0.05], z=[-0.05, 0.05]),
             "enabled": True,
         },
     ),
@@ -23,35 +27,6 @@ robot_state_dr_at_setup = {
         params={
             "dof_pos_bias_range": [-0.01, 0.01],
             "enabled": True,
-        },
-    ),
-}
-
-# IsaacSim-only object physics DR (the robot's RobotConfig.object). Randomizes the spawned object's
-# material, mass, and inertia through the same keyed sampler the robot terms use.
-object_state_dr_at_setup = {
-    "randomize_object_rigid_body_material_startup": RandomizationTermCfg(
-        func="holosoma.managers.randomization.terms.locomotion:randomize_object_rigid_body_material_startup",
-        params={
-            "static_friction_range": [0.1, 0.6],
-            "dynamic_friction_range": [0.1, 0.6],
-            "restitution_range": [0.0, 1.0],
-        },
-    ),
-    "randomize_object_rigid_body_mass_startup": RandomizationTermCfg(
-        func="holosoma.managers.randomization.terms.locomotion:randomize_object_rigid_body_mass_startup",
-        params={
-            "mass_distribution_params": [1.0, 4.0],
-        },
-    ),
-    "randomize_object_rigid_body_inertia_startup": RandomizationTermCfg(
-        func="holosoma.managers.randomization.terms.locomotion:randomize_object_rigid_body_inertia_startup",
-        params={
-            "inertia_distribution_params_dict": {
-                # Only Ixx is randomized, reproducing beyondmimic. Unnamed components default to
-                # the identity scale [1.0, 1.0]; name more to randomize them.
-                "Ixx": [0.5, 1.5],
-            },
         },
     ),
 }
@@ -124,10 +99,21 @@ g1_29dof_wbt_randomization = RandomizationManagerCfg(
     step_terms={**base_step_terms},
 )
 
+# Same as the base preset on this branch — the object-DR follow-up branch adds the
+# object_state_dr_at_setup terms (material/mass/inertia) into this preset's setup_terms.
 g1_29dof_wbt_randomization_w_object = RandomizationManagerCfg(
-    setup_terms={**base_setup_terms, **object_state_dr_at_setup},
-    reset_terms={**base_reset_terms},
-    step_terms={**base_step_terms},
+    setup_terms={
+        **base_setup_terms,
+    },
+    reset_terms={
+        **base_reset_terms,
+    },
+    step_terms={
+        **base_step_terms,
+    },
 )
 
-__all__ = ["g1_29dof_wbt_randomization", "g1_29dof_wbt_randomization_w_object"]
+__all__ = [
+    "g1_29dof_wbt_randomization",
+    "g1_29dof_wbt_randomization_w_object",
+]

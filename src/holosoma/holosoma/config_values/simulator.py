@@ -1,7 +1,6 @@
 from holosoma.config_types.simulator import (
     MujocoBackend,
     PhysxConfig,
-    SceneConfig,
     SimEngineConfig,
     SimulatorConfig,
     SimulatorInitConfig,
@@ -33,9 +32,6 @@ isaacsim = SimulatorConfig(
     _recursive_=False,
     config=SimulatorInitConfig(
         name="isaacsim",
-        scene=SceneConfig(
-            replicate_physics=True,
-        ),
         sim=SimEngineConfig(
             fps=200,
             control_decimation=4,
@@ -59,9 +55,6 @@ mujoco = SimulatorConfig(
     _recursive_=False,
     config=SimulatorInitConfig(
         name="mujoco",
-        scene=SceneConfig(
-            replicate_physics=True,
-        ),
         sim=SimEngineConfig(
             fps=200,
             control_decimation=4,
@@ -85,9 +78,6 @@ mjwarp = SimulatorConfig(
     _recursive_=False,
     config=SimulatorInitConfig(
         name="mujoco",
-        scene=SceneConfig(
-            replicate_physics=True,
-        ),
         sim=SimEngineConfig(
             fps=200,
             control_decimation=4,
