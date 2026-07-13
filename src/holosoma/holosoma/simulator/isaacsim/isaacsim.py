@@ -16,7 +16,7 @@ import isaaclab.terrains as terrain_gen
 import isaacsim.core.utils.stage as stage_utils
 import omni.log
 import torch
-from pxr import Usd
+from pxr import Usd, UsdGeom
 from isaaclab.actuators import IdealPDActuatorCfg
 from isaaclab.assets import Articulation, ArticulationCfg
 from isaaclab.envs import ViewerCfg, mdp
@@ -70,6 +70,22 @@ from holosoma.simulator.shared.virtual_gantry import (
 from holosoma.simulator.types import ActorNames, ActorIndices, EnvIds, ActorStates, ActorPoses
 
 
+def _hide_prim_subtree(stage: "Usd.Stage", prim_path: str) -> None:
+    """Make the geometry under ``prim_path`` invisible (rendering only; physics untouched).
+
+    Authors ``visibility = invisible`` on every Imageable prim in the subtree. The terrain root
+    (e.g. ``/World/ground``) is typeless, so setting visibility only there is a no-op; the visible
+    meshes are on Imageable descendants. Colliders are unaffected, so the body stays collidable.
+    """
+    root = stage.GetPrimAtPath(prim_path)
+    if not root.IsValid():
+        return
+    for prim in Usd.PrimRange(root):
+        imageable = UsdGeom.Imageable(prim)
+        if imageable:
+            imageable.MakeInvisible()
+
+
 class IsaacSim(BaseSimulator):
     def __init__(self, tyro_config: FullSimConfig, terrain_manager: TerrainManager, device: str):
         super().__init__(tyro_config, terrain_manager, device)
@@ -85,7 +101,7 @@ class IsaacSim(BaseSimulator):
 
         sim_config: SimulationCfg = SimulationCfg(
             dt=1.0 / self.simulator_config.sim.fps,
-            render_interval=self.simulator_config.sim.render_interval,
+            render_interval=self.simulator_config.sim.render_interval_steps,
             device=self.sim_device,
             physx=PhysxCfg(
                 bounce_threshold_velocity=self.simulator_config.sim.physx.bounce_threshold_velocity,
@@ -121,10 +137,10 @@ class IsaacSim(BaseSimulator):
             f"\tRendering step-size   : {1.0 / self.simulator_config.sim.fps * self.simulator_config.sim.substeps}"
         )
 
-        if self.simulator_config.sim.render_interval < self.simulator_config.sim.control_decimation:
+        if self.simulator_config.sim.render_interval_steps < self.simulator_config.sim.control_decimation_steps:
             msg = (
-                f"The render interval ({self.simulator_config.sim.render_interval}) is smaller than the decimation "
-                f"({self.simulator_config.sim.control_decimation}). Multiple render calls will happen for each "
+                f"The render interval ({self.simulator_config.sim.render_interval_steps}) is smaller than the decimation "
+                f"({self.simulator_config.sim.control_decimation_steps}). Multiple render calls will happen for each "
                 "environment step. If this is not intended, set the render interval to be equal to the decimation."
             )
             logger.warning(msg)
@@ -438,6 +454,10 @@ class IsaacSim(BaseSimulator):
             terrain_config.env_spacing = self.scene.cfg.env_spacing
             terrain_config.class_type(terrain_config)
             global_collision_prims.append(terrain_config.prim_path)
+            # Hide the ground plane's visual while keeping its collider; avoids z-fighting a scene
+            # USD's own floor. Applied to the whole /World/ground subtree.
+            if terrain_state.hide_visual:
+                _hide_prim_subtree(stage_utils.get_current_stage(), terrain_prim_path)
         elif terrain_state.mesh_type in ["trimesh", "load_obj"]:
             self.terrain = self.terrain_manager.get_state("locomotion_terrain").terrain
             visual_material = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 0.0))
@@ -870,7 +890,7 @@ class IsaacSim(BaseSimulator):
 
         # Issue: data.net_forces_w_history is not cleared after a reset.
         # Solution: We only read the most recent decimation_factor steps.
-        control_decimation = self.simulator_config.sim.control_decimation
+        control_decimation = self.simulator_config.sim.control_decimation_steps
         effective_history_length = min(control_decimation, self.simulator_config.contact_sensor_history_length)
         self.contact_forces_history[:, :effective_history_length, :, :] = self.contact_sensor.data.net_forces_w_history[
             :, :effective_history_length, self._contact_to_robot_body_ids
@@ -915,7 +935,7 @@ class IsaacSim(BaseSimulator):
         # Render between steps only IF the GUI or sensor need it
         # note: we assume the render interval to be the shortest accepted rendering interval.
         #    If a camera needs rendering at a faster frequency, this will lead to unexpected behavior.
-        if self._sim_step_counter % self.simulator_config.sim.render_interval == 0 and is_rendering:
+        if self._sim_step_counter % self.simulator_config.sim.render_interval_steps == 0 and is_rendering:
             self.render()
 
         # update buffers at sim
