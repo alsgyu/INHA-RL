@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-import tyro
 from typing_extensions import Annotated
 
 import holosoma.config_values.robot
@@ -24,6 +23,7 @@ from holosoma.config_types.scene import SceneConfig
 from holosoma.config_types.simulator import SimulatorConfig
 from holosoma.config_types.terrain import TerrainManagerCfg
 from holosoma.config_types.video import VideoConfig
+from holosoma.utils.config_registry import UseRegistry
 
 
 def default_training_config() -> TrainingConfig:
@@ -37,7 +37,7 @@ def default_logger_config() -> LoggerConfig:
 
 
 # Use sim2sim-optimized configs from config_values.run_sim
-SIMULATOR_DEFAULTS = holosoma.config_values.run_sim.DEFAULTS
+SIMULATOR_DEFAULTS = holosoma.config_values.run_sim.RUN_SIM_REGISTRY
 
 
 @dataclass(frozen=True)
@@ -51,25 +51,19 @@ class RunSimConfig:
     """
 
     # Core components for simulation - using Annotated subcommands like ExperimentConfig
-    simulator: Annotated[
-        SimulatorConfig,
-        tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(SIMULATOR_DEFAULTS)),
-    ] = holosoma.config_values.run_sim.mujoco
+    simulator: Annotated[SimulatorConfig, UseRegistry(SIMULATOR_DEFAULTS)] = holosoma.config_values.run_sim.mujoco
 
-    robot: Annotated[
-        RobotConfig,
-        tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.robot.DEFAULTS)),
-    ] = holosoma.config_values.robot.g1_29dof
+    robot: Annotated[RobotConfig, UseRegistry(holosoma.config_values.robot.ROBOT_REGISTRY)] = (
+        holosoma.config_values.robot.g1_29dof
+    )
 
-    terrain: Annotated[
-        TerrainManagerCfg,
-        tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.terrain.DEFAULTS)),
-    ] = holosoma.config_values.terrain.terrain_locomotion_plane
+    terrain: Annotated[TerrainManagerCfg, UseRegistry(holosoma.config_values.terrain.TERRAIN_REGISTRY)] = (
+        holosoma.config_values.terrain.terrain_locomotion_plane
+    )
 
-    scene: Annotated[
-        SceneConfig,
-        tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.scene.DEFAULTS)),
-    ] = holosoma.config_values.scene.empty
+    scene: Annotated[SceneConfig, UseRegistry(holosoma.config_values.scene.SCENE_REGISTRY)] = (
+        holosoma.config_values.scene.empty
+    )
 
     # Minimal configs needed for FullSimConfig
     training: TrainingConfig = field(default_factory=default_training_config)

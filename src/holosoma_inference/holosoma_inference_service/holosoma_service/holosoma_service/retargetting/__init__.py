@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from holosoma_inference.compat import entry_points
+from holosoma_inference.pycompat import entry_points
 
 if TYPE_CHECKING:
     # Import only for typing: smpl_retargeter pulls in mink/mujoco, which the

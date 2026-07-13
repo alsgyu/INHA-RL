@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # NOTE FOR AGENTS/MAINTAINERS: This module is intentionally mirrored with
-# holosoma_inference.config.tyro_utils. Keep behavior changes in sync.
+# holosoma.utils.tyro_utils. Keep behavior changes in sync.
 import argparse
 import collections.abc
 import copy

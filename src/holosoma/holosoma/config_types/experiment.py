@@ -5,7 +5,6 @@ import datetime
 import json
 from datetime import timezone
 
-import tyro
 import yaml
 from pydantic.dataclasses import dataclass
 from typing_extensions import Annotated
@@ -36,6 +35,7 @@ from holosoma.config_types.scene import SceneConfig
 from holosoma.config_types.simulator import SimulatorConfig
 from holosoma.config_types.termination import TerminationManagerCfg
 from holosoma.config_types.terrain import TerrainManagerCfg
+from holosoma.utils.config_registry import UseRegistry
 
 
 def now_timestamp() -> str:
@@ -107,66 +107,45 @@ class ExperimentConfig:
     env_class: str = "holosoma.envs.locomotion.locomotion_manager.LeggedRobotLocomotionManager"
 
     training: TrainingConfig = TrainingConfig()
-    algo: Annotated[
-        AlgoConfig,
-        tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.algo.DEFAULTS)),
-    ] = holosoma.config_values.algo.ppo
-    simulator: Annotated[
-        SimulatorConfig,
-        tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.simulator.DEFAULTS)),
-    ] = holosoma.config_values.simulator.isaacgym
-    terrain: Annotated[
-        TerrainManagerCfg,
-        tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.terrain.DEFAULTS)),
-    ] = holosoma.config_values.terrain.terrain_locomotion_plane
-    scene: Annotated[
-        SceneConfig,
-        tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.scene.DEFAULTS)),
-    ] = holosoma.config_values.scene.empty
+    algo: Annotated[AlgoConfig, UseRegistry(holosoma.config_values.algo.ALGO_REGISTRY)] = (
+        holosoma.config_values.algo.ppo
+    )
+    simulator: Annotated[SimulatorConfig, UseRegistry(holosoma.config_values.simulator.SIMULATOR_REGISTRY)] = (
+        holosoma.config_values.simulator.isaacgym
+    )
+    terrain: Annotated[TerrainManagerCfg, UseRegistry(holosoma.config_values.terrain.TERRAIN_REGISTRY)] = (
+        holosoma.config_values.terrain.terrain_locomotion_plane
+    )
+    scene: Annotated[SceneConfig, UseRegistry(holosoma.config_values.scene.SCENE_REGISTRY)] = (
+        holosoma.config_values.scene.empty
+    )
     observation: Annotated[
-        ObservationManagerCfg | None,
-        tyro.conf.arg(
-            constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.observation.DEFAULTS)
-        ),
+        ObservationManagerCfg | None, UseRegistry(holosoma.config_values.observation.OBSERVATION_REGISTRY)
     ] = holosoma.config_values.observation.none
-    action: Annotated[
-        ActionManagerCfg | None,
-        tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.action.DEFAULTS)),
-    ] = holosoma.config_values.action.none
-    reward: Annotated[
-        RewardManagerCfg | None,
-        tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.reward.DEFAULTS)),
-    ] = holosoma.config_values.reward.none
+    action: Annotated[ActionManagerCfg | None, UseRegistry(holosoma.config_values.action.ACTION_REGISTRY)] = (
+        holosoma.config_values.action.none
+    )
+    reward: Annotated[RewardManagerCfg | None, UseRegistry(holosoma.config_values.reward.REWARD_REGISTRY)] = (
+        holosoma.config_values.reward.none
+    )
     termination: Annotated[
-        TerminationManagerCfg | None,
-        tyro.conf.arg(
-            constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.termination.DEFAULTS)
-        ),
+        TerminationManagerCfg | None, UseRegistry(holosoma.config_values.termination.TERMINATION_REGISTRY)
     ] = holosoma.config_values.termination.none
     randomization: Annotated[
-        RandomizationManagerCfg | None,
-        tyro.conf.arg(
-            constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.randomization.DEFAULTS)
-        ),
+        RandomizationManagerCfg | None, UseRegistry(holosoma.config_values.randomization.RANDOMIZATION_REGISTRY)
     ] = holosoma.config_values.randomization.none
-    command: Annotated[
-        CommandManagerCfg | None,
-        tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.command.DEFAULTS)),
-    ] = holosoma.config_values.command.none
+    command: Annotated[CommandManagerCfg | None, UseRegistry(holosoma.config_values.command.COMMAND_REGISTRY)] = (
+        holosoma.config_values.command.none
+    )
     curriculum: Annotated[
-        CurriculumManagerCfg | None,
-        tyro.conf.arg(
-            constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.curriculum.DEFAULTS)
-        ),
+        CurriculumManagerCfg | None, UseRegistry(holosoma.config_values.curriculum.CURRICULUM_REGISTRY)
     ] = holosoma.config_values.curriculum.none
-    robot: Annotated[
-        RobotConfig,
-        tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.robot.DEFAULTS)),
-    ] = holosoma.config_values.robot.g1_29dof
-    logger: Annotated[
-        LoggerConfig,
-        tyro.conf.arg(constructor=tyro.extras.subcommand_type_from_defaults(holosoma.config_values.logger.DEFAULTS)),
-    ] = holosoma.config_values.logger.disabled
+    robot: Annotated[RobotConfig, UseRegistry(holosoma.config_values.robot.ROBOT_REGISTRY)] = (
+        holosoma.config_values.robot.g1_29dof
+    )
+    logger: Annotated[LoggerConfig, UseRegistry(holosoma.config_values.logger.LOGGER_REGISTRY)] = (
+        holosoma.config_values.logger.disabled
+    )
     nightly: NightlyConfig | None = None
 
     eval_overrides: EvalOverridesConfig = EvalOverridesConfig()

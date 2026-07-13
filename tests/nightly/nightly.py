@@ -10,11 +10,10 @@ from datetime import timezone
 from os import getenv
 from pathlib import Path
 
-import tyro
-
-from holosoma.config_values.experiment import AnnotatedExperimentConfig
+from holosoma.config_types.experiment import ExperimentConfig
+from holosoma.config_values.experiment import get_annotated_experiment_config
 from holosoma.train_agent import training_context
-from holosoma.utils.tyro_utils import TYRO_CONIFG
+from holosoma.utils.config_registry import parse_config
 
 REPO_ROOT = Path(__file__).parent.parent.parent.absolute()
 
@@ -32,7 +31,7 @@ def now_timestamp() -> str:
     return datetime.datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
-def validate_wandb_metrics(config: AnnotatedExperimentConfig):
+def validate_wandb_metrics(config: ExperimentConfig):
     # lazy import to avoid conflicts with Isaac
     import wandb
 
@@ -67,7 +66,8 @@ def validate_wandb_metrics(config: AnnotatedExperimentConfig):
 
 
 def main():
-    config = tyro.cli(AnnotatedExperimentConfig, config=TYRO_CONIFG)
+    original_args = sys.argv[1:]
+    config = parse_config(get_annotated_experiment_config)
 
     # Check if multigpu is requested and we're not already in a torchrun process
     if config.training.multigpu and "RANK" not in os.environ:
@@ -79,7 +79,7 @@ def main():
                 "torchrun",
                 f"--nproc_per_node={MULTIGPU_NUM_GPUS}",
                 __file__,
-                *sys.argv[1:],  # Pass all original arguments
+                *original_args,  # Pass all original arguments
             ],
             env=env,
             check=False,

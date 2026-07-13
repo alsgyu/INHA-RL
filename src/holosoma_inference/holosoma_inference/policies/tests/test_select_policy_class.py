@@ -51,7 +51,7 @@ class _SentinelPolicy:
 def _patch_entry_points(groups):
     """Patch the entry_points factory to return the given {group: [EP, ...]}.
 
-    ``_select_policy_class`` does ``from holosoma_inference.compat import entry_points``
+    ``_select_policy_class`` does ``from holosoma_inference.pycompat import entry_points``
     *inside* the function, so the patch must target the source module, not a name bound
     on ``dual_mode``.
     """
@@ -59,7 +59,7 @@ def _patch_entry_points(groups):
     def _fake(group):
         return groups.get(group, [])
 
-    return mock.patch("holosoma_inference.compat.entry_points", _fake)
+    return mock.patch("holosoma_inference.pycompat.entry_points", _fake)
 
 
 def test_policy_type_resolves_via_by_type():

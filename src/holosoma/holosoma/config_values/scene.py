@@ -7,8 +7,8 @@ but cannot add/remove assets (the preset fixes the set of keys).
 This module holds ONLY production scenes — the ones a shipped experiment, the run-sim CLI, or the
 object-managers example actually use. The much larger set of scenes that exist only to drive the
 cross-backend test harnesses lives in ``tests/simulators/_scene_presets.py`` and is registered into
-:data:`DEFAULTS` at test time (so the production ``scene:`` menu stays small and core never imports
-from ``tests/``). ``DEFAULTS`` is a plain dict on purpose: tests append to it via that module's
+:data:`SCENE_REGISTRY` at test time (so the production ``scene:`` menu stays small and core never
+imports from ``tests/``). ``SCENE_REGISTRY`` is a dict, so tests append to it via that module's
 ``register()``.
 """
 
@@ -18,6 +18,9 @@ from holosoma.config_types.scene import (
     SceneFileConfig,
 )
 from holosoma.config_values.wbt.g1.scene import g1_29dof_wbt_object_scene
+from holosoma.utils.config_registry import ConfigRegistry, deprecated_defaults_alias
+
+SCENE_REGISTRY = ConfigRegistry(SceneConfig, group="holosoma.config.scene")
 
 # Box asset paths.
 _SMALL_BOX = "holosoma/data/scene_objects/boxes/small_box.urdf"
@@ -60,8 +63,8 @@ object_managers_demo = SceneConfig(
 
 # Production scene presets only. Test-only scenes are added at test time by
 # tests/simulators/_scene_presets.register() (see this module's docstring).
-DEFAULTS = {
-    "empty": empty,
-    "object-managers-demo": object_managers_demo,
-    "g1_29dof_wbt_object": g1_29dof_wbt_object_scene,
-}
+SCENE_REGISTRY.add("empty", empty)
+SCENE_REGISTRY.add("object-managers-demo", object_managers_demo)
+SCENE_REGISTRY.add("g1_29dof_wbt_object", g1_29dof_wbt_object_scene)
+
+__getattr__ = deprecated_defaults_alias(__name__, SCENE_REGISTRY)

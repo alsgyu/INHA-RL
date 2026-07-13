@@ -27,9 +27,9 @@ def _select_policy_class(config: InferenceConfig):
     All lookups are by string against entry-point groups, so core never imports or names
     extension-private policy classes.
     """
-    from holosoma_inference.compat import entry_points
     from holosoma_inference.policies.locomotion import LocomotionPolicy
     from holosoma_inference.policies.wbt import WholeBodyTrackingPolicy
+    from holosoma_inference.pycompat import entry_points
 
     # 1. Explicit policy_type -> by_type entry-point group.
     policy_type = getattr(config.task, "policy_type", None)

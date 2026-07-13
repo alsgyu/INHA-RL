@@ -38,7 +38,6 @@ from dataclasses import replace
 
 import numpy as np
 import rclpy
-import tyro
 from holosoma_msgs.msg import CmdDense, Heartbeat
 from loguru import logger
 from rclpy.node import Node
@@ -49,6 +48,7 @@ from holosoma_inference.config.config_values.inference import get_annotated_infe
 from holosoma_inference.config.utils import TYRO_CONFIG
 from holosoma_inference.policies.dual_mode import DualModePolicy, _select_policy_class
 from holosoma_inference.sensors.base import Sensor
+from holosoma_inference.utils.config_registry import parse_config
 from holosoma_service.policy_control.injected_inputs import (
     CMD_VEL_TOPIC,
     STATE_INPUT_TOPIC,
@@ -270,18 +270,14 @@ def main() -> None:
 
     sys.argv = remove_ros_args(args=sys.argv)
 
-    # TODO: clean up stacking argparse on top of tyro.cli
-    # Pre-parse --secondary none (mirrors run_policy.py behaviour).
-    # tyro cannot natively set a preset-populated Optional[X] back to None via
-    # CLI — it generates nested subcommands for the default's fields with no
-    # "disable" toggle. argparse pre-parse is the same workaround run_policy uses.
+    # Handle the top-level secondary disable flag before parsing the config.
     pre = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     pre.add_argument("--secondary", default=None, help="Set to 'none' to disable dual-mode.")
     known, remaining = pre.parse_known_args()
     disable_secondary = known.secondary is not None and known.secondary.lower() == "none"
     sys.argv = [sys.argv[0]] + remaining
 
-    config = tyro.cli(get_annotated_inference_config(), config=TYRO_CONFIG)
+    config = parse_config(get_annotated_inference_config, config=TYRO_CONFIG)
 
     if disable_secondary:
         config = replace(config, secondary=None)

@@ -10,13 +10,11 @@ import dataclasses
 import sys
 import traceback
 
-import tyro
 from loguru import logger
 
 from holosoma.config_types.run_sim import RunSimConfig
 from holosoma.utils.eval_utils import init_eval_logging
 from holosoma.utils.sim_utils import DirectSimulation, setup_simulation_environment
-from holosoma.utils.tyro_utils import TYRO_CONIFG
 
 
 def run_simulation(config: RunSimConfig):
@@ -88,8 +86,9 @@ def main() -> None:
     logger.info("Holosoma Direct Simulation Runner")
     logger.info("Compositional configuration via subcommands (like eval_agent.py)")
 
-    # Parse configuration with tyro - same pattern as ExperimentConfig
-    config = tyro.cli(
+    from holosoma.utils.config_registry import parse_config
+
+    config = parse_config(
         RunSimConfig,
         description="Run simulation with direct simulator control and bridge support.\n\n"
         "Usage: python -m holosoma.run_sim simulator:<sim> robot:<robot> terrain:<terrain>\n"
@@ -97,7 +96,6 @@ def main() -> None:
         "  python -m holosoma.run_sim # defaults \n"
         "  python -m holosoma.run_sim simulator:mujoco robot:t1_29dof_waist_wrist terrain:terrain_locomotion_plane\n"
         "  python -m holosoma.run_sim simulator:isaacgym robot:g1_29dof terrain:terrain_locomotion_mix",
-        config=TYRO_CONIFG,
     )
 
     # Run simulation directly with parsed config

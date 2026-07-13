@@ -9,12 +9,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, TypedDict, cast
 
-import tyro
 from loguru import logger
 
 from holosoma.config_types.env import get_tyro_env_config
 from holosoma.config_types.experiment import ExperimentConfig
-from holosoma.config_values.experiment import AnnotatedExperimentConfig
 from holosoma.utils.config_utils import CONFIG_NAME
 from holosoma.utils.eval_utils import (
     init_sim_imports,
@@ -22,7 +20,6 @@ from holosoma.utils.eval_utils import (
 )
 from holosoma.utils.helpers import get_class
 from holosoma.utils.sim_utils import close_simulation_app
-from holosoma.utils.tyro_utils import TYRO_CONIFG
 
 
 class TrainingContext:
@@ -320,8 +317,11 @@ def train(tyro_config: ExperimentConfig, training_context: TrainingContext | Non
 
 
 def main() -> None:
-    tyro_cfg = tyro.cli(AnnotatedExperimentConfig, config=TYRO_CONIFG)
-    print(tyro_cfg.curriculum)
+    from holosoma.config_values.experiment import get_annotated_experiment_config
+    from holosoma.utils.config_registry import parse_config
+
+    # Pass the factory uncalled so parse_config builds it after plugins load.
+    tyro_cfg = parse_config(get_annotated_experiment_config)
     train(tyro_cfg)
 
 

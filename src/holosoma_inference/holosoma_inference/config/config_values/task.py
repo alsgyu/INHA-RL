@@ -5,6 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from holosoma_inference.config.config_types.task import TaskConfig
+from holosoma_inference.utils.config_registry import (
+    ConfigRegistry,
+    deprecated_defaults_alias,
+    deprecated_get_defaults,
+)
+
+TASK_REGISTRY = ConfigRegistry(TaskConfig, group="holosoma.config.task")
 
 _MODELS_DIR = Path(__file__).parent.parent.parent / "models"
 
@@ -60,8 +67,9 @@ safety_locomotion_g1 = TaskConfig(
     joystick_device=0,
 )
 
-DEFAULTS = {
-    "locomotion": locomotion,
-    "wbt": wbt,
-    "safety_locomotion_g1": safety_locomotion_g1,
-}
+TASK_REGISTRY.add("locomotion", locomotion)
+TASK_REGISTRY.add("wbt", wbt)
+TASK_REGISTRY.add("safety_locomotion_g1", safety_locomotion_g1)
+
+__getattr__ = deprecated_defaults_alias(__name__, TASK_REGISTRY)
+get_defaults = deprecated_get_defaults(__name__, TASK_REGISTRY)

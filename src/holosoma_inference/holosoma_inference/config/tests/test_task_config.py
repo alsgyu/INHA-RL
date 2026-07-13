@@ -1,8 +1,4 @@
-"""Unit tests for TaskConfig input source configuration.
-
-Covers the InputSource literal type, velocity_input/state_input fields,
-use_keyboard/use_joystick shortcut aliases, and mutual exclusion validation.
-"""
+"""Tests for task input source configuration."""
 
 import pytest
 
@@ -109,14 +105,14 @@ class TestShortcutMutualExclusion:
 
 class TestDefaultConfigs:
     def test_all_defaults_load(self):
-        from holosoma_inference.config.config_values.task import DEFAULTS
+        from holosoma_inference.config.config_values.task import TASK_REGISTRY as DEFAULTS
 
         for name, config in DEFAULTS.items():
             assert isinstance(config.velocity_input, str), f"{name}: velocity_input not str"
             assert isinstance(config.state_input, str), f"{name}: state_input not str"
 
     def test_default_configs_use_keyboard(self):
-        from holosoma_inference.config.config_values.task import DEFAULTS
+        from holosoma_inference.config.config_values.task import TASK_REGISTRY as DEFAULTS
 
         for name, config in DEFAULTS.items():
             assert config.velocity_input == "keyboard", f"{name}: unexpected velocity_input"
