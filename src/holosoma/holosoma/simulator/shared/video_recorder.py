@@ -98,12 +98,7 @@ class VideoRecorderInterface(ABC):
             self._setup_threaded_recording()
 
     def register_hooks(self, hooks: HookRegistry) -> None:
-        """Register video lifecycle hooks with the simulator loop.
-
-        Frames are captured on FRAME_END, which fires once per frame (after the last physics substep +
-        tensor refresh) — the control rate the recorder wants — so no manual decimation against
-        control_decimation is needed.
-        """
+        """Register video lifecycle hooks with the simulator loop."""
         hooks.add(Phase.EPISODE_START, self.on_episode_start, name="video.on_episode_start")
         hooks.add(Phase.EPISODE_END, self.on_episode_end, name="video.on_episode_end")
         hooks.add(Phase.FRAME_END, self.capture_frame, name="video.capture_frame")

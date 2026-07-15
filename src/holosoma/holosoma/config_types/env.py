@@ -8,6 +8,7 @@ from holosoma.config_types.curriculum import CurriculumManagerCfg
 from holosoma.config_types.experiment import ExperimentConfig, TrainingConfig
 from holosoma.config_types.logger import LoggerConfig
 from holosoma.config_types.observation import ObservationManagerCfg
+from holosoma.config_types.plugin import PluginConfig
 from holosoma.config_types.randomization import RandomizationManagerCfg
 from holosoma.config_types.reward import RewardManagerCfg
 from holosoma.config_types.robot import RobotConfig
@@ -36,6 +37,9 @@ class EnvConfig:
     robot: RobotConfig
     training: TrainingConfig
     logger: LoggerConfig
+    plugin: dict[str, PluginConfig]
+    """Plugins to install on the simulator (key -> resolved PluginConfig). Threaded into
+    FullSimConfig; installed in ``BaseSimulator.__init__``."""
 
 
 def get_tyro_env_config(tyro_config: ExperimentConfig) -> EnvConfig:
@@ -66,4 +70,5 @@ def get_tyro_env_config(tyro_config: ExperimentConfig) -> EnvConfig:
         curriculum=tyro_config.curriculum,
         robot=tyro_config.robot,
         logger=tyro_config.logger,
+        plugin=dict(tyro_config.plugin),
     )

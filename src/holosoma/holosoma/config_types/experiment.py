@@ -15,6 +15,7 @@ import holosoma.config_values.command
 import holosoma.config_values.curriculum
 import holosoma.config_values.logger
 import holosoma.config_values.observation
+import holosoma.config_values.plugin
 import holosoma.config_values.randomization
 import holosoma.config_values.reward
 import holosoma.config_values.robot
@@ -28,6 +29,7 @@ from holosoma.config_types.command import CommandManagerCfg
 from holosoma.config_types.curriculum import CurriculumManagerCfg
 from holosoma.config_types.logger import LoggerConfig
 from holosoma.config_types.observation import ObservationManagerCfg
+from holosoma.config_types.plugin import PluginConfig
 from holosoma.config_types.randomization import RandomizationManagerCfg
 from holosoma.config_types.reward import RewardManagerCfg
 from holosoma.config_types.robot import RobotConfig
@@ -118,6 +120,12 @@ class ExperimentConfig:
     )
     scene: Annotated[SceneConfig, UseRegistry(holosoma.config_values.scene.SCENE_REGISTRY)] = (
         holosoma.config_values.scene.empty
+    )
+    # Plugins, declared per-key as ``plugin.<key>:<variant>`` (resolved from PLUGIN_REGISTRY),
+    # optionally with per-key field overrides. Installed in ``BaseSimulator.__init__``. Threaded into
+    # FullSimConfig so plugins work in the training path (run_sim already exposes the same field).
+    plugin: dict[str, Annotated[PluginConfig, UseRegistry(holosoma.config_values.plugin.PLUGIN_REGISTRY)]] = (
+        dataclasses.field(default_factory=dict)
     )
     observation: Annotated[
         ObservationManagerCfg | None, UseRegistry(holosoma.config_values.observation.OBSERVATION_REGISTRY)

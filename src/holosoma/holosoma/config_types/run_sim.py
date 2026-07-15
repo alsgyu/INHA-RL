@@ -12,12 +12,14 @@ from dataclasses import dataclass, field
 
 from typing_extensions import Annotated
 
+import holosoma.config_values.plugin
 import holosoma.config_values.robot
 import holosoma.config_values.run_sim
 import holosoma.config_values.scene
 import holosoma.config_values.terrain
 from holosoma.config_types.experiment import TrainingConfig
 from holosoma.config_types.logger import DisabledLoggerConfig, LoggerConfig
+from holosoma.config_types.plugin import PluginConfig
 from holosoma.config_types.robot import RobotConfig
 from holosoma.config_types.scene import SceneConfig
 from holosoma.config_types.simulator import SimulatorConfig
@@ -63,6 +65,14 @@ class RunSimConfig:
 
     scene: Annotated[SceneConfig, UseRegistry(holosoma.config_values.scene.SCENE_REGISTRY)] = (
         holosoma.config_values.scene.empty
+    )
+
+    # Plugins: declare on the CLI as ``plugin.<key>:<variant>`` (resolved from
+    # PLUGIN_REGISTRY), optionally with per-key leaf overrides
+    # (e.g. ``--plugin.<key>.<field>=<value>``). Passed through to ``FullSimConfig.plugin`` and
+    # instantiated against the live simulator in ``BaseSimulator.__init__``. Empty by default.
+    plugin: dict[str, Annotated[PluginConfig, UseRegistry(holosoma.config_values.plugin.PLUGIN_REGISTRY)]] = field(
+        default_factory=dict
     )
 
     # Minimal configs needed for FullSimConfig

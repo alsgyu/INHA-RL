@@ -75,11 +75,68 @@ Register hyphen-case (`go2-12dof`). The CLI token is `<field>:<key>` and accepts
 
 Publish an entry point under the group whose config type matches your preset. Training and inference share some group names on purpose — the type check routes each preset to the right registry.
 
-**Training (`holosoma`)** — `robot` `RobotConfig` · `simulator` `SimulatorConfig` · `run_sim` `SimulatorConfig` · `terrain` `TerrainManagerCfg` · `scene` `SceneConfig` · `algo` `PPOAlgoConfig`/`FastSACAlgoConfig` · `observation` `ObservationManagerCfg` · `action` `ActionManagerCfg` · `reward` `RewardManagerCfg` · `termination` `TerminationManagerCfg` · `randomization` `RandomizationManagerCfg` · `command` `CommandManagerCfg` · `curriculum` `CurriculumManagerCfg` · `logger` `DisabledLoggerConfig`/`WandbLoggerConfig` · `experiment` `ExperimentConfig` (top-level `exp:`)
+**Training (`holosoma`)** — `robot` `RobotConfig` · `simulator` `SimulatorConfig` · `run_sim` `SimulatorConfig` · `terrain` `TerrainManagerCfg` · `scene` `SceneConfig` · `algo` `PPOAlgoConfig`/`FastSACAlgoConfig` · `observation` `ObservationManagerCfg` · `action` `ActionManagerCfg` · `reward` `RewardManagerCfg` · `termination` `TerminationManagerCfg` · `randomization` `RandomizationManagerCfg` · `command` `CommandManagerCfg` · `curriculum` `CurriculumManagerCfg` · `logger` `DisabledLoggerConfig`/`WandbLoggerConfig` · `plugin` `PluginConfig` · `experiment` `ExperimentConfig` (top-level `exp:`)
+
+The `plugin` family runs custom per-step behavior — see [Plugins](#plugins) below.
 
 **Inference (`holosoma_inference`)** — `robot` `RobotConfig` · `observation` `ObservationConfig` · `task` `TaskConfig` · `inference` `InferenceConfig` (top-level `inference:`)
 
 Group string is `holosoma.config.<family>`, registry var is `<FAMILY>_REGISTRY` (e.g. `holosoma.config.reward` → `REWARD_REGISTRY`).
+
+## Plugins — custom per-step behavior
+
+A **plugin** is a bundle of behavior — a set of lifecycle hooks plus whatever state they need — that runs your code at points in the simulator loop, without subclassing a backend. It's built on the hook system (`simulator.hooks`, `Phase`) and can depend on other simulator contracts (the virtual gantry, the clock, …). Write a class taking `(cfg, simulator)` that registers hooks in `__init__`, and pair it with a `PluginConfig` (its CLI-visible knobs). There is no base class to inherit.
+
+```python
+# my_plugins.py — log the robot's height, sampled at a fixed rate
+from dataclasses import dataclass
+from loguru import logger
+from holosoma.config_types.plugin import PluginConfig
+from holosoma.config_values.plugin import PLUGIN_REGISTRY
+from holosoma.simulator.base_simulator.hooks import Phase
+
+@dataclass(frozen=True)
+class LogHeightPluginConfig(PluginConfig):
+    every: str = "2Hz"                       # int decimation or frequency string
+    def get_cls(self):
+        return LogHeightPlugin               # import lazily here if the impl is heavy
+
+class LogHeightPlugin:
+    def __init__(self, cfg: LogHeightPluginConfig, simulator):
+        self.cfg, self.simulator = cfg, simulator
+        # register one hook per phase you care about:
+        simulator.hooks.add(Phase.FRAME_END, self.log, name="log_height", every=cfg.every)
+
+    def log(self):                           # signature = the phase's payload (below)
+        logger.info(f"height = {self.simulator.robot_root_states[0, 2]:.3f}")
+
+PLUGIN_REGISTRY.add("log_height", LogHeightPluginConfig())
+```
+
+```bash
+python -m holosoma.run_sim --import-file my_plugins.py plugin.h:log_height --plugin.h.every=5Hz
+```
+
+Select plugins as the dynamic-dict `plugin.<key>:<preset>` (per-key leaf overrides via `--plugin.<key>.<field>=…`); each is constructed once in `BaseSimulator.__init__`. Ship them packaged via the `holosoma.config.plugin` entry-point group like any other preset.
+
+### Phases
+
+A plugin's hooks attach to lifecycle phases via `add(phase, callback, *, name=None, every=1)`. Per control frame the loop emits, in order:
+
+| Phase | When | Callback args | Cadence |
+|---|---|---|---|
+| `FRAME_BEGIN` | before the physics substeps (push commands to the sim here) | — | control rate |
+| `PRE_STEP` | before each physics substep | — | physics `fps` |
+| `POST_STEP` | after each physics substep (freshest sim time) | — | physics `fps` |
+| `FRAME_END` | after the substeps + state-tensor refresh (read state here) | — | control rate |
+| `EPISODE_START` / `EPISODE_END` | on reset boundaries | `env_id` | per event |
+| `CLOSE` | teardown (release resources); runs in reverse registration order | — | once |
+
+### Cadence
+
+`every` sub-samples a phase: an int runs the callback every Nth emission; a frequency string (`"100Hz"`, `">100Hz"`, `"<100Hz"`) is resolved against the phase's base rate (`fps` for the per-substep `*_STEP` phases, `fps/control_decimation` for the per-frame `FRAME_*` phases). Frequency strings are periodic-phases only; `CLOSE` always fires once. The registry sub-samples natively — hooks never write their own counters.
+
+Built-ins to copy: the dependency-free `none` no-op in `holosoma/simulator/shared/builtin_plugins.py`; `clock_publish` / `gantry_control` / `odometry` (ROS2, `rclpy` imported lazily so core stays ROS-free) in `ros2_plugins.py`. Select `plugin.<key>:none` to disable a slot.
 
 ## Don't
 

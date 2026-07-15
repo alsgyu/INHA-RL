@@ -15,9 +15,9 @@ class Phase(str, Enum):
 
     ``payload`` names the positional args ``emit`` forwards to callbacks. ``periodic`` marks phases
     that fire on a fixed clock (per-substep or per-frame ticks) — only these accept a frequency-string
-    rate (``"30Hz"``) for :meth:`HookRegistry.add`'s ``every``; event phases (episode/close) accept an
-    int decimation ("every Nth event") but reject frequency strings, which have no clock to resolve
-    against.
+    rate (``"30Hz"``) for :meth:`HookRegistry.add`'s ``every``. Episode events accept an int decimation
+    ("every Nth event") but reject frequency strings (no clock to resolve against); CLOSE always
+    fires once and rejects any decimation.
 
     ``FRAME_*`` bracket the outer tick (once per frame); ``*_STEP`` bracket each physics substep. The
     names are engine-agnostic — they don't assume what drives the outer tick (a policy, a bridge, ...).

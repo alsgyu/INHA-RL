@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -175,6 +175,14 @@ class BaseSimulator:
         self.debug_viz_enabled = self.simulator_config.debug_viz
         self.object_registry = ObjectRegistry(device)
         self.hooks = HookRegistry(base_rates=self._hook_base_rates())
+        # Build plugins from tyro_config.plugin and keep the instances alive (key -> plugin).
+        # Constructing each here registers its hooks on self.hooks, so they fire on later
+        # emit(). The `none` preset disables a slot.
+        self.installed_plugins: dict[str, Any] = {
+            key: cfg.get_cls()(cfg, self) for key, cfg in tyro_config.plugin.items()
+        }
+        if self.installed_plugins:
+            logger.info(f"Installed plugins: {sorted(self.installed_plugins)}")
         self._closed = False
 
         # Virtual gantry system

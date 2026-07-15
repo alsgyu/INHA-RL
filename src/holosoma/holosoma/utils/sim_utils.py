@@ -232,6 +232,7 @@ def setup_simulation_environment(
             scene=config.scene,
             training=config.training,
             logger=config.logger,
+            plugin=config.plugin,
             experiment_dir=None,
         )
 
@@ -433,6 +434,9 @@ class DirectSimulation:
         # Step 5: Prepare simulation
         self.simulator.prepare_sim()
         logger.debug("simulator.prepare_sim() completed")
+
+        # Plugins were constructed in BaseSimulator.__init__ (from FullSimConfig.plugin) and
+        # have already registered their hooks, so EPISODE_START below reaches them.
 
         # Step 5.5: Initialize episode (positions virtual gantry, starts lifecycle participants, etc.)
         self.simulator.hooks.emit(Phase.EPISODE_START, 0)

@@ -304,6 +304,15 @@ def main() -> int:
         device=device,
         dtype=torch.float32,
     )
+    # Park the robot far from the objects. This harness spawns a full robot alongside the scene
+    # but drives NO policy, so it collapses under gravity; a free object near its footprint gets
+    # struck by the falling limbs, producing chaotic per-env/per-run displacement that corrupts the
+    # fall/velocity checks (a test-rig artifact, not a spawn defect). Objects live within ~2m of
+    # each env origin, so shove the robot 20m along -y — away from every scene object AND off the
+    # +x axis the per-env origins spread along (so it can't land in a neighbour env). One lever
+    # here immunises every scene preset, present and future, instead of tuning each object's pose.
+    _ROBOT_PARK_Y = -20.0
+    base_init[1] = _ROBOT_PARK_Y
     sim.create_envs(n, env_origins, base_init)
     sim.prepare_sim()
 

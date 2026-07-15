@@ -91,6 +91,7 @@ class BaseTask:
             simulator=simulator_config.config,
             robot=robot_config,
             scene=tyro_config.scene,
+            plugin=tyro_config.plugin,  # egress/custom plugins; the simulator installs them in __init__
             training=training_config,
             logger=tyro_config.logger,
             experiment_dir=str(experiment_dir),
