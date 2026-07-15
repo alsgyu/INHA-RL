@@ -7,15 +7,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
 from loguru import logger
 
 from holosoma.config_types.simulator import VirtualGantryCfg
+from holosoma.simulator.base_simulator.hooks import Phase
 from holosoma.utils.safe_torch_import import torch
 from holosoma.utils.simulator_config import SimulatorType, get_simulator_type
+
+if TYPE_CHECKING:
+    from holosoma.simulator.base_simulator.hooks import HookRegistry
 
 
 class GantryCommand(Enum):
@@ -108,6 +112,15 @@ class VirtualGantry:
         self._enabled: bool = enable
         self.set_enable(enable)
 
+    def register_hooks(self, hooks: HookRegistry) -> None:
+        """Register virtual gantry lifecycle hooks with the simulator loop.
+
+        step() is PRE_STEP: gantry forces must be applied before the substep so they act within it,
+        not reactively after.
+        """
+        hooks.add(Phase.PRE_STEP, self.step, name="virtual_gantry.step")
+        hooks.add(Phase.EPISODE_START, self.on_episode_start, name="virtual_gantry.on_episode_start")
+
     def _setup_force_application(self) -> None:
         """Set up simulator-specific force application and clearing methods.
 
@@ -188,6 +201,11 @@ class VirtualGantry:
         x, y = self.sim.robot_root_states[env_id, :3].detach().cpu().numpy()[:2]
         self.point = np.array([x, y, self.height])
         logger.debug(f"Virtual gantry position reset to '{self.point}'")
+
+    def on_episode_start(self, env_id: int) -> None:
+        """Reset the gantry anchor when the tracked environment starts."""
+        if env_id == 0:
+            self.set_position_to_robot()
 
     def handle_command(self, command_data: GantryCommandData | GantryCommand) -> bool:
         """Handle gantry commands with optional parameters.

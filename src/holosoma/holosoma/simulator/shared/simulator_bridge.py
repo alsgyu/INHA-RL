@@ -14,11 +14,13 @@ from loguru import logger
 
 from holosoma.bridge import BasicSdk2Bridge, create_sdk2py_bridge
 from holosoma.config_types.simulator import BridgeConfig
+from holosoma.simulator.base_simulator.hooks import Phase
 from holosoma.utils.clock import ClockPub
 from holosoma.utils.safe_torch_import import torch
 
 if TYPE_CHECKING:
     from holosoma.simulator.base_simulator.base_simulator import BaseSimulator
+    from holosoma.simulator.base_simulator.hooks import HookRegistry
 
 
 class SimulatorBridge:
@@ -68,6 +70,19 @@ class SimulatorBridge:
         else:
             # We don't support runtime toggling on/off
             logger.info("Robot bridge disabled")
+
+    def register_hooks(self, hooks: HookRegistry) -> None:
+        """Register bridge lifecycle hooks with the simulator loop.
+
+        step() is PRE_STEP: it applies SDK-computed torques, which must land before the substep
+        integrates them.
+        """
+        hooks.add(Phase.PRE_STEP, self.step, name="bridge.step")
+        hooks.add(Phase.CLOSE, self.close, name="bridge.close")
+
+    def close(self) -> None:
+        """Tear down bridge-owned resources (clock publisher ZMQ socket)."""
+        self.clock_pub.close()
 
     def _init_robot_bridge(self):
         """Initialize the robot bridge using the copied factory function."""

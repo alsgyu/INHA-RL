@@ -12,6 +12,7 @@ from holosoma.config_types.robot import RobotConfig
 from holosoma.config_types.scene import SceneConfig
 from holosoma.config_types.simulator import SimulatorInitConfig
 from holosoma.managers.terrain import TerrainManager
+from holosoma.simulator.base_simulator.hooks import HookRegistry, Phase
 from holosoma.simulator.shared.object_registry import ObjectRegistry, ObjectType
 from holosoma.simulator.shared.scene_types import SceneInterface
 from holosoma.simulator.types import ActorIndices, ActorNames, ActorPoses, ActorStates, EnvIds
@@ -173,6 +174,8 @@ class BaseSimulator:
         self.headless = False
         self.debug_viz_enabled = self.simulator_config.debug_viz
         self.object_registry = ObjectRegistry(device)
+        self.hooks = HookRegistry(base_rates=self._hook_base_rates())
+        self._closed = False
 
         # Virtual gantry system
         self.virtual_gantry: VirtualGantry | None = None
@@ -563,70 +566,33 @@ class BaseSimulator:
             from holosoma.simulator.shared.simulator_bridge import SimulatorBridge
 
             self.bridge = SimulatorBridge(self, self.simulator_config.bridge)
+            self.bridge.register_hooks(self.hooks)
             logger.info("Bridge system initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize bridge system: {e}")
             raise
 
-    def _step_bridge(self) -> None:
-        """Step bridge system if enabled.
+    def _hook_base_rates(self) -> dict[Phase, float]:
+        """Base tick rate (Hz) of each periodic phase, so hooks can request a rate via ``every="30Hz"``.
 
-        Should be called by subclasses during each physics step,
-        typically before physics simulation. Handles bridge state
-        publishing and command processing.
+        Per-substep phases tick at ``fps``; per-frame phases at the control rate ``fps / control_decimation``.
         """
-        if self.bridge is not None:
-            self.bridge.step()
+        sim = self.simulator_config.sim
+        fps = float(sim.fps)
+        control_hz = fps / sim.control_decimation_steps
+        return {
+            Phase.PRE_STEP: fps,
+            Phase.POST_STEP: fps,
+            Phase.FRAME_BEGIN: control_hz,
+            Phase.FRAME_END: control_hz,
+        }
 
-    # ----- Video Recording Interface -----
-    def on_episode_start(self, env_id: int = 0) -> None:
-        """Called when an episode starts.
-
-        This method provides a hook for video recording and other episode-based
-        functionality. Subclasses can override this method to add additional
-        episode start logic while calling super() to maintain video recording.
-
-        Parameters
-        ----------
-        env_id : int, default=0
-            The environment ID where the episode is starting.
-        """
-        if self.virtual_gantry is not None and env_id == 0:
-            # Follow robot on start (may want this configurable later)
-            self.virtual_gantry.set_position_to_robot()
-
-        if self.video_recorder is not None:
-            self.video_recorder.on_episode_start(env_id)
-
-    def on_episode_end(self, env_id: int = 0) -> None:
-        """Called when an episode ends.
-
-        This method provides a hook for video recording and other episode-based
-        functionality. Subclasses can override this method to add additional
-        episode end logic while calling super() to maintain video recording.
-
-        Parameters
-        ----------
-        env_id : int, default=0
-            The environment ID where the episode is ending.
-        """
-        if self.video_recorder is not None:
-            self.video_recorder.on_episode_end(env_id)
-
-    def capture_video_frame(self, env_id: int = 0) -> None:
-        """Capture a video frame during simulation.
-
-        This method should be called during each simulation step when video
-        recording is active. It delegates to the video recorder if one is
-        configured and currently recording.
-
-        Parameters
-        ----------
-        env_id : int, default=0
-            The environment ID where the frame is being captured.
-        """
-        if self.video_recorder is not None:
-            self.video_recorder.capture_frame(env_id)
+    def close(self) -> None:
+        """Tear down simulator-owned runtime participants."""
+        if self._closed:
+            return
+        self._closed = True
+        self.hooks.emit(Phase.CLOSE)
 
     # ----- Actor/Object Access Interface -----
     # These methods provide unified access to objects registered with ObjectType enum

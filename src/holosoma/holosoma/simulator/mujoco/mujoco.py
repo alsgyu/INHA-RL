@@ -354,6 +354,7 @@ class MuJoCo(BaseSimulator):
             attachment_body_names=gantry_cfg.attachment_body_names,
             cfg=gantry_cfg,
         )
+        self.virtual_gantry.register_hooks(self.hooks)
 
         # Initialize bridge system using base class helper
         self._init_bridge()
@@ -361,6 +362,7 @@ class MuJoCo(BaseSimulator):
         if self.video_config.enabled:
             self.video_recorder = MuJoCoVideoRecorder(self.video_config, self)
             self.video_recorder.setup_recording()
+            self.video_recorder.register_hooks(self.hooks)
 
         # For debugging
         self.print_mujoco_model_tree()
@@ -1071,19 +1073,8 @@ class MuJoCo(BaseSimulator):
     def simulate_at_each_physics_step(self) -> None:
         """Advance simulation by one step."""
 
-        if self.virtual_gantry:
-            # Apply virtual gantry forces before step
-            self.virtual_gantry.step()
-
-        # Step bridge for updated torques before step using base class helper
-        self._step_bridge()
-
         # Delegate simulation step to backend
         self.backend.step()
-
-        # Call video recorder capture frame if recording is active
-        if self.video_recorder and self.video_recorder.is_recording:
-            self.capture_video_frame()
 
     def _actor_freejoint_addrs(self, obj_name: str) -> tuple[int, int]:
         """Return (qpos_addr, qvel_addr) for an actor's freejoint, or raise if unknown."""

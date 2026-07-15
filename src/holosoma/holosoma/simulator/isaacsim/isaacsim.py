@@ -839,6 +839,7 @@ class IsaacSim(BaseSimulator):
             attachment_body_names=gantry_cfg.attachment_body_names,
             cfg=gantry_cfg,
         )
+        self.virtual_gantry.register_hooks(self.hooks)
 
         # Initialize bridge system using base class helper
         self._init_bridge()
@@ -846,6 +847,7 @@ class IsaacSim(BaseSimulator):
         # Setup video recording after scene is ready
         if self.video_recorder:
             self.video_recorder.setup_recording()
+            self.video_recorder.register_hooks(self.hooks)
 
         # Initialize robot tensors
         self.refresh_sim_tensors()
@@ -920,13 +922,6 @@ class IsaacSim(BaseSimulator):
         has_video_recording = self.video_recorder is not None and self.video_recorder.is_recording
         is_rendering = self.sim.has_gui() or self.sim.has_rtx_sensors() or has_video_recording
 
-        # Apply virtual gantry forces before physics step
-        if self.virtual_gantry:
-            self.virtual_gantry.step()
-
-        # Step bridge for updated torques before physics step using base class helper
-        self._step_bridge()
-
         self.scene.write_data_to_sim()
 
         # simulate
@@ -955,10 +950,6 @@ class IsaacSim(BaseSimulator):
             current_base_vel = self.robot_root_states[:, 7:10]
             self.base_linear_acc = (current_base_vel - self.prev_base_lin_vel) / self.sim_dt
             self.prev_base_lin_vel = current_base_vel.clone()
-
-        # Call video recorder capture frame if recording is active
-        if self.video_recorder:
-            self.capture_video_frame()
 
     def setup_viewer(self):
         self.viewer = self.viewport_camera_controller

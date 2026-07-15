@@ -160,6 +160,7 @@ def train(tyro_config: ExperimentConfig, training_context: TrainingContext | Non
         simulation_app = init_sim_imports(tyro_config)
         auto_close = True
 
+    env = None
     try:
         # have to import torch after isaacgym
         import torch  # noqa: F401
@@ -310,6 +311,16 @@ def train(tyro_config: ExperimentConfig, training_context: TrainingContext | Non
         logger.error(f"Exception occurred during training: {e}\n{tb_str}")
         sys.exit(1)  # manually set exit code, not possible via isaacsim app.close()
     finally:
+        # Fire the simulator CLOSE phase (bridge/video teardown). Prefer env.close() if the env
+        # wrapper defines one; else reach the simulator directly.
+        if env is not None:
+            try:
+                if hasattr(env, "close"):
+                    env.close()
+                elif hasattr(env, "simulator") and hasattr(env.simulator, "close"):
+                    env.simulator.close()
+            except Exception as e:
+                logger.warning(f"Environment close failed: {e}")
         if auto_close:
             close_simulation_app(simulation_app)
 

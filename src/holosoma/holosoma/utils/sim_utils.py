@@ -22,6 +22,7 @@ from holosoma.config_types.experiment import ExperimentConfig
 from holosoma.config_types.full_sim import FullSimConfig
 from holosoma.config_types.run_sim import RunSimConfig
 from holosoma.managers.terrain.manager import TerrainManager
+from holosoma.simulator.base_simulator.hooks import Phase
 from holosoma.utils.common import seeding
 from holosoma.utils.helpers import get_class
 from holosoma.utils.rate import RateLimiter
@@ -433,9 +434,9 @@ class DirectSimulation:
         self.simulator.prepare_sim()
         logger.debug("simulator.prepare_sim() completed")
 
-        # Step 5.5: Initialize episode (positions virtual gantry, etc.)
-        self.simulator.on_episode_start(env_id=0)
-        logger.debug("simulator.on_episode_start() completed")
+        # Step 5.5: Initialize episode (positions virtual gantry, starts lifecycle participants, etc.)
+        self.simulator.hooks.emit(Phase.EPISODE_START, 0)
+        logger.debug("simulator episode-start hooks completed")
 
         # Step 6: Setup viewer if not headless
         if not self.config.training.headless:
@@ -458,6 +459,7 @@ class DirectSimulation:
         """
         # Setup rate limiting
         sim_frequency = self.config.simulator.config.sim.fps
+        control_decimation = self.config.simulator.config.sim.control_decimation_steps
         rate_limiter = RateLimiter(sim_frequency)
 
         # Calculate viewer sync frequency
@@ -488,8 +490,15 @@ class DirectSimulation:
                 # Refresh tensors if needed (no-op for MuJoCo)
                 pre_step_refresh()
 
-                # Direct simulator step - this triggers bridge.step() inside simulate_at_each_physics_step()
+                # Direct simulator step with the same physics hooks used by BaseTask.
+                if step_count % control_decimation == 0:
+                    self.simulator.hooks.emit(Phase.FRAME_BEGIN)
+                self.simulator.hooks.emit(Phase.PRE_STEP)
                 self.simulator.simulate_at_each_physics_step()
+                self.simulator.hooks.emit(Phase.POST_STEP)
+
+                if step_count % control_decimation == 0:
+                    self.simulator.hooks.emit(Phase.FRAME_END)
 
                 # Update viewer at display rate
                 if step_count % viewer_steps == 0:
@@ -518,12 +527,11 @@ class DirectSimulation:
 
     def cleanup(self) -> None:
         """Handle simulation cleanup."""
-        # Cleanup environment
+        # Fire the simulator CLOSE phase (bridge/video teardown), via env.close() if defined else direct.
         if hasattr(self.env, "close"):
             self.env.close()
-
-        if self.simulator.video_recorder:
-            self.simulator.video_recorder.cleanup()
+        else:
+            self.simulator.close()
 
         # Cleanup simulation app
         if self.simulation_app:

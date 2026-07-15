@@ -371,12 +371,14 @@ class IsaacGym(BaseSimulator):
             attachment_body_names=gantry_cfg.attachment_body_names,
             cfg=gantry_cfg,
         )
+        self.virtual_gantry.register_hooks(self.hooks)
 
         # Initialize bridge system using base class helper
         self._init_bridge()
 
         if self.video_recorder:
             self.video_recorder.setup_recording()
+            self.video_recorder.register_hooks(self.hooks)
 
         # Initialize command system for keyboard controls
         # Command tensor format: [vx, vy, vz, yaw_rate, walk_stand, waist_yaw, ..., height, ...]
@@ -731,22 +733,10 @@ class IsaacGym(BaseSimulator):
         if not hasattr(self, "step_counter"):
             self.step_counter = 0
 
-        # Apply virtual gantry forces BEFORE physics step to ensure proper constraint behavior
-        # (forces must be part of the current step, not applied reactively after)
-        if self.virtual_gantry:
-            self.virtual_gantry.step()
-
-        # Step bridge for updated torques before physics step using base class helper
-        self._step_bridge()
-
         self.gym.simulate(self.sim)
 
         if self.sim_device == "cpu":
             self.gym.fetch_results(self.sim, True)
-
-        # Call video recorder capture frame if recording is active
-        if self.video_recorder:
-            self.capture_video_frame()
 
         self.gym.refresh_dof_state_tensor(self.sim)
 

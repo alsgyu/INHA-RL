@@ -14,6 +14,7 @@ from holosoma.managers.reward import RewardManager
 from holosoma.managers.termination import TerminationManager
 from holosoma.managers.terrain import TerrainManager
 from holosoma.simulator.base_simulator.base_simulator import BaseSimulator
+from holosoma.simulator.base_simulator.hooks import Phase
 from holosoma.simulator.shared.object_registry import ObjectType
 from holosoma.utils.helpers import get_class
 from holosoma.utils.safe_torch_import import torch
@@ -243,8 +244,7 @@ class BaseTask:
 
         # Call episode end for environments that are being reset
         for env_id in env_ids:
-            if hasattr(self.simulator, "on_episode_end"):
-                self.simulator.on_episode_end(env_id.item())
+            self.simulator.hooks.emit(Phase.EPISODE_END, env_id.item())
 
         # Reset observation history BEFORE state changes (must happen first to clear history buffers)
         self.observation_manager.reset(env_ids)
@@ -279,8 +279,7 @@ class BaseTask:
 
         # Call episode start for environments that have been reset
         for env_id in env_ids:
-            if hasattr(self.simulator, "on_episode_start"):
-                self.simulator.on_episode_start(env_id.item())
+            self.simulator.hooks.emit(Phase.EPISODE_START, env_id.item())
 
     def _reset_envs_idx_impl(self, env_ids, target_states=None, target_buf=None):
         """Template implementation of environment reset.
@@ -450,10 +449,13 @@ class BaseTask:
             self.action_manager.process_actions(actions)
 
     def _physics_step(self):
+        self.simulator.hooks.emit(Phase.FRAME_BEGIN)
         self.render()
         for _ in range(self.simulator.simulator_config.sim.control_decimation_steps):
             self._apply_force_in_physics_step()
+            self.simulator.hooks.emit(Phase.PRE_STEP)
             self.simulator.simulate_at_each_physics_step()
+            self.simulator.hooks.emit(Phase.POST_STEP)
 
     def _apply_force_in_physics_step(self):
         if self.action_manager is not None:
@@ -461,6 +463,7 @@ class BaseTask:
 
     def _post_physics_step(self):
         self._refresh_sim_tensors()
+        self.simulator.hooks.emit(Phase.FRAME_END)
         self.episode_length_buf += 1
         self._update_counters_each_step()
 
