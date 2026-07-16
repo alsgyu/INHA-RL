@@ -243,6 +243,8 @@ class ParameterWalkK1(BaseTask):
         self.cmd_resample_time = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.gait_frequency = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         self.gait_process = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self.desired_yaw = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self.desired_pos_xy = torch.zeros(self.num_envs, 2, dtype=torch.float, device=self.device)
         self.base_lin_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
         self.base_ang_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
         self.projected_gravity = quat_rotate_inverse(self.base_quat, self.gravity_vec)
@@ -260,6 +262,23 @@ class ParameterWalkK1(BaseTask):
         self.mean_ang_vel_level = 0.0
         self.max_lin_vel_level = 0.0
         self.max_ang_vel_level = 0.0
+        command_keys = [
+            "lin_vel_x",
+            "lin_vel_y",
+            "ang_vel_yaw",
+            "gait_frequency",
+            "foot_yaw_L",
+            "foot_yaw_R",
+            "body_pitch_target",
+            "body_roll_target",
+            "feet_offset_x_target",
+            "feet_offset_y_target",
+        ]
+        self.current_command_ranges = {key: list(self.cfg["commands"][key]) for key in command_keys}
+        self.current_resampling_time = list(self.cfg["commands"].get("resampling_time_s", [3.0, 8.0]))
+        self.current_disturbance_scale = 1.0
+        self.training_phase_index = 0
+        self.training_phase_progress = 0.0
         self.pushing_forces = torch.zeros(self.num_envs, self.num_bodies, 3, dtype=torch.float, device=self.device)
         self.pushing_torques = torch.zeros(self.num_envs, self.num_bodies, 3, dtype=torch.float, device=self.device)
         self.feet_roll = torch.zeros(self.num_envs, len(self.feet_indices), dtype=torch.float, device=self.device)
@@ -345,6 +364,82 @@ class ParameterWalkK1(BaseTask):
         """Destructor to ensure CSV files are closed"""
         self.close_csv_files()
 
+    @staticmethod
+    def _wrap_to_pi(angle):
+        return (angle + torch.pi) % (2 * torch.pi) - torch.pi
+
+    def _get_base_yaw(self):
+        _, _, yaw = get_euler_xyz(self.base_quat)
+        return self._wrap_to_pi(yaw)
+
+    def update_training_curriculum(self, iteration):
+        command_cfg = self.cfg["commands"]
+        command_keys = [
+            "lin_vel_x",
+            "lin_vel_y",
+            "ang_vel_yaw",
+            "gait_frequency",
+            "foot_yaw_L",
+            "foot_yaw_R",
+            "body_pitch_target",
+            "body_roll_target",
+            "feet_offset_x_target",
+            "feet_offset_y_target",
+        ]
+        self.current_command_ranges = {key: list(command_cfg[key]) for key in command_keys}
+        self.current_resampling_time = list(command_cfg.get("resampling_time_s", [3.0, 8.0]))
+        self.current_disturbance_scale = 1.0
+        self.training_phase_index = 0
+        self.training_phase_progress = 1.0
+
+        if command_cfg.get("training_mode", "sampled") == "fixed":
+            return
+
+        phases = command_cfg.get("training_phases", [])
+        if not phases:
+            return
+
+        active_idx = 0
+        for i, phase in enumerate(phases):
+            if iteration >= int(phase["start_iteration"]):
+                active_idx = i
+        phase = phases[active_idx]
+
+        for key in command_keys:
+            if key in phase:
+                self.current_command_ranges[key] = list(phase[key])
+        self.current_resampling_time = list(phase.get("resampling_time_s", self.current_resampling_time))
+        self.current_disturbance_scale = float(phase.get("disturbance_scale", self.current_disturbance_scale))
+        self.training_phase_index = active_idx
+        if active_idx < len(phases) - 1:
+            next_iter = int(phases[active_idx + 1]["start_iteration"])
+            span = max(next_iter - int(phase["start_iteration"]), 1)
+            self.training_phase_progress = float(np.clip((iteration - int(phase["start_iteration"])) / span, 0.0, 1.0))
+
+    def _command_range(self, key):
+        return self.current_command_ranges.get(key, self.cfg["commands"][key])
+
+    def _sample_resample_steps(self, env_count):
+        low = max(1, int(float(self.current_resampling_time[0]) / self.dt))
+        high = max(low + 1, int(float(self.current_resampling_time[1]) / self.dt))
+        return torch.randint(low, high, (env_count,), device=self.device)
+
+    def _reset_command_targets(self, env_ids):
+        if len(env_ids) == 0:
+            return
+        base_yaw = self._get_base_yaw()
+        self.desired_yaw[env_ids] = base_yaw[env_ids]
+        self.desired_pos_xy[env_ids] = self.root_states[env_ids, 0:2]
+
+    def _update_command_targets(self):
+        self.desired_yaw[:] = self._wrap_to_pi(self.desired_yaw + self.commands[:, 2] * self.dt)
+        cos_yaw = torch.cos(self.desired_yaw)
+        sin_yaw = torch.sin(self.desired_yaw)
+        world_vel_x = cos_yaw * self.commands[:, 0] - sin_yaw * self.commands[:, 1]
+        world_vel_y = sin_yaw * self.commands[:, 0] + cos_yaw * self.commands[:, 1]
+        self.desired_pos_xy[:, 0] += world_vel_x * self.dt
+        self.desired_pos_xy[:, 1] += world_vel_y * self.dt
+
     def reset(self):
         """Reset all robots"""
         self._reset_idx(torch.arange(self.num_envs, device=self.device))
@@ -359,6 +454,7 @@ class ParameterWalkK1(BaseTask):
         self._update_curriculum(env_ids)
         self._reset_dofs(env_ids)
         self._reset_root_states(env_ids)
+        self._reset_command_targets(env_ids)
 
         self.last_dof_targets[env_ids] = self.dof_pos[env_ids]
         self.last_root_vel[env_ids] = self.root_states[env_ids, 7:13]
@@ -406,7 +502,7 @@ class ParameterWalkK1(BaseTask):
     def _play_no_disturbance(self):
         return getattr(self, "is_play", False) and bool(self._play_cfg().get("no_disturbance", False))
 
-    def _apply_fixed_command(self, command_cfg):
+    def _apply_fixed_command(self, command_cfg, env_ids=None):
         defaults = {
             "lin_vel_x": 0.2,
             "lin_vel_y": 0.0,
@@ -421,8 +517,12 @@ class ParameterWalkK1(BaseTask):
         }
         values = [float(command_cfg.get(key, defaults[key])) for key in defaults]
         command_tensor = torch.tensor(values, dtype=torch.float, device=self.device)
-        self.commands[:, :10] = command_tensor.unsqueeze(0)
-        self.gait_frequency[:] = command_tensor[3]
+        if env_ids is None:
+            self.commands[:, :10] = command_tensor.unsqueeze(0)
+            self.gait_frequency[:] = command_tensor[3]
+        else:
+            self.commands[env_ids, :10] = command_tensor.unsqueeze(0)
+            self.gait_frequency[env_ids] = command_tensor[3]
 
     def _teleport_robot(self):
         if self.terrain.type == "plane":
@@ -452,52 +552,41 @@ class ParameterWalkK1(BaseTask):
         env_ids = (self.episode_length_buf == self.cmd_resample_time).nonzero(as_tuple=False).flatten()
         if len(env_ids) == 0:
             return
+
+        if self.cfg["commands"].get("training_mode", "sampled") == "fixed":
+            self._apply_fixed_command(self.cfg["commands"].get("fixed", {}), env_ids)
+            self.cmd_resample_time[env_ids] += self._sample_resample_steps(len(env_ids))
+            return
+
         if self.cfg["commands"]["curriculum"]:
             self._resample_curriculum_commands(env_ids)
         else:
-            self.commands[env_ids, 0] = torch_rand_float(
-                self.cfg["commands"]["lin_vel_x"][0], self.cfg["commands"]["lin_vel_x"][1], (len(env_ids), 1), device=self.device
-            ).squeeze(1)
-            self.commands[env_ids, 1] = torch_rand_float(
-                self.cfg["commands"]["lin_vel_y"][0], self.cfg["commands"]["lin_vel_y"][1], (len(env_ids), 1), device=self.device
-            ).squeeze(1)
-            self.commands[env_ids, 2] = torch_rand_float(
-                self.cfg["commands"]["ang_vel_yaw"][0], self.cfg["commands"]["ang_vel_yaw"][1], (len(env_ids), 1), device=self.device
-            ).squeeze(1)
-            self.commands[env_ids, 3] = torch_rand_float(
-            self.cfg["commands"]["gait_frequency"][0], self.cfg["commands"]["gait_frequency"][1], (len(env_ids), 1), device=self.device
-        ).squeeze(1)
-            
-            # Additional parameters
-            self.commands[env_ids, 4] = torch_rand_float(
-                self.cfg["commands"]["foot_yaw_L"][0], self.cfg["commands"]["foot_yaw_L"][1], (len(env_ids), 1), device=self.device
-            ).squeeze(1)
-            self.commands[env_ids, 5] = torch_rand_float(
-                self.cfg["commands"]["foot_yaw_R"][0], self.cfg["commands"]["foot_yaw_R"][1], (len(env_ids), 1), device=self.device
-            ).squeeze(1)
-            self.commands[env_ids, 6] = torch_rand_float(
-                self.cfg["commands"]["body_pitch_target"][0], self.cfg["commands"]["body_pitch_target"][1], (len(env_ids), 1), device=self.device
-            ).squeeze(1)
-            self.commands[env_ids, 7] = torch_rand_float(
-                self.cfg["commands"]["body_roll_target"][0], self.cfg["commands"]["body_roll_target"][1], (len(env_ids), 1), device=self.device
-            ).squeeze(1)
-            self.commands[env_ids, 8] = torch_rand_float(
-                self.cfg["commands"]["feet_offset_x_target"][0], self.cfg["commands"]["feet_offset_x_target"][1], (len(env_ids), 1), device=self.device
-            ).squeeze(1)
-            self.commands[env_ids, 9] = torch_rand_float(
-                self.cfg["commands"]["feet_offset_y_target"][0], self.cfg["commands"]["feet_offset_y_target"][1], (len(env_ids), 1), device=self.device
-            ).squeeze(1)
+            command_keys = [
+                "lin_vel_x",
+                "lin_vel_y",
+                "ang_vel_yaw",
+                "gait_frequency",
+                "foot_yaw_L",
+                "foot_yaw_R",
+                "body_pitch_target",
+                "body_roll_target",
+                "feet_offset_x_target",
+                "feet_offset_y_target",
+            ]
+            for command_idx, key in enumerate(command_keys):
+                low, high = self._command_range(key)
+                self.commands[env_ids, command_idx] = torch_rand_float(
+                    low,
+                    high,
+                    (len(env_ids), 1),
+                    device=self.device,
+                ).squeeze(1)
             
         self.gait_frequency[env_ids] = self.commands[env_ids, 3]
         still_envs = env_ids[torch.randperm(len(env_ids))[: int(self.cfg["commands"]["still_proportion"] * len(env_ids))]]
-        self.commands[still_envs, :4] = 0.0
+        self.commands[still_envs, :10] = 0.0
         self.gait_frequency[still_envs] = 0.0
-        self.cmd_resample_time[env_ids] += torch.randint(
-            int(self.cfg["commands"]["resampling_time_s"][0] / self.dt),
-            int(self.cfg["commands"]["resampling_time_s"][1] / self.dt),
-            (len(env_ids),),
-            device=self.device,
-        )
+        self.cmd_resample_time[env_ids] += self._sample_resample_steps(len(env_ids))
 
     def _update_curriculum(self, env_ids):
         if not self.cfg["commands"]["curriculum"]:
@@ -622,6 +711,7 @@ class ParameterWalkK1(BaseTask):
         self.episode_length_buf += 1
         self.common_step_counter += 1
         self.gait_process[:] = torch.fmod(self.gait_process + self.dt * self.gait_frequency, 1.0)
+        self._update_command_targets()
 
         self._kick_robots()
         self._push_robots()
@@ -646,24 +736,32 @@ class ParameterWalkK1(BaseTask):
         """Random kick the robots. Emulates an impulse by setting a randomized base velocity."""
         if self._play_no_disturbance():
             return
+        if self.current_disturbance_scale <= 0.0:
+            return
         if self.common_step_counter % np.ceil(self.cfg["randomization"]["kick_interval_s"] / self.dt) == 0:
-            self.root_states[:, 7:10] = apply_randomization(self.root_states[:, 7:10], self.cfg["randomization"].get("kick_lin_vel"))
-            self.root_states[:, 10:13] = apply_randomization(self.root_states[:, 10:13], self.cfg["randomization"].get("kick_ang_vel"))
+            lin_kick = apply_randomization(self.root_states[:, 7:10], self.cfg["randomization"].get("kick_lin_vel"))
+            ang_kick = apply_randomization(self.root_states[:, 10:13], self.cfg["randomization"].get("kick_ang_vel"))
+            self.root_states[:, 7:10] = self.root_states[:, 7:10] + (lin_kick - self.root_states[:, 7:10]) * self.current_disturbance_scale
+            self.root_states[:, 10:13] = self.root_states[:, 10:13] + (ang_kick - self.root_states[:, 10:13]) * self.current_disturbance_scale
             self.gym.set_actor_root_state_tensor(self.sim, gymtorch.unwrap_tensor(self.root_states))
 
     def _push_robots(self):
         """Random push the robots. Emulates an impulse by setting a randomized force."""
         if self._play_no_disturbance():
             return
+        if self.current_disturbance_scale <= 0.0:
+            self.pushing_forces[:, self.base_indice, :].zero_()
+            self.pushing_torques[:, self.base_indice, :].zero_()
+            return
         if self.common_step_counter % np.ceil(self.cfg["randomization"]["push_interval_s"] / self.dt) == 0:
             self.pushing_forces[:, self.base_indice, :] = apply_randomization(
                 torch.zeros_like(self.pushing_forces[:, 0, :]),
                 self.cfg["randomization"].get("push_force"),
-            )
+            ) * self.current_disturbance_scale
             self.pushing_torques[:, self.base_indice, :] = apply_randomization(
                 torch.zeros_like(self.pushing_torques[:, 0, :]),
                 self.cfg["randomization"].get("push_torque"),
-            )
+            ) * self.current_disturbance_scale
         elif self.common_step_counter % np.ceil(self.cfg["randomization"]["push_interval_s"] / self.dt) == np.ceil(
             self.cfg["randomization"]["push_duration_s"] / self.dt
         ):
@@ -745,8 +843,10 @@ class ParameterWalkK1(BaseTask):
             ],
             device=self.device,
         )
-        command_cfg_key = "play" if getattr(self, "is_play", False) else "fixed"
-        self._apply_fixed_command(self.cfg["commands"].get(command_cfg_key, {}))
+        if getattr(self, "is_play", False):
+            self._apply_fixed_command(self.cfg["commands"].get("play", {}))
+        elif self.cfg["commands"].get("training_mode", "sampled") == "fixed":
+            self._apply_fixed_command(self.cfg["commands"].get("fixed", {}))
         self.obs_buf = torch.cat(
             (
                 apply_randomization(self.projected_gravity, self.cfg["noise"].get("gravity")) * self.cfg["normalization"]["gravity"],
@@ -798,6 +898,18 @@ class ParameterWalkK1(BaseTask):
     def _reward_tracking_ang_vel(self):
         # Tracking of angular velocity commands (yaw)
         return torch.exp(-torch.square(self.commands[:, 2] - self.filtered_ang_vel[:, 2]) / self.cfg["rewards"]["tracking_sigma"])
+
+    def _reward_heading_tracking(self):
+        yaw_error = self._wrap_to_pi(self._get_base_yaw() - self.desired_yaw)
+        return torch.square(yaw_error)
+
+    def _reward_path_lateral(self):
+        path_error = self.base_pos[:, 0:2] - self.desired_pos_xy
+        sin_yaw = torch.sin(self.desired_yaw)
+        cos_yaw = torch.cos(self.desired_yaw)
+        lateral_error = -sin_yaw * path_error[:, 0] + cos_yaw * path_error[:, 1]
+        error_clip = float(self.cfg["rewards"].get("path_lateral_error_clip", 0.5))
+        return torch.clamp(torch.square(lateral_error), max=error_clip * error_clip)
 
     def _reward_base_height(self):
         # Tracking of base height

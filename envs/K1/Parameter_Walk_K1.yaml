@@ -124,6 +124,7 @@ commands:
   num_commands: 10                     # x, y, yaw, freq, yawL, yawR, pitch, roll, offset_x, offset_y
   command_order: [lin_vel_x, lin_vel_y, ang_vel_yaw, gait_frequency,
                   foot_yaw_L, foot_yaw_R, body_pitch_target, body_roll_target, feet_offset_x_target, feet_offset_y_target]
+  training_mode: sampled
   fixed:
     lin_vel_x: 0.2
     lin_vel_y: 0.0
@@ -149,20 +150,73 @@ commands:
     fixed_yaw: true
     no_disturbance: true
   still_proportion: 0.1
-  lin_vel_x: [-1.0, 1.0] # min max [m/s]
-  lin_vel_y: [-1.0, 1.0] # min max [m/s]
-  ang_vel_yaw: [-1.6, 1.6]   # min max [rad/s]
-  gait_frequency: [1.5, 1.5] # min max [Hz]
+  lin_vel_x: [-0.6, 0.8] # min max [m/s]
+  lin_vel_y: [-0.35, 0.35] # min max [m/s]
+  ang_vel_yaw: [-1.2, 1.2]   # min max [rad/s]
+  gait_frequency: [1.2, 2.0] # min max [Hz]
   
   # Additional parameters for foot and body control
-  foot_yaw_L:         [-0.7,  0.7]     # [rad]
-  foot_yaw_R:         [-0.7,  0.7]     # [rad]
-  body_pitch_target:  [-0.1,  0.3]     # [rad], 0 = upright, ±0.3 ≈ ±17°
+  foot_yaw_L:         [-0.3,  0.3]     # [rad]
+  foot_yaw_R:         [-0.3,  0.3]     # [rad]
+  body_pitch_target:  [-0.05,  0.15]   # [rad], 0 = upright
   body_roll_target:   [0.0,  0.0]      # [rad], keep the trunk/pelvis laterally upright for walking
-  feet_offset_x_target: [-0.15, 0.15]    # [m], target x-offset between feet during swing phases
-  feet_offset_y_target: [-0.08, 0.15]    # [m], target y-offset between feet during swing phases
+  feet_offset_x_target: [-0.08, 0.08]    # [m], target x-offset between feet during swing phases
+  feet_offset_y_target: [-0.04, 0.08]    # [m], target y-offset between feet during swing phases
   
   resampling_time_s: [3., 8.]
+  training_phases:
+    - start_iteration: 0
+      disturbance_scale: 0.0
+      resampling_time_s: [3.0, 5.0]
+      lin_vel_x: [0.15, 0.35]
+      lin_vel_y: [0.0, 0.0]
+      ang_vel_yaw: [0.0, 0.0]
+      gait_frequency: [1.4, 1.7]
+      foot_yaw_L: [0.0, 0.0]
+      foot_yaw_R: [0.0, 0.0]
+      body_pitch_target: [0.0, 0.0]
+      body_roll_target: [0.0, 0.0]
+      feet_offset_x_target: [0.0, 0.0]
+      feet_offset_y_target: [0.0, 0.0]
+    - start_iteration: 2500
+      disturbance_scale: 0.25
+      resampling_time_s: [4.0, 6.0]
+      lin_vel_x: [-0.2, 0.5]
+      lin_vel_y: [0.0, 0.0]
+      ang_vel_yaw: [-0.45, 0.45]
+      gait_frequency: [1.3, 1.8]
+      foot_yaw_L: [-0.1, 0.1]
+      foot_yaw_R: [-0.1, 0.1]
+      body_pitch_target: [-0.03, 0.08]
+      body_roll_target: [0.0, 0.0]
+      feet_offset_x_target: [-0.03, 0.03]
+      feet_offset_y_target: [-0.02, 0.04]
+    - start_iteration: 6000
+      disturbance_scale: 0.6
+      resampling_time_s: [5.0, 8.0]
+      lin_vel_x: [-0.4, 0.7]
+      lin_vel_y: [-0.2, 0.2]
+      ang_vel_yaw: [-0.8, 0.8]
+      gait_frequency: [1.2, 2.0]
+      foot_yaw_L: [-0.2, 0.2]
+      foot_yaw_R: [-0.2, 0.2]
+      body_pitch_target: [-0.05, 0.12]
+      body_roll_target: [0.0, 0.0]
+      feet_offset_x_target: [-0.06, 0.06]
+      feet_offset_y_target: [-0.03, 0.06]
+    - start_iteration: 10000
+      disturbance_scale: 1.0
+      resampling_time_s: [5.0, 8.0]
+      lin_vel_x: [-0.6, 0.8]
+      lin_vel_y: [-0.35, 0.35]
+      ang_vel_yaw: [-1.2, 1.2]
+      gait_frequency: [1.2, 2.0]
+      foot_yaw_L: [-0.3, 0.3]
+      foot_yaw_R: [-0.3, 0.3]
+      body_pitch_target: [-0.05, 0.15]
+      body_roll_target: [0.0, 0.0]
+      feet_offset_x_target: [-0.08, 0.08]
+      feet_offset_y_target: [-0.04, 0.08]
   # curriculum only:
   curriculum: false
   update_rate: 0.1
@@ -300,9 +354,11 @@ randomization:
 rewards:
   scales:
     survival: 0.25
-    tracking_lin_vel_x: 1.0
-    tracking_lin_vel_y: 1.0
-    tracking_ang_vel: 1.5
+    tracking_lin_vel_x: 2.0
+    tracking_lin_vel_y: 2.0
+    tracking_ang_vel: 2.0
+    heading_tracking: -3.0
+    path_lateral: -2.0
     base_height: -20.
     # Additional parameter rewards
     foot_yaw_L:            -1.0
@@ -337,6 +393,7 @@ rewards:
   penalize_contacts_on: ["Trunk", "H1", "H2", "AL", "AR", "Waist", "Hip", "Shank", "Ankle"]
   only_positive_rewards: true # if true negative total rewards are clipped at zero (avoids early termination problems)
   tracking_sigma: 0.25 # tracking reward = exp(-error^2/sigma)
+  path_lateral_error_clip: 0.5
   base_height_target: 0.52
   soft_dof_pos_limit: 1. # percentage of urdf limits, values above this limit are penalized
   soft_dof_vel_limit: 1.
