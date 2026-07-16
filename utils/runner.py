@@ -216,6 +216,22 @@ class Runner:
         parser.add_argument("--seed", type=int, help="Random seed. Overrides config file if provided.")
         parser.add_argument("--max_iterations", type=int, help="Maximum number of training iterations. Overrides config file if provided.")
         parser.add_argument("--model", type=str, help="Model class name to use (e.g., BaseActorCritic, OdometryActorCritic). Overrides config file if provided.")
+        # Play-mode command overrides for parameterized walking tasks.
+        parser.add_argument("--play_straight_eval", action="store_true", help="Use a clean straight-walk play command with fixed yaw and no disturbances.")
+        parser.add_argument("--play_fixed_yaw", action="store_true", help="Start play episodes with yaw=0 instead of randomized yaw.")
+        parser.add_argument("--play_free_yaw", action="store_true", help="Allow randomized initial yaw in play mode.")
+        parser.add_argument("--play_no_disturbance", action="store_true", help="Disable random kick/push disturbances in play mode.")
+        parser.add_argument("--play_with_disturbance", action="store_true", help="Enable random kick/push disturbances in play mode.")
+        parser.add_argument("--play_lin_vel_x", type=float, help="Play command forward velocity [m/s].")
+        parser.add_argument("--play_lin_vel_y", type=float, help="Play command lateral velocity [m/s].")
+        parser.add_argument("--play_ang_vel_yaw", type=float, help="Play command yaw velocity [rad/s].")
+        parser.add_argument("--play_gait_frequency", type=float, help="Play command gait frequency [Hz].")
+        parser.add_argument("--play_foot_yaw_l", type=float, help="Play command left foot yaw [rad].")
+        parser.add_argument("--play_foot_yaw_r", type=float, help="Play command right foot yaw [rad].")
+        parser.add_argument("--play_body_pitch", type=float, help="Play command body pitch target [rad].")
+        parser.add_argument("--play_body_roll", type=float, help="Play command body roll target [rad].")
+        parser.add_argument("--play_feet_offset_x", type=float, help="Play command feet x-offset target [m].")
+        parser.add_argument("--play_feet_offset_y", type=float, help="Play command feet y-offset target [m].")
         # Video recording mode arguments (for separate process recording)
         parser.add_argument("--record_video_mode", action="store_true", help="Enable video recording mode (record and exit).")
         parser.add_argument("--disable_record_video", action="store_true", help="Disable video recording even if the config enables it.")
@@ -232,14 +248,66 @@ class Runner:
         # Ensure default model if not present in config
         if "model" not in self.cfg.get("basic", {}):
             self.cfg.setdefault("basic", {})["model"] = "BaseActorCritic"
+        play_command_arg_map = {
+            "play_lin_vel_x": "lin_vel_x",
+            "play_lin_vel_y": "lin_vel_y",
+            "play_ang_vel_yaw": "ang_vel_yaw",
+            "play_gait_frequency": "gait_frequency",
+            "play_foot_yaw_l": "foot_yaw_L",
+            "play_foot_yaw_r": "foot_yaw_R",
+            "play_body_pitch": "body_pitch_target",
+            "play_body_roll": "body_roll_target",
+            "play_feet_offset_x": "feet_offset_x_target",
+            "play_feet_offset_y": "feet_offset_y_target",
+        }
+        play_arg_names = set(play_command_arg_map)
+        play_arg_names.update(
+            {
+                "play_straight_eval",
+                "play_fixed_yaw",
+                "play_free_yaw",
+                "play_no_disturbance",
+                "play_with_disturbance",
+            }
+        )
         for arg in vars(self.args):
             if getattr(self.args, arg) is not None:
                 if arg == "num_envs":
                     self.cfg["env"][arg] = getattr(self.args, arg)
-                elif arg == "task":
+                elif arg == "task" or arg in play_arg_names:
                     continue
                 else:
                     self.cfg["basic"][arg] = getattr(self.args, arg)
+        play_cfg = self.cfg.setdefault("commands", {}).setdefault("play", {})
+        if self.args.play_straight_eval:
+            play_cfg.update(
+                {
+                    "lin_vel_x": 0.2,
+                    "lin_vel_y": 0.0,
+                    "ang_vel_yaw": 0.0,
+                    "gait_frequency": 1.5,
+                    "foot_yaw_L": 0.0,
+                    "foot_yaw_R": 0.0,
+                    "body_pitch_target": 0.0,
+                    "body_roll_target": 0.0,
+                    "feet_offset_x_target": 0.0,
+                    "feet_offset_y_target": 0.0,
+                    "fixed_yaw": True,
+                    "no_disturbance": True,
+                }
+            )
+        for arg, cfg_key in play_command_arg_map.items():
+            value = getattr(self.args, arg)
+            if value is not None:
+                play_cfg[cfg_key] = value
+        if self.args.play_fixed_yaw:
+            play_cfg["fixed_yaw"] = True
+        if self.args.play_free_yaw:
+            play_cfg["fixed_yaw"] = False
+        if self.args.play_no_disturbance:
+            play_cfg["no_disturbance"] = True
+        if self.args.play_with_disturbance:
+            play_cfg["no_disturbance"] = False
         if self.args.record_video_mode:
             self.cfg["viewer"]["record_video"] = True
         elif self.args.disable_record_video:
@@ -584,6 +652,23 @@ class Runner:
         # Normal play mode (for manual testing)
         obs, infos = self.env.reset()
         obs = obs.to(self.device)
+        play_cfg = self.cfg.get("commands", {}).get("play", {})
+        if play_cfg:
+            print(
+                "[play command] "
+                f"vx={float(play_cfg.get('lin_vel_x', 0.0)):.3f} "
+                f"vy={float(play_cfg.get('lin_vel_y', 0.0)):.3f} "
+                f"yaw={float(play_cfg.get('ang_vel_yaw', 0.0)):.3f} "
+                f"freq={float(play_cfg.get('gait_frequency', 0.0)):.3f} "
+                f"foot_yaw=({float(play_cfg.get('foot_yaw_L', 0.0)):.3f},"
+                f"{float(play_cfg.get('foot_yaw_R', 0.0)):.3f}) "
+                f"body=({float(play_cfg.get('body_pitch_target', 0.0)):.3f},"
+                f"{float(play_cfg.get('body_roll_target', 0.0)):.3f}) "
+                f"feet_offset=({float(play_cfg.get('feet_offset_x_target', 0.0)):.3f},"
+                f"{float(play_cfg.get('feet_offset_y_target', 0.0)):.3f}) "
+                f"fixed_yaw={bool(play_cfg.get('fixed_yaw', False))} "
+                f"no_disturbance={bool(play_cfg.get('no_disturbance', False))}"
+            )
         if self.cfg["viewer"]["record_video"]:
             os.makedirs("videos", exist_ok=True)
             name = time.strftime("%Y-%m-%d-%H-%M-%S.mp4", time.localtime())

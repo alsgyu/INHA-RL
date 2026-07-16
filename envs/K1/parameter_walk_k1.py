@@ -383,16 +383,46 @@ class ParameterWalkK1(BaseTask):
         self.root_states[env_ids, :2] += self.env_origins[env_ids, :2]
         self.root_states[env_ids, :2] = apply_randomization(self.root_states[env_ids, :2], self.cfg["randomization"].get("init_base_pos_xy"))
         self.root_states[env_ids, 2] += self.terrain.terrain_heights(self.root_states[env_ids, :2])
+        yaw = torch.zeros(len(env_ids), dtype=torch.float, device=self.device)
+        if not self._play_fixed_yaw():
+            yaw = torch.rand(len(env_ids), device=self.device) * (2 * torch.pi)
         self.root_states[env_ids, 3:7] = quat_from_euler_xyz(
             torch.zeros(len(env_ids), dtype=torch.float, device=self.device),
             torch.zeros(len(env_ids), dtype=torch.float, device=self.device),
-            torch.rand(len(env_ids), device=self.device) * (2 * torch.pi),
+            yaw,
         )
         self.root_states[env_ids, 7:9] = apply_randomization(
             torch.zeros(len(env_ids), 2, dtype=torch.float, device=self.device),
             self.cfg["randomization"].get("init_base_lin_vel_xy"),
         )
         self.gym.set_actor_root_state_tensor(self.sim, gymtorch.unwrap_tensor(self.root_states))
+
+    def _play_cfg(self):
+        return self.cfg["commands"].get("play", {})
+
+    def _play_fixed_yaw(self):
+        return getattr(self, "is_play", False) and bool(self._play_cfg().get("fixed_yaw", False))
+
+    def _play_no_disturbance(self):
+        return getattr(self, "is_play", False) and bool(self._play_cfg().get("no_disturbance", False))
+
+    def _apply_fixed_command(self, command_cfg):
+        defaults = {
+            "lin_vel_x": 0.2,
+            "lin_vel_y": 0.0,
+            "ang_vel_yaw": 0.0,
+            "gait_frequency": 1.5,
+            "foot_yaw_L": 0.0,
+            "foot_yaw_R": 0.0,
+            "body_pitch_target": 0.0,
+            "body_roll_target": 0.0,
+            "feet_offset_x_target": 0.0,
+            "feet_offset_y_target": 0.0,
+        }
+        values = [float(command_cfg.get(key, defaults[key])) for key in defaults]
+        command_tensor = torch.tensor(values, dtype=torch.float, device=self.device)
+        self.commands[:, :10] = command_tensor.unsqueeze(0)
+        self.gait_frequency[:] = command_tensor[3]
 
     def _teleport_robot(self):
         if self.terrain.type == "plane":
@@ -414,6 +444,9 @@ class ParameterWalkK1(BaseTask):
             self._refresh_feet_state()
 
     def _resample_commands(self):
+        if getattr(self, "is_play", False):
+            self._apply_fixed_command(self.cfg["commands"].get("play", {}))
+            return
         if getattr(self, "manual_control", False):
             return
         env_ids = (self.episode_length_buf == self.cmd_resample_time).nonzero(as_tuple=False).flatten()
@@ -611,6 +644,8 @@ class ParameterWalkK1(BaseTask):
 
     def _kick_robots(self):
         """Random kick the robots. Emulates an impulse by setting a randomized base velocity."""
+        if self._play_no_disturbance():
+            return
         if self.common_step_counter % np.ceil(self.cfg["randomization"]["kick_interval_s"] / self.dt) == 0:
             self.root_states[:, 7:10] = apply_randomization(self.root_states[:, 7:10], self.cfg["randomization"].get("kick_lin_vel"))
             self.root_states[:, 10:13] = apply_randomization(self.root_states[:, 10:13], self.cfg["randomization"].get("kick_ang_vel"))
@@ -618,6 +653,8 @@ class ParameterWalkK1(BaseTask):
 
     def _push_robots(self):
         """Random push the robots. Emulates an impulse by setting a randomized force."""
+        if self._play_no_disturbance():
+            return
         if self.common_step_counter % np.ceil(self.cfg["randomization"]["push_interval_s"] / self.dt) == 0:
             self.pushing_forces[:, self.base_indice, :] = apply_randomization(
                 torch.zeros_like(self.pushing_forces[:, 0, :]),
@@ -708,16 +745,8 @@ class ParameterWalkK1(BaseTask):
             ],
             device=self.device,
         )
-        self.commands[:, 0] = 0.2
-        self.commands[:, 1] = 0
-        self.commands[:, 2] = 0
-        self.commands[:, 3] = 1.5
-        self.commands[:, 4] = 0
-        self.commands[:, 5] = 0
-        self.commands[:, 6] = 0
-        self.commands[:, 7] = 0
-        self.commands[:, 8] = 0
-        self.commands[:, 9] = 0
+        command_cfg_key = "play" if getattr(self, "is_play", False) else "fixed"
+        self._apply_fixed_command(self.cfg["commands"].get(command_cfg_key, {}))
         self.obs_buf = torch.cat(
             (
                 apply_randomization(self.projected_gravity, self.cfg["noise"].get("gravity")) * self.cfg["normalization"]["gravity"],
