@@ -15,7 +15,7 @@ class Recorder:
         self.cfg = cfg
         name = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
         # Create logs in robot-type/task-name hierarchy
-        task_name = self.cfg["basic"]["task"]
+        task_name = self.cfg["basic"].get("log_task", self.cfg["basic"]["task"])
         
         # Determine robot type from task name
         robot_type = self._get_robot_type(task_name)
@@ -30,7 +30,7 @@ class Recorder:
         self.writer = SummaryWriter(os.path.join(self.dir, "summaries"))
         if self.cfg["runner"]["use_wandb"] and not skip_wandb_init:
             # Sanitize project name for wandb (remove invalid characters)
-            project_name = self._sanitize_project_name(self.cfg["basic"]["task"])
+            project_name = self._sanitize_project_name(task_name)
             wandb.init(
                 project=project_name,
                 dir=self.dir,

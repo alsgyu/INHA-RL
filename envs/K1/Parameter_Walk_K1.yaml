@@ -7,6 +7,8 @@ basic:
   seed: 42 # seed - set to -1 to choose random seed
   description: ""
   debug_feet_offset: false # enable debug print for feet_x_offset in play mode
+  debug_tensors: false # print action/observation tensors every step
+  enable_csv_logging: false # write first-env action/observation CSVs
   task: "K1/ParameterWalkK1"
 
 env:
@@ -20,6 +22,7 @@ runner:
   horizon_length: 24
   mini_epochs: 20
   save_interval: 100
+  progress_interval: 10
   use_wandb: false
 
 viewer:
@@ -30,13 +33,17 @@ viewer:
   record_env_idx: 0
 
 algorithm:
-  learning_rate: 5.e-6
+  learning_rate: 1.0e-5
   gamma: 0.995
   lam: 0.95
   bound_coef: 1.0
   entropy_coef: -0.01
-  symmetric_coef: 10.
+  symmetric_coef: 10.0
   desired_kl: 0.01
+  value_clip_param: 0.2
+  min_entropy: -14
+  max_entropy: -5.0
+
 
 sim:
   dt: 0.002
@@ -127,7 +134,7 @@ commands:
   foot_yaw_L:         [-0.7,  0.7]     # [rad]
   foot_yaw_R:         [-0.7,  0.7]     # [rad]
   body_pitch_target:  [-0.1,  0.3]     # [rad], 0 = upright, ±0.3 ≈ ±17°
-  body_roll_target:   [-0.1,  0.1]     # [rad], 0 = upright, ±0.2 ≈ ±11°
+  body_roll_target:   [0.0,  0.0]      # [rad], keep the trunk/pelvis laterally upright for walking
   feet_offset_x_target: [-0.15, 0.15]    # [m], target x-offset between feet during swing phases
   feet_offset_y_target: [-0.08, 0.15]    # [m], target y-offset between feet during swing phases
   
@@ -250,7 +257,7 @@ randomization:
     distribution: "uniform"
 
   base_com:
-    range: [-0.1, 0.1]
+    range: [-0.02, 0.02]
     operation: "additive"
     distribution: "uniform"
   base_mass:
@@ -276,7 +283,7 @@ rewards:
     # Additional parameter rewards
     foot_yaw_L:            -1.0
     foot_yaw_R:            -1.0
-    orientation: -20.
+    orientation: -60.
     torques: -3.e-4
     torque_tiredness: -1.e-2
     power: -3.e-3

@@ -260,18 +260,38 @@ class Runner:
         torch.cuda.manual_seed(self.cfg["basic"]["seed"])
         torch.cuda.manual_seed_all(self.cfg["basic"]["seed"])
 
+    @staticmethod
+    def _format_duration(seconds):
+        seconds = max(0, int(seconds))
+        hours, remainder = divmod(seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        if hours > 0:
+            return f"{hours:d}h {minutes:02d}m {seconds:02d}s"
+        return f"{minutes:d}m {seconds:02d}s"
+
     def _load(self):
         if not self.cfg["basic"]["checkpoint"]:
             return
         if (self.cfg["basic"]["checkpoint"] == "-1") or (self.cfg["basic"]["checkpoint"] == -1):
             # Look for models in hierarchical structure: logs/robot_type/task_name/**/*.pth
-            task_name = self.cfg["basic"]["task"]
+            task_name = self.cfg["basic"].get("log_task", self.cfg["basic"]["task"])
             robot_type = self._get_robot_type(task_name)
-            
-            # First try: exact task in robot-specific folder
-            task_log_pattern = os.path.join("logs", robot_type, task_name, "**/*.pth")
-            task_models = sorted(glob.glob(task_log_pattern, recursive=True), key=os.path.getmtime)
-            
+
+            # First try: exact log task in robot-specific folder. A config can
+            # keep basic.task for class loading while storing experiments under
+            # a separate basic.log_task name.
+            search_task_names = [task_name]
+            run_task_name = self.cfg["basic"]["task"]
+            if run_task_name not in search_task_names:
+                search_task_names.append(run_task_name)
+
+            task_models = []
+            for search_task_name in search_task_names:
+                task_log_pattern = os.path.join("logs", robot_type, search_task_name, "**/*.pth")
+                task_models = sorted(glob.glob(task_log_pattern, recursive=True), key=os.path.getmtime)
+                if task_models:
+                    break
+
             if task_models:
                 self.cfg["basic"]["checkpoint"] = task_models[-1]
             else:
@@ -322,8 +342,19 @@ class Runner:
         log_video_duration = self.cfg["runner"].get("log_video_duration", 10.0)
         log_reward_terms = self.cfg["runner"].get("log_reward_terms", False)
         log_env_metrics = self.cfg["runner"].get("log_env_metrics", False)
-        
-        for it in range(self.cfg["basic"]["max_iterations"]):
+        progress_interval = max(1, int(self.cfg["runner"].get("progress_interval", 10)))
+        max_iterations = self.cfg["basic"]["max_iterations"]
+        train_start_time = time.time()
+
+        print(f"Training logs: {self.recorder.dir}")
+        print(
+            f"Training progress: 0/{max_iterations} (0.00%) | "
+            f"num_envs={self.env.num_envs} horizon={self.cfg['runner']['horizon_length']}"
+        )
+
+        for it in range(max_iterations):
+            rollout_reward_sum = 0.0
+            rollout_done_count = 0
             if hasattr(self.env, "update_training_curriculum"):
                 self.env.update_training_curriculum(it)
             # Check if it's time to log a video
@@ -374,6 +405,8 @@ class Runner:
                 obs, rew, done, infos = self.env.step(act)
                 obs, rew, done = obs.to(self.device), rew.to(self.device), done.to(self.device)
                 privileged_obs = infos["privileged_obs"].to(self.device)
+                rollout_reward_sum += float(rew.mean().item())
+                rollout_done_count += int(done.sum().item())
                 self.buffer.update_data("actions", n, act)
                 self.buffer.update_data("rewards", n, rew)
                 self.buffer.update_data("dones", n, done)
@@ -510,7 +543,37 @@ class Runner:
                 it,
             )
 
-            print("epoch: {}/{}".format(it + 1, self.cfg["basic"]["max_iterations"]))
+            should_report_progress = (
+                (it + 1) == 1
+                or (it + 1) == max_iterations
+                or (it + 1) % progress_interval == 0
+            )
+            if should_report_progress:
+                elapsed = time.time() - train_start_time
+                avg_iter_time = elapsed / (it + 1)
+                remaining_iters = max_iterations - (it + 1)
+                eta = avg_iter_time * remaining_iters
+                percent = 100.0 * (it + 1) / max_iterations
+                rollout_mean_reward = rollout_reward_sum / self.cfg["runner"]["horizon_length"]
+                rollout_done_rate = rollout_done_count / (
+                    self.cfg["runner"]["horizon_length"] * self.env.num_envs
+                )
+                mean_entropy_value = (
+                    float(mean_entropy.detach().cpu().item()) if torch.is_tensor(mean_entropy) else float(mean_entropy)
+                )
+                kl_mean_value = float(kl_mean.detach().cpu().item()) if torch.is_tensor(kl_mean) else float(kl_mean)
+                print(
+                    f"[train] {it + 1}/{max_iterations} ({percent:5.2f}%) | "
+                    f"elapsed {self._format_duration(elapsed)} | "
+                    f"eta {self._format_duration(eta)} | "
+                    f"reward {rollout_mean_reward:.4f} | "
+                    f"done {rollout_done_rate * 100.0:.2f}% | "
+                    f"value_loss {mean_value_loss:.4f} | "
+                    f"actor_loss {mean_actor_loss:.4f} | "
+                    f"entropy {mean_entropy_value:.4f} | "
+                    f"kl {kl_mean_value:.6f} | "
+                    f"lr {self.learning_rate:.2e}"
+                )
 
     def play(self):
         # Check if we're in record-and-exit mode (for separate process video recording)

@@ -32,8 +32,9 @@ class ParameterWalkK1(BaseTask):
         self._init_buffers()
         self._prepare_reward_function()
         
-        # Initialize CSV logging for first environment only
-        self._init_csv_logging()
+        # Optional CSV logging for first environment only
+        if self.cfg.get("basic", {}).get("enable_csv_logging", False):
+            self._init_csv_logging()
 
     def _create_envs(self):
         self.num_envs = self.cfg["env"]["num_envs"]
@@ -546,7 +547,8 @@ class ParameterWalkK1(BaseTask):
             self.actions_csv_writer.writerow(actions_env0)
             self.actions_csv_file.flush()  # Ensure data is written immediately
         
-        print(actions)
+        if self.cfg.get("basic", {}).get("debug_tensors", False):
+            print(actions)
 
         # perform physics step
         self.torques.zero_()
@@ -737,7 +739,8 @@ class ParameterWalkK1(BaseTask):
             self.obs_csv_writer.writerow(obs_env0)
             self.obs_csv_file.flush()  # Ensure data is written immediately
         
-        print(self.obs_buf)
+        if self.cfg.get("basic", {}).get("debug_tensors", False):
+            print(self.obs_buf)
         self.privileged_obs_buf = torch.cat(
             (
                 self.base_mass_scaled,
@@ -786,30 +789,21 @@ class ParameterWalkK1(BaseTask):
 
     def _reward_orientation(self):
         """
-        Reward for tracking body pitch and roll targets.
-        Computes reward based on:
-         - normalized roll angle (minus body_roll_target)
-         - normalized pitch angle (minus body_pitch_target)
-        Result: orient_reward = roll_error^2 + pitch_error^2
+        Penalize body tilt relative to commanded pitch and roll targets.
+
+        projected_gravity is measured in the trunk frame, so this stays stable
+        even when the robot has arbitrary yaw.
         """
-        # Get all Euler angles (roll, pitch, yaw) from base_quat
-        roll_all, pitch_all, _ = get_euler_xyz(self.base_quat)
-
-        # Normalize to [-π, +π]
-        roll_norm = (roll_all + torch.pi) % (2 * torch.pi) - torch.pi
-        pitch_norm = (pitch_all + torch.pi) % (2 * torch.pi) - torch.pi
-
-        # Get target values from commands
         target_pitch = self.commands[:, 6]  # body_pitch_target
         target_roll = self.commands[:, 7]   # body_roll_target
-
-        # Calculate errors
-        roll_error = roll_norm - target_roll
-        pitch_error = pitch_norm - target_pitch
-
-        # Return quadratic reward (smaller is better)
-        orient_reward = torch.square(roll_error) + torch.square(pitch_error)
-        return orient_reward
+        target_gravity_xy = torch.stack(
+            (
+                torch.sin(target_pitch),
+                -torch.sin(target_roll) * torch.cos(target_pitch),
+            ),
+            dim=-1,
+        )
+        return torch.sum(torch.square(self.projected_gravity[:, :2] - target_gravity_xy), dim=-1)
 
     def _reward_torques(self):
         # Penalize torques
