@@ -38,7 +38,7 @@ _ROBOT_JOINT_NAMES_DEFAULT = {
         "right_wrist_roll_joint",
         "right_wrist_pitch_joint",
         "right_wrist_yaw_joint",
-    ]
+    ],
 }
 
 
@@ -79,6 +79,9 @@ class DataConversionConfig:
 
     once: bool = False
     """Run the motion once and exit."""
+
+    headless: bool = False
+    """Run without viewer (headless mode for batch processing)."""
 
     use_omniretarget_data: bool = False
     """Use OmniRetarget data format."""
