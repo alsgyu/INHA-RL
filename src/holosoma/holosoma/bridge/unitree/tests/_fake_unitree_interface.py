@@ -7,8 +7,8 @@ CycloneDDS-free stand-in that the child (and parent test) can inject onto ``sys.
 round-trip, and hands back a deterministic incoming command.
 
 It mimics only the surface the bridge touches: ``RobotType``/``MessageType`` enums, ``UnitreeInterface``
-(``publish_low_state``/``read_incoming_command``/``publish_wireless_controller``), and the
-``LowState``/``MotorCommand``/``WirelessController`` data holders.
+(``publish_low_state``/``publish_odom_state``/``read_incoming_command``/``publish_wireless_controller``),
+and the ``LowState``/``MotorCommand``/``WirelessController``/``OdomState`` data holders.
 """
 
 from __future__ import annotations
@@ -70,6 +70,14 @@ class WirelessController:
         self.keys = 0
 
 
+class OdomState:
+    def __init__(self):
+        self.position = [0.0, 0.0, 0.0]
+        self.velocity = [0.0, 0.0, 0.0]
+        self.yaw_speed = 0.0
+        self.quat = [0.0, 0.0, 0.0, 0.0]
+
+
 # Where publishes are recorded and the canned incoming command is read (set by the test via env var
 # so both the spawned child and the parent agree on the path).
 _RECORD_PATH_ENV = "FAKE_UNITREE_RECORD"
@@ -106,6 +114,17 @@ class UnitreeInterface:
                 "omega": list(low_state.imu.omega),
                 "accel": list(low_state.imu.accel),
                 "tick": low_state.tick,
+            },
+        )
+
+    def publish_odom_state(self, odom_state: OdomState):
+        self._record(
+            "publish_odom_state",
+            {
+                "position": list(odom_state.position),
+                "velocity": list(odom_state.velocity),
+                "yaw_speed": odom_state.yaw_speed,
+                "quat": list(odom_state.quat),
             },
         )
 

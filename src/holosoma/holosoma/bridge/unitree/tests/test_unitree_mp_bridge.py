@@ -76,8 +76,13 @@ class _FakeSim:
         self.dof_vel = torch.zeros(1, num_motor)
         self.dof_acc = torch.zeros(1, num_motor)
         # root state: pos(3) quat(3:7 = x,y,z,w = identity) lin(7:10) ang(10:13)
+        # Distinct, non-trivial pos/vel so publish_odom's world->body rotation and xyzw->wxyz
+        # conversion are actually exercised (identity quat => body == world, so values pass through).
         root = torch.zeros(1, 13)
+        root[0, 0:3] = torch.tensor([1.0, 2.0, 3.0])  # position
         root[0, 6] = 1.0  # w = 1 (identity quat)
+        root[0, 7:10] = torch.tensor([0.5, 0.0, 0.0])  # world linear velocity
+        root[0, 10:13] = torch.tensor([0.0, 0.0, 0.3])  # world angular velocity (yaw rate)
         self.robot_root_states = root
         self.base_linear_acc = torch.zeros(1, 3)
 
@@ -147,6 +152,9 @@ def test_mp_bridge_end_to_end(fake_binding_on_path, monkeypatch):
         # publish_low_state: parent computes fields from sim state, child records them.
         bridge.publish_low_state()
 
+        # publish_odom: parent reads robot_root_states, rotates world->body, ships to child.
+        bridge.publish_odom()
+
         # read incoming command from the child (canned deterministic values).
         bridge.low_cmd_handler()
         assert list(bridge.low_cmd.tau_ff) == [1.0] * num_motor
@@ -179,6 +187,14 @@ def test_mp_bridge_end_to_end(fake_binding_on_path, monkeypatch):
     np.testing.assert_allclose(pub["payload"]["q"], [0.0, 0.1], atol=1e-6)
     assert pub["payload"]["quat"] == [1.0, 0.0, 0.0, 0.0]
     assert pub["payload"]["tick"] == int(1.5 * 1e3)
+
+    # publish_odom: position passes through; identity quat -> body velocity == world velocity;
+    # quat converted x,y,z,w -> w,x,y,z = identity; yaw_speed is the body-frame z angular rate.
+    odom = next(r for r in records if r["kind"] == "publish_odom_state")
+    np.testing.assert_allclose(odom["payload"]["position"], [1.0, 2.0, 3.0], atol=1e-6)
+    np.testing.assert_allclose(odom["payload"]["velocity"], [0.5, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(odom["payload"]["quat"], [1.0, 0.0, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(odom["payload"]["yaw_speed"], 0.3, atol=1e-6)
 
 
 def test_mp_bridge_close_is_idempotent(fake_binding_on_path, monkeypatch):

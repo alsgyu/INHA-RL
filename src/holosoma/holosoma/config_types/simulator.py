@@ -242,6 +242,13 @@ class BridgeConfig:
     use_ros: bool = False
     """Whether to use ROS for communication."""
 
+    publish_odom: bool = False
+    """Publish base odometry over the SDK (SportModeState on rt/odommodestate) each step.
+
+    Off by default. Turn on when the sim should feed base odometry through the Unitree SDK bridge
+    (so a downstream telemetry read_odom_state -> /telemetry/odom is identical to hardware). Only
+    SDKs with a base-state channel act on it; others (booster) treat publish_odom as a no-op."""
+
 
 @dataclass(frozen=True)
 class SimulatorInitConfig:

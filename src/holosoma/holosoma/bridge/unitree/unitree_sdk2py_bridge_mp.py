@@ -12,6 +12,7 @@ half MUST stay in the parent. Only the four DDS operations move to the child:
 
     * constructing ``UnitreeInterface`` (opens CycloneDDS),
     * ``publish_low_state``       (parent computes the fields from sim state, ships plain lists),
+    * ``publish_odom_state``      (parent computes base odom from sim state, ships plain lists),
     * ``read_incoming_command``   (child polls DDS, ships a picklable command back),
     * ``publish_wireless_controller`` (parent reads the joystick, ships the axes/keys).
 
@@ -86,7 +87,14 @@ def _worker(
     # Construct the binding (opens CycloneDDS) BEFORE signalling readiness, so a DDS init failure is
     # reported to the parent as an error instead of leaving it to block on the first RPC forever.
     try:
-        from unitree_interface import LowState, MessageType, RobotType, UnitreeInterface, WirelessController
+        from unitree_interface import (
+            LowState,
+            MessageType,
+            OdomState,
+            RobotType,
+            UnitreeInterface,
+            WirelessController,
+        )
 
         interface = UnitreeInterface(
             interface_name,
@@ -94,10 +102,12 @@ def _worker(
             getattr(MessageType, message_type_name),
         )
         # The child owns only the C++ objects the DDS calls need: a reusable LowState the parent fills
-        # each publish, and a WirelessController for joystick publishing. The incoming command lives in
-        # the parent (as a picklable LowCommand), so no MotorCommand is held here.
+        # each publish, a WirelessController for joystick publishing, and an OdomState for base
+        # odometry publishing. The incoming command lives in the parent (as a picklable LowCommand),
+        # so no MotorCommand is held here.
         low_state = LowState(num_motor)
         wireless_controller = WirelessController()
+        odom_state = OdomState()
     except Exception as exc:
         res_q.put(("err", exc))
         os._exit(0)
@@ -122,6 +132,14 @@ def _worker(
                     low_state.imu.accel = accel
                     low_state.tick = tick
                     interface.publish_low_state(low_state)  # CRC calculated in C++
+                    res_q.put(("ok", None))
+                elif method == "publish_odom_state":
+                    position, velocity, yaw_speed, quat = args
+                    odom_state.position = position
+                    odom_state.velocity = velocity
+                    odom_state.yaw_speed = yaw_speed
+                    odom_state.quat = quat
+                    interface.publish_odom_state(odom_state)
                     res_q.put(("ok", None))
                 elif method == "read_incoming_command":
                     cmd = interface.read_incoming_command()
@@ -262,6 +280,16 @@ class UnitreeMpSdk2Bridge(UnitreeSdk2Bridge):
             acceleration.detach().cpu().numpy().tolist(),
             int(self.sim_time * 1e3),
         )
+
+    def publish_odom(self):
+        """Compute base odom from sim state (parent), ship it to the child to publish.
+
+        Mirrors publish_low_state: the inherited _get_base_odometry reads robot_root_states and
+        rotates world->body velocity in the parent (binding-free), then plain float lists cross to
+        the child, which owns the C++ OdomState and writes SportModeState on rt/odommodestate.
+        """
+        position, quat_wxyz, lin_vel_body, yaw_speed = self._get_base_odometry()
+        self._call("publish_odom_state", position, lin_vel_body, yaw_speed, quat_wxyz)
 
     def publish_wireless_controller(self):
         """Populate the parent stand-in from the joystick (base class), ship it to the child."""

@@ -134,6 +134,11 @@ class SimulatorBridge:
         # Publish robot state to SDK
         self.robot_bridge.publish_low_state()
 
+        # Publish base odometry over the SDK (SportModeState on rt/odommodestate) when configured.
+        # Off by default.
+        if self.bridge_config.publish_odom:
+            self.robot_bridge.publish_odom()
+
         # Handle joystick input if available
         if hasattr(self.robot_bridge, "joystick") and self.robot_bridge.joystick:
             self.robot_bridge.publish_wireless_controller()

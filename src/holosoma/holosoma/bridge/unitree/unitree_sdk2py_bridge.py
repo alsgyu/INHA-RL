@@ -23,6 +23,7 @@ class UnitreeSdk2Bridge(BasicSdk2Bridge):
             LowState,
             MessageType,
             MotorCommand,
+            OdomState,
             RobotType,
             UnitreeInterface,
             WirelessController,
@@ -47,6 +48,7 @@ class UnitreeSdk2Bridge(BasicSdk2Bridge):
         self.low_state = LowState(self.num_motor)
         self.low_cmd = MotorCommand(self.num_motor)
         self.wireless_controller = WirelessController()
+        self.odom_state = OdomState()
 
     def low_cmd_handler(self, msg=None):
         """Handle Unitree low-level command messages."""
@@ -93,6 +95,20 @@ class UnitreeSdk2Bridge(BasicSdk2Bridge):
         # Publish using C++ interface
         if self.joystick is not None:
             self.interface.publish_wireless_controller(self.wireless_controller)
+
+    def publish_odom(self):
+        """Publish base odometry as SportModeState on rt/odommodestate.
+
+        Makes the simulator publish the same base-state channel the real robot's onboard
+        sport/loco mode does, so a downstream consumer (e.g. the telemetry node's
+        read_odom_state -> /telemetry/odom) is identical in sim and on hardware.
+        """
+        position, quat_wxyz, lin_vel_body, yaw_speed = self._get_base_odometry()
+        self.odom_state.position = position
+        self.odom_state.velocity = lin_vel_body
+        self.odom_state.yaw_speed = yaw_speed
+        self.odom_state.quat = quat_wxyz
+        self.interface.publish_odom_state(self.odom_state)
 
     def compute_torques(self):
         """Compute torques using Unitree's unified command structure."""
