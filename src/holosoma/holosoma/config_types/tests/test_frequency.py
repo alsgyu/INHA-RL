@@ -6,9 +6,14 @@ import pydantic
 import pytest
 
 from holosoma.config_types.frequency import resolve_decimation
+from holosoma.config_types.plugin import CameraVizPluginConfig
+from holosoma.config_types.sensor import CameraSensorConfig, SensorMountConfig
 from holosoma.config_types.simulator import PhysxConfig, SimEngineConfig
 
 pytestmark = pytest.mark.no_sim
+
+# A minimal valid mount required on every camera.
+_MOUNT = SensorMountConfig(target_kind="robot_link", target="pelvis")
 
 
 # ----- resolve_decimation -----
@@ -118,3 +123,21 @@ def test_sim_config_rejects_bad_rate_at_construction():
         _sim("banana")
     with pytest.raises(pydantic.ValidationError):
         _sim(0)
+
+
+# ----- sensor configs keep the raw value (resolved later, at the simulator) -----
+
+
+def test_camera_keeps_raw_string():
+    cam = CameraSensorConfig(mount=_MOUNT, update_decimation="20Hz")
+    assert cam.update_decimation == "20Hz"  # resolved by SensorManager at registration
+
+
+def test_camera_rejects_malformed_at_construction():
+    with pytest.raises(ValueError, match="update_decimation"):
+        CameraSensorConfig(mount=_MOUNT, update_decimation="20hz!")
+
+
+def test_viz_plugin_keeps_raw_string():
+    rec = CameraVizPluginConfig(update_decimation="10Hz")
+    assert rec.update_decimation == "10Hz"

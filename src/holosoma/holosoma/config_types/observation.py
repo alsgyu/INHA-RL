@@ -54,4 +54,4 @@ class ObservationManagerCfg:
     """Mapping of group name to its configuration."""
 
     clip_observations: float = 100.0
-    """Global observation clipping threshold (applied to all observations)."""
+    """Global observation clipping threshold (applied to all non-image observations)."""

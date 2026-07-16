@@ -13,6 +13,7 @@ from holosoma.config_types.randomization import RandomizationManagerCfg
 from holosoma.config_types.reward import RewardManagerCfg
 from holosoma.config_types.robot import RobotConfig
 from holosoma.config_types.scene import SceneConfig
+from holosoma.config_types.sensor import CameraSensorConfig, validate_camera_dict
 from holosoma.config_types.simulator import SimulatorConfig
 from holosoma.config_types.termination import TerminationManagerCfg
 from holosoma.config_types.terrain import TerrainManagerCfg
@@ -26,6 +27,7 @@ class EnvConfig:
 
     simulator: SimulatorConfig
     scene: SceneConfig
+    sensors: dict[str, CameraSensorConfig]
     terrain: TerrainManagerCfg
     observation: ObservationManagerCfg | None
     action: ActionManagerCfg | None
@@ -38,8 +40,8 @@ class EnvConfig:
     training: TrainingConfig
     logger: LoggerConfig
     plugin: dict[str, PluginConfig]
-    """Plugins to install on the simulator (key -> resolved PluginConfig). Threaded into
-    FullSimConfig; installed in ``BaseSimulator.__init__``."""
+    """Plugins to install on the simulator (key -> resolved PluginConfig), including the
+    ROS2/viz/video egress sinks. Threaded into FullSimConfig; installed in ``BaseSimulator.__init__``."""
 
 
 def get_tyro_env_config(tyro_config: ExperimentConfig) -> EnvConfig:
@@ -55,11 +57,16 @@ def get_tyro_env_config(tyro_config: ExperimentConfig) -> EnvConfig:
     EnvConfig
         Environment configuration with extracted fields.
     """
+    # Cross-camera validation (Warp render-flag agreement) across the assembled camera dict.
+    validate_camera_dict(tyro_config.sensor)
     return EnvConfig(
         env_class=tyro_config.env_class,
         training=tyro_config.training,
         simulator=tyro_config.simulator,
         scene=tyro_config.scene,
+        # The CLI declares cameras per-key in the dynamic ``sensor`` dict (key = sensor name).
+        sensors=dict(tyro_config.sensor),
+        plugin=dict(tyro_config.plugin),
         terrain=tyro_config.terrain,
         observation=tyro_config.observation,
         action=tyro_config.action,
@@ -70,5 +77,4 @@ def get_tyro_env_config(tyro_config: ExperimentConfig) -> EnvConfig:
         curriculum=tyro_config.curriculum,
         robot=tyro_config.robot,
         logger=tyro_config.logger,
-        plugin=dict(tyro_config.plugin),
     )

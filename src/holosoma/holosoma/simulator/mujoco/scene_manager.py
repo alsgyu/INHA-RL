@@ -12,6 +12,7 @@ from loguru import logger
 
 from holosoma.config_types.robot import RobotConfig
 from holosoma.config_types.scene import PhysicsConfig, RigidObjectConfig, SceneFileConfig
+from holosoma.config_types.sensor import CameraSensorConfig
 from holosoma.config_types.simulator import MujocoXMLFilterCfg, SimulatorConfig
 from holosoma.managers.terrain.base import TerrainTermBase
 from holosoma.simulator.shared.asset_format import select_asset_format
@@ -579,6 +580,76 @@ class MujocoSceneManager:
         for body_name, is_static in body_is_static.items():
             actor_name = f"{scene_file_name}_{body_name}"
             self.scene_file_bodies[actor_name] = (f"{prefix}{body_name}", is_static)
+
+    def add_cameras(self, cameras: dict[str, CameraSensorConfig], robot_prefix: str = "robot_") -> None:
+        """Add mounted cameras to the world spec as ``<camera>`` children, before compile.
+
+        A camera is a child of its mount body, so MuJoCo's kinematics follow that body
+        natively. MuJoCo's camera optical frame is ``-Z`` forward, ``+Y`` up, matching
+        holosoma's convention, and MjSpec quaternions are ``[w,x,y,z]`` (w-first), matching
+        the config-layer convention, so the mount offset applies with no conversion here.
+
+        Call after the robot/scene bodies are attached and before ``compile()``.
+
+        Parameters
+        ----------
+        cameras : dict[str, CameraSensorConfig]
+            Camera configs to create, keyed by sensor name (the --sensor dict keys).
+        robot_prefix : str
+            The attach prefix used for the robot (default ``"robot_"``), used to resolve a
+            ``robot_link`` mount target to its composed body name.
+        """
+        for cam_name, cam in cameras.items():
+            mount = cam.mount
+            if mount.target_kind == "world":
+                # Free-floating: child of the worldbody, so pos/quat are the pose in the env frame.
+                body = self.world_spec.worldbody
+            else:
+                body_name = self._resolve_mount_body_name(mount.target_kind, mount.target, robot_prefix)
+                body = self.world_spec.body(body_name)
+                if body is None:
+                    raise ValueError(
+                        f"Camera '{cam_name}' mounts on body '{body_name}' (kind={mount.target_kind}, "
+                        f"target='{mount.target}') which is not present in the compiled scene."
+                    )
+            # MjSpec camera: child of the mount body, fovy in degrees, resolution [W,H].
+            # pos is the mount-frame offset; quat is the w-first mount orientation as-is.
+            body.add_camera(
+                name=cam_name,
+                pos=list(mount.position),
+                quat=list(mount.orientation),  # [w,x,y,z], applied directly (MjSpec is w-first)
+                fovy=cam.vertical_fov,  # MuJoCo's fovy is the vertical FOV in degrees
+                resolution=[cam.width, cam.height],
+                mode=mujoco.mjtCamLight.mjCAMLIGHT_FIXED,
+            )
+
+    def _resolve_mount_body_name(self, target_kind: str, target: str, robot_prefix: str) -> str:
+        """Resolve a sensor mount (kind, target) to a composed-spec body name.
+
+        ``robot_link`` -> a prefixed robot link (name the root link to mount on the base);
+        ``actor`` -> a registered rigid-object / scene-file body. Robot-link membership is
+        checked against the robot's captured element inventory so a bad link name fails loud.
+        """
+        if target_kind == "robot_link":
+            meta = self.robot_spec_meta
+            if meta is None:
+                raise ValueError(f"Camera mount target_kind='robot_link' (link '{target}') but no robot was added.")
+            if target != meta.root_body and target not in meta.body_names:
+                raise ValueError(
+                    f"Camera mount robot_link '{target}' is not a robot body. "
+                    f"Known links: {[meta.root_body, *meta.body_names]}."
+                )
+            return f"{robot_prefix}{target}"
+        if target_kind == "actor":
+            if target in self.rigid_object_root_bodies:
+                return self.rigid_object_root_bodies[target]
+            if target in self.scene_file_bodies:
+                return self.scene_file_bodies[target][0]
+            raise ValueError(
+                f"Camera mount actor '{target}' is not a registered scene object. "
+                f"Known actors: {[*self.rigid_object_root_bodies, *self.scene_file_bodies]}."
+            )
+        raise ValueError(f"Unknown camera mount target_kind '{target_kind}'.")
 
     def _apply_physics_to_body(
         self, body: mujoco.MjSpec.Body, physics: PhysicsConfig | None, name: str, *, apply_mass: bool = True

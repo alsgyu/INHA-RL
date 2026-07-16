@@ -19,7 +19,7 @@ from holosoma.config_types.simulator import MujocoBackend
 from holosoma.managers.terrain.manager import TerrainManager
 from holosoma.simulator.base_simulator.base_simulator import BaseSimulator
 from holosoma.simulator.mujoco.backends import WARP_AVAILABLE, ClassicBackend, WarpBackend
-from holosoma.simulator.mujoco.backends.base import mj_to_holosoma_quat
+from holosoma.simulator.mujoco.backends.base import apply_sensor_scene_flags, mj_to_holosoma_quat
 from holosoma.simulator.mujoco.command_registry import CommandRegistry
 from holosoma.simulator.mujoco.fields import prepare_fields, prepare_manager_fields
 from holosoma.simulator.mujoco.scene_manager import MujocoSceneManager
@@ -359,6 +359,10 @@ class MuJoCo(BaseSimulator):
         # Initialize bridge system using base class helper
         self._init_bridge()
 
+        # Create mounted camera sensors (cameras were added to the spec pre-compile in
+        # _setup_scene; this resolves their compiled ids and renderers). No-op if none.
+        self._create_sensors()
+
         if self.video_config.enabled:
             self.video_recorder = MuJoCoVideoRecorder(self.video_config, self)
             self.video_recorder.setup_recording()
@@ -415,6 +419,11 @@ class MuJoCo(BaseSimulator):
                 xml_filter=self.simulator_config.robot_mjcf_filter,
                 scene_asset_root=self.scene_config.asset_root,
             )
+
+        # Add mounted cameras after all mount bodies exist but still before compile():
+        # each camera is a <camera> child of its mount body, so it follows that body natively.
+        if self.sensor_config:
+            self.scene_manager.add_cameras(self.sensor_config)
 
     def _set_robot_properties(self) -> None:
         """Set robot properties including DOF names, body names, and index mappings.
@@ -735,6 +744,12 @@ class MuJoCo(BaseSimulator):
 
         # Create Scene following SceneInterface protocol
         self.scene = MuJoCoScene(self.env_origins, self.sim_device)
+
+        # World-mount cameras are worldbody children, so (unlike body-attached cameras) they don't
+        # inherit the per-env body offset; place each env's world camera at its own origin now that
+        # env_origins exist. WarpBackend only (Classic is single-env); the backend no-ops if it has
+        # no world cameras or num_envs==1.
+        self._offset_world_cameras()
 
         # Initialize state tensors based on actual DOF count
         self.dof_pos = torch.zeros(self.num_envs, self.num_dof, device=self.sim_device)
@@ -1545,6 +1560,70 @@ class MuJoCo(BaseSimulator):
         except ValueError:
             raise RuntimeError(f"Body '{body_name}' not found in body_names: {self.body_names}")
 
+    # ----- Camera sensors (mounted, follow-by-spec-hierarchy) -----
+
+    def _create_sensors(self) -> None:
+        """Create mounted-camera runtime state and the backend's per-camera renderers.
+
+        Cameras were already added to the spec as ``<camera>`` children of their mount bodies
+        (in ``_setup_scene``, before compile), so they follow their body natively. This builds
+        the ``SensorManager`` and hands the cameras to ``backend.create_renderers`` (which resolves
+        each compiled ``<camera>`` id into its own name-keyed map). No-op without cameras.
+        """
+        cameras = self.sensor_config
+        if not cameras:
+            return
+
+        from holosoma.simulator.shared.camera_sensor import SensorManager
+
+        sim = self.simulator_config.sim
+        self.sensor_manager = SensorManager(self.sim_device, control_hz=sim.fps / sim.control_decimation_steps)
+
+        # MuJoCo clipping is a global near/far (model.vis.map.{znear,zfar}, scaled by the scene
+        # extent), not per-camera. Honor the agnostic-core near/far across all sensor cameras by
+        # widening the global range to cover them (min near / max far). This is the same global
+        # knob the spectator video recorder tweaks (video_recorder.py).
+        assert self.root_model is not None  # compiled in load_assets, before _create_sensors
+        extent = float(self.root_model.stat.extent)
+        if extent > 0:
+            self.root_model.vis.map.znear = min(c.near for c in cameras.values()) / extent
+            self.root_model.vis.map.zfar = max(c.far for c in cameras.values()) / extent
+
+        for cam_name, cam in cameras.items():
+            self.sensor_manager.register_camera(cam_name, cam)
+
+        self.backend.create_renderers(self.sensor_manager.cameras)
+
+    def _offset_world_cameras(self) -> None:
+        """Place each env's world-mount cameras at its own origin (WarpBackend multi-env only).
+
+        A ``target_kind="world"`` camera is a worldbody child, so it does not pick up the per-env
+        body offset the way a robot/actor-mounted camera does; without this every world's camera sits
+        at the shared spec pose and sees only env 0's scene. Delegates to the backend, which shifts the
+        per-world ``cam_pos``. Classic (single-env) and the no-camera / no-world-camera cases are
+        no-ops; guarded by ``hasattr`` so only the WarpBackend path runs.
+        """
+        if self.sensor_manager is None or not hasattr(self.backend, "offset_world_cameras"):
+            return
+        cam_ids = getattr(self.backend, "_cam_ids", {})
+        world_cam_ids = [
+            cam_ids[name]
+            for name, cam in self.sensor_config.items()
+            if cam.mount.target_kind == "world" and name in cam_ids
+        ]
+        if world_cam_ids:
+            self.backend.offset_world_cameras(world_cam_ids, self.env_origins)
+
+    def render_sensors(self) -> None:
+        """Render all due cameras into their cached buffers (see ``get_camera_data``)."""
+        if self.sensor_manager is None:
+            return
+        due = self.sensor_manager.collect_due()
+        if not due:
+            return
+
+        self.backend.render_cameras(due)
+
     def setup_viewer(self) -> None:
         """Set up MuJoCo viewer using official mujoco.viewer API with keyboard callback."""
         logger.info("=== Setting up MuJoCo viewer ===")
@@ -1555,6 +1634,9 @@ class MuJoCo(BaseSimulator):
             return
 
         self.viewer = mujoco.viewer.launch_passive(self.root_model, self.root_data, key_callback=self._key_callback)
+        # Native camera-frustum gizmo (mjVIS_CAMERA) on the live viewer's own MjvOption; a viewer-only
+        # decoration drawn from each <camera>'s intrinsics, separate from the sensor renders.
+        apply_sensor_scene_flags(self.debug_viz_enabled, self.viewer.opt)
         logger.info("=== Viewer setup completed with keyboard callback ===")
 
     def _add_text_overlay(

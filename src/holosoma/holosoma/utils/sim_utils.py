@@ -21,6 +21,7 @@ from holosoma.config_types.env import get_tyro_env_config
 from holosoma.config_types.experiment import ExperimentConfig
 from holosoma.config_types.full_sim import FullSimConfig
 from holosoma.config_types.run_sim import RunSimConfig
+from holosoma.config_types.sensor import validate_camera_dict
 from holosoma.managers.terrain.manager import TerrainManager
 from holosoma.simulator.base_simulator.hooks import Phase
 from holosoma.utils.common import seeding
@@ -101,9 +102,12 @@ def setup_isaaclab_launcher(config: ExperimentConfig | RunSimConfig, device: str
     else:  # AppLauncher auto-detects
         pass
 
-    # Check if video recording is enabled and add --enable_cameras flag
+    # Enable the IsaacSim renderer when cameras are needed: video recording OR any configured
+    # perception sensor (a TiledCamera fails to spawn without --enable_cameras). ``sensor`` is the
+    # per-key camera dict on RunSimConfig/ExperimentConfig.
     video_enabled = config.logger.video.enabled or config.logger.headless_recording
-    if video_enabled:
+    cameras_enabled = bool(getattr(config, "sensor", None))
+    if video_enabled or cameras_enabled:
         args_cli.enable_cameras = True
 
     app_launcher = AppLauncher(args_cli)
@@ -225,11 +229,16 @@ def setup_simulation_environment(
         # For run_sim.py, we'll create the simulator directly instead of using environment wrapper
         logger.info("Direct simulation mode - creating simulator directly, without experiment config")
 
+        # Cross-camera validation (Warp render-flag agreement) across the assembled camera dict.
+        validate_camera_dict(config.sensor)
+
         # Create FullSimConfig from RunSimConfig.
         full_config = FullSimConfig(
             simulator=config.simulator.config,
             robot=config.robot,
             scene=config.scene,
+            # The CLI declares cameras per-key in the dynamic ``sensor`` dict (key = sensor name).
+            sensors=dict(config.sensor),
             training=config.training,
             logger=config.logger,
             plugin=config.plugin,
@@ -406,8 +415,9 @@ class DirectSimulation:
         """
         logger.debug("Initializing simulator...")
 
-        # Need to manually set headless since it's in training config currently
-        self.simulator.set_headless(False)
+        # Headless lives in training config; honor it (was hardcoded False, which forced the viewer
+        # on and pulled in isaacsim.util.debug_draw even under --training.headless True).
+        self.simulator.set_headless(self.config.training.headless)
 
         # Step 1: Basic setup
         self.simulator.setup()
@@ -501,6 +511,9 @@ class DirectSimulation:
                 self.simulator.simulate_at_each_physics_step()
                 self.simulator.hooks.emit(Phase.POST_STEP)
 
+                # Mounted cameras render and egress consumers publish here, as FRAME_END plugins
+                # (once per control step). render_sensors registered before any consumer, so
+                # buffers are fresh; both no-op when no cameras/consumers are configured.
                 if step_count % control_decimation == 0:
                     self.simulator.hooks.emit(Phase.FRAME_END)
 
@@ -531,11 +544,15 @@ class DirectSimulation:
 
     def cleanup(self) -> None:
         """Handle simulation cleanup."""
-        # Fire the simulator CLOSE phase (bridge/video teardown), via env.close() if defined else direct.
+        # Fire the simulator CLOSE phase (via env.close() if defined, else direct): runs every hook's
+        # close in reverse registration order — bridge/video teardown and camera-consumer stop()
+        # (encode video, close ROS nodes/windows).
         if hasattr(self.env, "close"):
             self.env.close()
         else:
             self.simulator.close()
+
+        self.simulator._stop_bridge()
 
         # Cleanup simulation app
         if self.simulation_app:

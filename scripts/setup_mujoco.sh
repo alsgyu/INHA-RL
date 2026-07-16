@@ -12,9 +12,13 @@ if ! command -v sudo &> /dev/null; then
   export -f sudo
 fi
 
-# MuJoCo Warp version to install -- the repo is missing version tags and branches
-# Arbitrarily chosen from mainline at the time we've ~tested against
-MUJOCO_WARP_COMMIT="09ec1da"
+# MuJoCo Warp version to install -- the repo is missing version tags and branches.
+# Pinned to the 3.10.0 line, which ships the batched-camera renderer API
+# (mujoco_warp.create_render_context / render / get_rgb / get_depth) the WarpBackend uses;
+# the older 09ec1da mainline predated it. mujoco_warp[cuda]'s own deps pull warp-lang>=1.14 from
+# pypi.nvidia.com (public PyPI caps at 1.10.1), installed after holosoma below; holosoma itself only
+# floors warp-lang>=1.10 so the non-mujoco images (plain PyPI) still resolve.
+MUJOCO_WARP_COMMIT="ecaef88917a3c90cd238bf76681ca770f58033df"
 
 # Parse command-line arguments
 INSTALL_WARP=true  # Default: install warp (GPU-accelerated)

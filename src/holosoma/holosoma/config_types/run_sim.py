@@ -16,12 +16,14 @@ import holosoma.config_values.plugin
 import holosoma.config_values.robot
 import holosoma.config_values.run_sim
 import holosoma.config_values.scene
+import holosoma.config_values.sensor
 import holosoma.config_values.terrain
 from holosoma.config_types.experiment import TrainingConfig
 from holosoma.config_types.logger import DisabledLoggerConfig, LoggerConfig
 from holosoma.config_types.plugin import PluginConfig
 from holosoma.config_types.robot import RobotConfig
 from holosoma.config_types.scene import SceneConfig
+from holosoma.config_types.sensor import CameraSensorConfig
 from holosoma.config_types.simulator import SimulatorConfig
 from holosoma.config_types.terrain import TerrainManagerCfg
 from holosoma.config_types.video import VideoConfig
@@ -73,6 +75,13 @@ class RunSimConfig:
     # instantiated against the live simulator in ``BaseSimulator.__init__``. Empty by default.
     plugin: dict[str, Annotated[PluginConfig, UseRegistry(holosoma.config_values.plugin.PLUGIN_REGISTRY)]] = field(
         default_factory=dict
+    )
+
+    # Mounted cameras, declared per-key on the CLI as ``--sensor.<name>:<variant>`` (resolved from
+    # CAMERA_REGISTRY), optionally with per-key field overrides (e.g. ``--sensor.<name>.width 224``).
+    # The dict key becomes the sensor name. Empty by default (no cameras).
+    sensor: dict[str, Annotated[CameraSensorConfig, UseRegistry(holosoma.config_values.sensor.CAMERA_REGISTRY)]] = (
+        field(default_factory=dict)
     )
 
     # Minimal configs needed for FullSimConfig

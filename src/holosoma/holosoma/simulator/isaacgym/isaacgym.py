@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -32,8 +33,14 @@ from holosoma.simulator.shared.virtual_gantry import (
 from holosoma.simulator.types import ActorIndices, ActorNames, ActorPoses, ActorStates, EnvIds
 from holosoma.utils.draw import draw_line, draw_sphere
 from holosoma.utils.module_utils import get_holosoma_root
+from holosoma.utils.rotations import quat_mul
 from holosoma.utils.safe_torch_import import torch
 from holosoma.utils.torch_utils import to_torch, torch_rand_float
+
+# Change-of-basis quaternion (xyzw) from the holosoma camera frame (-Z fwd / +Y up) to
+# IsaacGym's native camera frame (+X fwd / +Z up): the rotation sending +X->-Z, +Z->+Y, +Y->-X.
+# MuJoCo/IsaacSim use the -Z fwd / +Y up frame directly.
+_CANONICAL_TO_ISAACGYM_XYZW = (0.5, -0.5, -0.5, -0.5)
 
 
 class Scene:
@@ -138,11 +145,14 @@ class IsaacGym(BaseSimulator):
         else:
             self.device = "cpu"
 
+        # Cameras (video recorder or perception sensors) need a graphics context even when
+        # headless; without it create_camera_sensor returns no image (black frame).
+        self._cameras_enabled = self.video_config.enabled or bool(self.sensor_config)
         self.graphics_device_id = self.sim_device_id
-        if self.headless and not self.video_config.enabled:
+        if self.headless and not self._cameras_enabled:
             self.graphics_device_id = -1
-        elif self.video_config.enabled:
-            logger.info("Video recording enabled: keeping graphics enabled for camera support")
+        elif self._cameras_enabled:
+            logger.info("Cameras enabled: keeping graphics enabled for camera sensor support")
 
         if self.video_config.enabled:
             self.video_recorder = IsaacGymVideoRecorder(self.video_config, self)
@@ -390,6 +400,9 @@ class IsaacGym(BaseSimulator):
         # get/set_actor_states API works on every backend.
         self._register_objects()
 
+        # Register the per-env camera handles into the SensorManager.
+        self._create_sensors()
+
         # Invoke startup randomization for domain randomization
         # This must happen AFTER all envs are created but BEFORE prepare_sim()
         self._invoke_startup_randomization()
@@ -497,6 +510,151 @@ class IsaacGym(BaseSimulator):
             self.object_handles[object_name].append(object_handle)
             object_idx = self.gym.get_actor_index(env_ptr, object_handle, gymapi.DOMAIN_SIM)
             self.gym_object_indices[object_name].append(object_idx)
+
+        # Mounted cameras for this env: created per-env and attached to the mount body so they
+        # follow it. IsaacGym has no batched camera: one sensor per env. The handle lists span all
+        # envs (parallel to self.envs), so initialize them once and append per env.
+        if env_id == 0:
+            self._camera_handles: dict[str, list[Any]] = {name: [] for name in self.sensor_config}
+        self._build_env_cameras(env_id, env_ptr, robot_handle)
+
+    # ----- Camera sensors -----
+
+    def _resolve_mount_body_handle(self, env_ptr, robot_handle, mount):
+        """Return the rigid-body handle for a sensor mount within ``env_ptr``.
+
+        ``robot_link`` -> a named robot link (name the root link to mount on the base);
+        ``actor`` -> a scene actor's (single) body. Uses IsaacGym's per-actor body lookup.
+        """
+        if mount.target_kind == "robot_link":
+            body_name = mount.target
+            handle = self.gym.find_actor_rigid_body_handle(env_ptr, robot_handle, body_name)
+            if handle < 0:
+                raise ValueError(f"Camera robot mount body '{body_name}' not found in robot bodies {self._body_list}.")
+            return handle
+        if mount.target_kind == "actor":
+            actor_handles = self.object_handles.get(mount.target)
+            if not actor_handles:
+                raise ValueError(f"Camera actor mount '{mount.target}' is not a registered scene object.")
+            actor_handle = actor_handles[-1]  # the handle just built for this env
+            body_name = self.gym.get_actor_rigid_body_names(env_ptr, actor_handle)[0]
+            return self.gym.find_actor_rigid_body_handle(env_ptr, actor_handle, body_name)
+        raise ValueError(f"Unknown camera mount target_kind '{mount.target_kind}'.")
+
+    def _build_env_cameras(self, env_id, env_ptr, robot_handle):
+        """Create and body-attach one camera sensor per configured camera, for this env."""
+        for cam_name, cam in self.sensor_config.items():
+            props = gymapi.CameraProperties()
+            props.width = cam.width
+            props.height = cam.height
+            props.enable_tensors = True  # GPU image tensors (zero-copy read)
+            props.near_plane = cam.near  # agnostic-core clipping, honored on every backend
+            props.far_plane = cam.far
+            # IsaacGym takes a horizontal fov; derive it from the vertical fov and aspect.
+            aspect = cam.width / cam.height
+            props.horizontal_fov = math.degrees(2 * math.atan(math.tan(math.radians(cam.vertical_fov) / 2) * aspect))
+            ig = cam.isaacgym
+            if ig and ig.supersampling_horizontal is not None:
+                props.supersampling_horizontal = ig.supersampling_horizontal
+            if ig and ig.supersampling_vertical is not None:
+                props.supersampling_vertical = ig.supersampling_vertical
+            if ig and ig.use_collision_geometry is not None:
+                props.use_collision_geometry = ig.use_collision_geometry
+
+            cam_handle = self.gym.create_camera_sensor(env_ptr, props)
+            if cam_handle < 0:
+                raise RuntimeError(f"IsaacGym failed to create camera sensor '{cam_name}' (graphics disabled?).")
+
+            local_tf = self._mount_to_isaacgym_transform(cam.mount)
+            if cam.mount.target_kind == "world":
+                # Free-floating: place at the env-local pose and leave it fixed (no body to follow).
+                # Unlike attach_camera_to_body, set_camera_transform takes a WORLD transform (the
+                # env_ptr only selects which env's camera, it does not offset the pose), so add this
+                # env's origin — otherwise every env's world camera lands near the global origin and
+                # only env 0 (origin [0,0,0]) frames its scene; envs 1..N look at empty space.
+                origin = self.env_origins[env_id]
+                world_tf = gymapi.Transform(
+                    p=gymapi.Vec3(
+                        local_tf.p.x + float(origin[0]),
+                        local_tf.p.y + float(origin[1]),
+                        local_tf.p.z + float(origin[2]),
+                    ),
+                    r=local_tf.r,
+                )
+                self.gym.set_camera_transform(cam_handle, env_ptr, world_tf)
+            else:
+                body_handle = self._resolve_mount_body_handle(env_ptr, robot_handle, cam.mount)
+                self.gym.attach_camera_to_body(cam_handle, env_ptr, body_handle, local_tf, gymapi.FOLLOW_TRANSFORM)
+            self._camera_handles[cam_name].append(cam_handle)
+
+    def _mount_to_isaacgym_transform(self, mount) -> gymapi.Transform:
+        """Mount (pos + w-first quat, -Z fwd/+Y up) to an IsaacGym local Transform.
+
+        Composes the mount orientation with the change-of-basis so the camera looks where the
+        mount intends on IsaacGym's native (+X fwd / +Z up) optical axis.
+        """
+        wxyz = torch.tensor([mount.orientation], dtype=torch.float32)  # [1,4] w,x,y,z
+        xyzw = wxyz[:, [1, 2, 3, 0]]
+        basis = torch.tensor([_CANONICAL_TO_ISAACGYM_XYZW], dtype=torch.float32)
+        native_xyzw = quat_mul(xyzw, basis, w_last=True)[0]
+        tf = gymapi.Transform()
+        tf.p = gymapi.Vec3(*mount.position)
+        tf.r = gymapi.Quat(float(native_xyzw[0]), float(native_xyzw[1]), float(native_xyzw[2]), float(native_xyzw[3]))
+        return tf
+
+    def _create_sensors(self) -> None:
+        """Register the per-env camera handles (built in the env loop) into the SensorManager."""
+        cameras = self.sensor_config
+        if not cameras:
+            return
+        from holosoma.simulator.shared.camera_sensor import SensorManager
+
+        # IsaacGym uses self.device (may be "cpu").
+        sim = self.simulator_config.sim
+        self.sensor_manager = SensorManager(self.device, control_hz=sim.fps / sim.control_decimation_steps)
+        for cam_name, cam in cameras.items():
+            self.sensor_manager.register_camera(cam_name, cam)
+
+    def render_sensors(self) -> None:
+        """Render all camera sensors once (per control step), honoring update_decimation."""
+        if self.sensor_manager is None:
+            return
+        due = self.sensor_manager.collect_due()
+        if not due:
+            return
+        # Update the graphics scene from the latest physics state, then render all camera sensors
+        # in one pass. fetch_results + step_graphics are required before render or the image is
+        # blank (same sequence the video recorder uses).
+        self.gym.fetch_results(self.sim, True)
+        self.gym.step_graphics(self.sim)
+        self.gym.render_all_camera_sensors(self.sim)
+        self.gym.start_access_image_tensors(self.sim)
+        try:
+            for runtime in due:
+                handles = self._camera_handles[runtime.name]  # per-env handles (parallel to self.envs)
+                if "rgb" in runtime.config.data_types:
+                    frames = []
+                    for e in range(self.num_envs):
+                        # IsaacGym IMAGE_COLOR is RGBA uint8 [H,W,4] on GPU (channel 0 = R); drop
+                        # alpha to get R,G,B.
+                        gpu_t = self.gym.get_camera_image_gpu_tensor(
+                            self.sim, self.envs[e], handles[e], gymapi.IMAGE_COLOR
+                        )
+                        frames.append(gymtorch.wrap_tensor(gpu_t)[..., :3].clone())  # [H,W,4] RGBA -> RGB
+                    runtime.set_buffer("rgb", torch.stack(frames, dim=0).to(self.device))  # [N,H,W,3]
+                if "depth" in runtime.config.data_types:
+                    frames = []
+                    for e in range(self.num_envs):
+                        # IsaacGym IMAGE_DEPTH is [H,W] float32, negative distance along the camera
+                        # axis (looks down -Z) with -inf for no-hit. Negate to get positive
+                        # meters; -inf becomes the +inf no-hit sentinel.
+                        gpu_t = self.gym.get_camera_image_gpu_tensor(
+                            self.sim, self.envs[e], handles[e], gymapi.IMAGE_DEPTH
+                        )
+                        frames.append((-gymtorch.wrap_tensor(gpu_t)).clone())  # [H,W] +meters, +inf no-hit
+                    runtime.set_buffer("depth", torch.stack(frames, dim=0).unsqueeze(-1).to(self.device))  # [N,H,W,1]
+        finally:
+            self.gym.end_access_image_tensors(self.sim)
 
     def _process_rigid_shape_props(self, props, env_id):
         """No-op. Randomization manager will handle friction domain randomization."""

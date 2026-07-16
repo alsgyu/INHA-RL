@@ -46,7 +46,11 @@ dependencies = [
     "types-tqdm",
     "tyro>=1.0.0",
     "wandb==0.22.0", # pin version until https://github.com/wandb/wandb/issues/10647 is fixed
-    "warp-lang==1.10.0",
+    # Floor, not a hard pin: public PyPI only publishes warp-lang up to 1.10.1, so the base holosoma
+    # install (holosoma/isaacgym images, plain pip, no NVIDIA index) resolves 1.10.1. In the mujoco
+    # image, mujoco_warp[cuda] (installed after, from pypi.nvidia.com) upgrades this to >=1.14 for the
+    # 3.10.0 batched camera renderer. A hard ==1.14.0 breaks the non-mujoco images (not on PyPI).
+    "warp-lang>=1.10",
     "yourdfpy>=0.0.58",
     "zmq",
 ]
@@ -56,8 +60,9 @@ dependencies = [
 dynamic = ["optional-dependencies"]
 
 [project.entry-points."holosoma.bridge"]
-unitree = "holosoma.bridge.unitree:UnitreeSdk2Bridge"
-booster = "holosoma.bridge.booster:BoosterSdk2Bridge"
+unitree = "holosoma.bridge.unitree.unitree_sdk2py_bridge:UnitreeSdk2Bridge"
+unitree_mp = "holosoma.bridge.unitree.unitree_sdk2py_bridge_mp:UnitreeMpSdk2Bridge"
+booster = "holosoma.bridge.booster.booster_sdk2py_bridge:BoosterSdk2Bridge"
 
 [tool.setuptools.packages.find]
 where = ["."]

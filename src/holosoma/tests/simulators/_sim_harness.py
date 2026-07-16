@@ -48,6 +48,7 @@ def build_run_sim_config(
     robot: str,
     terrain: str,
     *,
+    sensors: dict[str, Any] | None = None,
     record_dir: str | None = None,
     video_camera: Any = None,
     show_command_overlay: bool = True,
@@ -58,14 +59,19 @@ def build_run_sim_config(
     applies a robot-only force tensor that errors once a scene adds bodies — neither is relevant to a
     spawn/behavior check, so both are turned off.
 
-    When ``record_dir`` is set, enable video recording every episode to that dir (mp4, no wandb).
-    ``video_camera`` overrides the camera config (e.g. an object-framing camera); ``show_command_overlay``
-    toggles the robot-command text overlay (off for object scenarios where it is irrelevant).
+    ``sensors`` is a mounted-camera dict (``{name: CameraSensorConfig}``) injected directly onto the
+    parsed config's ``sensor`` field — the harness builds rigs in Python rather than through the
+    per-key ``--sensor`` CLI (a multi-camera rig can't be named by one token). When ``record_dir`` is
+    set, enable video recording every episode to that dir (mp4, no wandb). ``video_camera`` overrides
+    the camera config (e.g. an object-framing camera); ``show_command_overlay`` toggles the
+    robot-command text overlay (off for object scenarios where it is irrelevant).
     """
     from holosoma.config_types.simulator import BridgeConfig, VirtualGantryCfg
 
     argv = [f"simulator:{simulator}", f"robot:{robot}", f"terrain:{terrain}", f"scene:{scene}"]
     config = tyro.cli(RunSimConfig, args=argv)
+    if sensors is not None:
+        config = dataclasses.replace(config, sensor=dict(sensors))
     sim_cfg = dataclasses.replace(
         config.simulator,
         config=dataclasses.replace(

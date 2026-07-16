@@ -17,6 +17,7 @@ import torch
 if TYPE_CHECKING:
     from holosoma.config_types.full_sim import FullSimConfig
     from holosoma.simulator.mujoco.tensor_views import BaseMujocoView
+    from holosoma.simulator.shared.camera_sensor import CameraRuntime
 
 
 def mj_to_holosoma_quat(quat_wxyz: np.ndarray | torch.Tensor) -> np.ndarray | torch.Tensor:
@@ -27,6 +28,26 @@ def mj_to_holosoma_quat(quat_wxyz: np.ndarray | torch.Tensor) -> np.ndarray | to
 def holosoma_to_mj_quat(quat_xyzw: np.ndarray | torch.Tensor) -> np.ndarray | torch.Tensor:
     """Convert holosoma ``[x,y,z,w]`` to MuJoCo ``[w,x,y,z]`` (last-axis permute; numpy or torch)."""
     return quat_xyzw[..., [3, 0, 1, 2]]
+
+
+def apply_sensor_scene_flags(show_camera_frusta: bool, opt: mujoco.MjvOption | None = None) -> mujoco.MjvOption:
+    """Set MuJoCo mounted-camera scene-visualization flags and return the option.
+
+    Draws each configured camera's view frustum in the spectator viewer / recorded video. Gated by
+    the simulator's ``debug_viz`` flag (this is debug visualization, not a sink config).
+
+    Parameters
+    ----------
+    show_camera_frusta : bool
+        Whether to draw the camera frusta (typically ``simulator.debug_viz_enabled``).
+    opt : mujoco.MjvOption | None
+        Option to mutate in place; ``None`` builds a fresh defaulted one. Returned either way.
+    """
+    if opt is None:
+        opt = mujoco.MjvOption()
+        mujoco.mjv_defaultOption(opt)
+    opt.flags[mujoco.mjtVisFlag.mjVIS_CAMERA] = show_camera_frusta
+    return opt
 
 
 class IMujocoBackend(abc.ABC):
@@ -377,5 +398,31 @@ class IMujocoBackend(abc.ABC):
         -------
         BaseMujocoView
             View for angular velocity [num_envs, 3]
+        """
+        ...
+
+    # Camera rendering
+    @abc.abstractmethod
+    def create_renderers(self, cameras: list[CameraRuntime]) -> None:
+        """Allocate per-backend rendering resources for the mounted cameras (called once at setup).
+
+        Parameters
+        ----------
+        cameras : list[CameraRuntime]
+            All registered cameras; the backend resolves each native resource from ``runtime.name``.
+        """
+        ...
+
+    @abc.abstractmethod
+    def render_cameras(self, cameras: list[CameraRuntime]) -> None:
+        """Render the given cameras and store each one's canonical output buffer.
+
+        Writes each modality via ``runtime.set_buffer(data_type, tensor)``:
+        ``rgb`` [N,H,W,3] uint8, ``depth`` [N,H,W,1] float32 meters (+inf no-hit), on ``self.device``.
+
+        Parameters
+        ----------
+        cameras : list[CameraRuntime]
+            The cameras due to render this step (a subset of those passed to ``create_renderers``).
         """
         ...

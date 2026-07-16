@@ -5,6 +5,13 @@ set -ex
 
 cd /workspace/holosoma
 
+# Headless GL for the classic MuJoCo camera renderer (mujoco.Renderer). The CI container has no
+# X server/DISPLAY, so the default GLX path dies with "gladLoadGL error"; the NVIDIA base image
+# (nvcr.io/nvidia/isaac-sim) ships libEGL + the GLVND nvidia vendor, so EGL renders offscreen on
+# the GPU. Verified on GPU hardware headless. Set before any mujoco import (pytest subprocesses
+# inherit it). mjwarp uses its own GPU renderer and is unaffected.
+export MUJOCO_GL=egl
+
 source scripts/source_mujoco_setup.sh
 pip install -e 'src/holosoma[unitree,booster]'
 pip install -e src/holosoma_inference

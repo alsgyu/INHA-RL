@@ -35,6 +35,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import mujoco
+import mujoco_warp as mjw
+import numpy as np
 import torch
 import warp as wp
 from loguru import logger
@@ -45,6 +47,7 @@ from .warp_bridge import WarpBridge
 if TYPE_CHECKING:
     from holosoma.config_types.full_sim import FullSimConfig
     from holosoma.simulator.mujoco.tensor_views import BaseMujocoView
+    from holosoma.simulator.shared.camera_sensor import CameraRuntime
 
 
 # Quaternion helpers on MuJoCo-convention (wxyz, scalar-first) quaternions, reimplemented locally so
@@ -235,7 +238,7 @@ class WarpBackend(IMujocoBackend):
         # collision kernels that read m.geom_friction / m.body_mass etc. per world) reference the
         # SAME per-world arrays the runtime writers update. expand_model_fields reallocates these
         # arrays; doing it after capture would leave the captured kernels reading the single-world
-        # copy while domain-randomization / static-move writes hit the new (orphaned) array — the
+        # copy while domain-randomization / static-move writes hit the new (orphaned) array: the
         # value would read back changed but never affect the stepped dynamics. Idempotent, so the
         # later prepare_fields()/in-place writes never reallocate.
         #
@@ -257,6 +260,12 @@ class WarpBackend(IMujocoBackend):
                 "body_inertia",
                 "body_ipos",
                 "dof_damping",  # mass/inertia/com/damping DR
+                # cam_pos so a world-mount camera (worldbody child, cam_bodyid==0) can be placed at
+                # each env's origin. The camlight kernel (inside the captured step graph) reads
+                # cam_pos per world to compute cam_xpos, so it MUST be expanded before capture;
+                # offset_world_cameras() then writes each env's origin post-capture (same pre-expand /
+                # post-write pattern as body_pos + set_static_body_world_pose).
+                "cam_pos",
             ]
             with wp.ScopedDevice(self.mjw_device):
                 expand_model_fields(self.mjw_model, nworld=self.num_envs, fields_to_expand=_PER_WORLD_FIELDS)
@@ -366,6 +375,118 @@ class WarpBackend(IMujocoBackend):
             mjw.get_data_into(self.render_data, self.model, self.mjw_data, world_id=world_id)
 
         return self.render_data
+
+    def create_renderers(self, cameras: list[CameraRuntime]) -> None:
+        # Appearance flags are GLOBAL to the shared render context (not per-camera);
+        # validate_camera_dict already rejected any cross-camera conflict, so
+        # collecting each set (non-None) value is unambiguous regardless of order. None => default.
+        render_options: dict = {}
+        for cam in cameras:
+            if cam.config.mujoco is None:
+                continue
+            for attr in ("use_shadows", "use_textures", "use_precomputed_rays"):
+                value = getattr(cam.config.mujoco, attr)
+                if value is not None:
+                    render_options[attr] = value
+
+        # Per-camera modality flags in ACTIVE-camera space. cam_active is left unset, so
+        # create_render_context keeps every model camera active and the active index equals the
+        # MuJoCo camera id. Resolve each compiled <camera> id here into this backend's own name->id
+        # map (the shared CameraRuntime holds no handle). create_render_context allocates an output
+        # buffer + write address for a (camera, modality) ONLY if its flag is True at creation
+        # (io.py: rgb_adr/depth_adr stay -1 otherwise). render_cameras() can then only toggle these
+        # flags DOWN to the due subset, not up, so this enables the UNION of every modality each
+        # camera will ever produce. render_seg stays off: holosoma cameras only produce rgb/depth.
+        ncam = self.model.ncam
+        self._cam_ids: dict[str, int] = {}
+        rgb_flags = [False] * ncam
+        depth_flags = [False] * ncam
+        for cam in cameras:
+            name = cam.name
+            cam_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_CAMERA, name)
+            if not 0 <= cam_id < ncam:
+                raise RuntimeError(
+                    f"Camera '{name}' not found in compiled model (mj_name2id -> {cam_id}); "
+                    "expected a <camera> element with active id in [0, ncam)."
+                )
+            self._cam_ids[name] = cam_id
+            if "rgb" in cam.config.data_types:
+                rgb_flags[cam_id] = True
+            if "depth" in cam.config.data_types:
+                depth_flags[cam_id] = True
+
+        with wp.ScopedDevice(self.mjw_device):
+            self._render_context = mjw.create_render_context(
+                self.model,
+                nworld=self.num_envs,
+                render_rgb=rgb_flags,
+                render_depth=depth_flags,
+                render_seg=False,
+                **render_options,
+            )
+            # Preallocate per-camera output buffers (reused each render), keyed by active id
+            # (== MuJoCo cam id, from self._cam_ids). Keyed by id, not a positional list, because
+            # camera ids need not be a contiguous 0..n-1 range (the model may hold non-sensor
+            # cameras), and only the modalities a camera actually produces get a buffer.
+            self._render_rgb_out = {
+                self._cam_ids[cam.name]: wp.zeros(
+                    (self.num_envs, cam.config.height, cam.config.width), dtype=wp.vec3, device=self.mjw_device
+                )
+                for cam in cameras
+                if "rgb" in cam.config.data_types
+            }
+            self._render_depth_out = {
+                self._cam_ids[cam.name]: wp.zeros(
+                    (self.num_envs, cam.config.height, cam.config.width), dtype=wp.float32, device=self.mjw_device
+                )
+                for cam in cameras
+                if "depth" in cam.config.data_types
+            }
+            self._depth_far = max(c.config.far for c in cameras)
+
+    def render_cameras(self, cameras: list[CameraRuntime]) -> None:
+        with wp.ScopedDevice(self.mjw_device):
+            # Ensure the step graph's writes to mjw_data are complete before rendering reads them.
+            wp.synchronize()
+
+            # Toggle the per-camera modality flags DOWN to just the cameras due this step. These are
+            # device wp.array("ncam", bool) kernel inputs (NOT wp.static), so mutating their contents
+            # here (outside any graph capture) makes mjw.render render a different subset with no
+            # recompile. wp.array has no item/slice assignment, so build host masks and .assign().
+            # Only modalities the context was CREATED with may be enabled (create_renderers enabled
+            # the union); enabling one that was False at creation would write to an unallocated (-1)
+            # address. Cameras absent from `due` keep their last buffer below; render() clears the
+            # shared output every call (render.py), so a non-due camera's slice is wiped, not stale.
+            ncam = self.model.ncam
+            rgb_mask = np.zeros(ncam, dtype=bool)
+            depth_mask = np.zeros(ncam, dtype=bool)
+            for cam in cameras:
+                cam_id = self._cam_ids[cam.name]
+                if "rgb" in cam.config.data_types:
+                    rgb_mask[cam_id] = True
+                if "depth" in cam.config.data_types:
+                    depth_mask[cam_id] = True
+            self._render_context.render_rgb.assign(rgb_mask)
+            self._render_context.render_depth.assign(depth_mask)
+
+            mjw.refit_bvh(self.mjw_model, self.mjw_data, self._render_context)
+            mjw.render(self.mjw_model, self.mjw_data, self._render_context)
+
+            for cam in cameras:
+                cam_id = self._cam_ids[cam.name]
+                if "rgb" in cam.config.data_types:
+                    mjw.get_rgb(self._render_context, cam_id, self._render_rgb_out[cam_id])
+                    rgb_f = wp.to_torch(self._render_rgb_out[cam_id])  # [N,H,W,3] float32 in [0,1]
+                    cam.set_buffer("rgb", (rgb_f.clamp(0.0, 1.0) * 255.0).round().to(torch.uint8))
+                if "depth" in cam.config.data_types:
+                    # mjw.get_depth writes clamp(val/depth_scale, 0, 1): a normalized [0,1] image,
+                    # NOT meters. Pass depth_scale=depth_far so [0,far]->[0,1], then multiply back by
+                    # far to recover meters across the full range. No-hit comes back 0 ->
+                    # remap to +inf (the no-hit sentinel).
+                    mjw.get_depth(self._render_context, cam_id, self._depth_far, self._render_depth_out[cam_id])
+                    dep = wp.to_torch(self._render_depth_out[cam_id]) * self._depth_far  # [N,H,W] meters
+                    dep = torch.where(dep <= 0, torch.full_like(dep, float("inf")), dep)
+                    cam.set_buffer("depth", dep.unsqueeze(-1))  # [N,H,W,1]
 
     def get_ctrl_tensor(self) -> torch.Tensor:
         """Return control tensor for direct zero-copy writing.
@@ -662,7 +783,7 @@ class WarpBackend(IMujocoBackend):
 
     def set_actor_state(self, env_ids: torch.Tensor, states: torch.Tensor, qpos_addr: int, qvel_addr: int) -> None:
         """Write a per-env actor freejoint state to GPU storage (not a no-op on GPU)."""
-        # qpos freejoint slice is [pos(3), quat_mj(4)]; qvel is [lin(3), ang(3)] — contiguous.
+        # qpos freejoint slice is [pos(3), quat_mj(4)]; qvel is [lin(3), ang(3)], contiguous.
         pose = torch.cat([states[:, :3], holosoma_to_mj_quat(states[:, 3:7])], dim=1)  # [N, 7]
         self.qpos_t[self._batched_slice(env_ids, qpos_addr, 7)] = pose
         self.qvel_t[self._batched_slice(env_ids, qvel_addr, 6)] = states[:, 7:13]
@@ -717,6 +838,33 @@ class WarpBackend(IMujocoBackend):
             mjw.forward(self.mjw_model, self.mjw_data)  # refresh xpos/xquat from the new body_pos/quat
 
         self._sync_static_geom_xpos(body_ids, env_ids)
+
+    def offset_world_cameras(self, cam_ids: list[int], env_origins: torch.Tensor) -> None:
+        """Shift world-mount cameras' per-world ``cam_pos`` by each env's origin.
+
+        A ``target_kind="world"`` camera is a worldbody child (``cam_bodyid==0``): unlike a
+        body-attached camera, its pose does not inherit the per-env body offset, so in a multi-env
+        run every world's camera would otherwise sit at the shared spec pose and see only env 0's
+        scene. ``cam_pos`` is expanded per world in ``__init__`` (in ``_PER_WORLD_FIELDS``, before the
+        step-graph capture), and the ``camlight`` kernel that computes ``cam_xpos`` reads it per world
+        each step, so adding ``env_origins`` here — after capture — reaches the live render exactly
+        like ``set_static_body_world_pose`` writes ``body_pos``. No-op at ``num_envs==1``.
+
+        ``cam_ids`` are compiled MuJoCo camera ids (world-mount only); ``env_origins`` is
+        ``[num_envs, 3]``.
+        """
+        if self.num_envs <= 1 or not cam_ids:
+            return
+        import warp as wp
+
+        cam_pos = wp.to_torch(self.mjw_model.cam_pos)  # [num_envs, ncam, 3], shares GPU memory
+        origins = env_origins.to(cam_pos.device, cam_pos.dtype)  # [num_envs, 3]
+        for cam_id in cam_ids:
+            cam_pos[:, cam_id, :] += origins
+        with wp.ScopedDevice(self.mjw_device):
+            import mujoco_warp as mjw
+
+            mjw.forward(self.mjw_model, self.mjw_data)  # recompute cam_xpos from the shifted cam_pos
 
     def _sync_static_geom_xpos(self, body_ids: list[int], env_ids: torch.Tensor | None) -> None:
         """Refresh ``geom_xpos``/``geom_xmat`` for the geoms of welded ``body_ids``, per world.

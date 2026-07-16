@@ -18,7 +18,9 @@ from .base import IMujocoBackend, holosoma_to_mj_quat, mj_to_holosoma_quat
 
 if TYPE_CHECKING:
     from holosoma.config_types.full_sim import FullSimConfig
+    from holosoma.config_types.sensor import CameraDataType
     from holosoma.simulator.mujoco.tensor_views import BaseMujocoView
+    from holosoma.simulator.shared.camera_sensor import CameraRuntime
 
 
 class ClassicBackend(IMujocoBackend):
@@ -86,6 +88,50 @@ class ClassicBackend(IMujocoBackend):
             The backend's data structure (no copy needed)
         """
         return self.data
+
+    def create_renderers(self, cameras: list[CameraRuntime]) -> None:
+        # Per-camera renderer (classic only), keyed by camera NAME:
+        # mujoco.Renderer is RGB XOR depth, so depth cameras get a SEPARATE depth-enabled renderer
+        # (per size); MuJoCo 3.x depth is already metric meters (image-plane), so no unit scaling.
+        # Resolve each compiled <camera> id here (this backend's own name->id map); the shared
+        # CameraRuntime holds no handle.
+        self._cam_ids: dict[str, int] = {}
+        self._mj_renderers: dict[str, dict[CameraDataType, mujoco.Renderer]] = {}
+
+        for cam in cameras:
+            name = cam.name
+            cam_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_CAMERA, name)
+            if cam_id < 0:
+                raise RuntimeError(f"Camera '{name}' not found in compiled model (expected a <camera> element).")
+            self._cam_ids[name] = cam_id
+            cam_renderers = self._mj_renderers[name] = {}
+            for data_type in cam.config.data_types:
+                renderer = mujoco.Renderer(self.model, height=cam.config.height, width=cam.config.width)
+                cam_renderers[data_type] = renderer
+                if data_type == "depth":
+                    renderer.enable_depth_rendering()
+
+    def render_cameras(self, cameras: list[CameraRuntime]) -> None:
+        # per-world render via the size-shared mujoco.Renderer (num_envs==1).
+        # No-hit reads the global far-clip plane (vis.map.zfar * extent, set across all cameras in
+        # the simulator's _create_sensors); remap it to +inf. The far value comes back ~0.1% under
+        # nominal (limited depth precision), so threshold at 0.99*far.
+        far_clip = float(self.model.vis.map.zfar) * float(self.model.stat.extent)
+        for runtime in cameras:
+            name = runtime.name
+            cam_id = self._cam_ids[name]
+            for dt in runtime.config.data_types:
+                renderer = self._mj_renderers[name][dt]
+                frames = []
+                for world_id in range(self.num_envs):
+                    data = self.get_render_data(world_id=world_id)
+                    renderer.update_scene(data, camera=cam_id)
+                    frame = renderer.render()  # rgb: [H,W,3] uint8; depth: [H,W] float32 meters
+                    t = torch.from_numpy((frame[..., None] if dt == "depth" else frame).copy())
+                    if dt == "depth":
+                        t = torch.where(t >= far_clip * 0.99, torch.full_like(t, float("inf")), t)
+                    frames.append(t)
+                runtime.set_buffer(dt, torch.stack(frames, dim=0).to(self.device))  # [N,H,W,C]
 
     def get_ctrl_tensor(self) -> None:
         """Classic backend doesn't support direct tensor writes.

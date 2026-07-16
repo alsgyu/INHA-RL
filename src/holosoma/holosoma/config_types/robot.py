@@ -16,7 +16,12 @@ class RobotBridgeConfig:
     """
 
     sdk_type: str = "unitree"
-    """SDK type for robot communication ('unitree', 'booster', 'ros2')."""
+    """SDK type for robot communication ('unitree', 'unitree_mp', 'booster', 'ros2').
+
+    'unitree_mp' runs the Unitree SDK's C++/CycloneDDS binding in a spawned child process so it never
+    shares the simulator's address space. Select it when this process also loads rclpy (a ROS2 sensor
+    egress): the Unitree SDK's bundled CycloneDDS heap-corrupts if it coexists with rclpy's CycloneDDS
+    in one process. Otherwise 'unitree' (in-process) is fine."""
 
     motor_type: str = "serial"
     """Motor communication type ('serial', etc.)."""

@@ -136,7 +136,7 @@ A plugin's hooks attach to lifecycle phases via `add(phase, callback, *, name=No
 
 `every` sub-samples a phase: an int runs the callback every Nth emission; a frequency string (`"100Hz"`, `">100Hz"`, `"<100Hz"`) is resolved against the phase's base rate (`fps` for the per-substep `*_STEP` phases, `fps/control_decimation` for the per-frame `FRAME_*` phases). Frequency strings are periodic-phases only; `CLOSE` always fires once. The registry sub-samples natively — hooks never write their own counters.
 
-Built-ins to copy: the dependency-free `none` no-op in `holosoma/simulator/shared/builtin_plugins.py`; `clock_publish` / `gantry_control` / `odometry` (ROS2, `rclpy` imported lazily so core stays ROS-free) in `ros2_plugins.py`. Select `plugin.<key>:none` to disable a slot.
+Built-ins to copy: the dependency-free `none` no-op in `holosoma/simulator/shared/builtin_plugins.py`; `clock_publish` / `gantry_control` / `odometry` (ROS2, `rclpy` imported lazily so core stays ROS-free) in `ros2_plugins.py`. Camera-frame egress ships as plugins too — `ros2-image` / `ros2-stereo` / `ros2-waist-depth*` publish rendered cameras over ROS2, `viz` / `viz-record` tile them into a live window or an mp4; their impls live in `holosoma/simulator/plugins/` and subclass the shared `CameraConsumerPlugin` base (which self-serves each step's fresh frames via `get_camera_data`). Select `plugin.<key>:none` to disable a slot.
 
 ## Don't
 

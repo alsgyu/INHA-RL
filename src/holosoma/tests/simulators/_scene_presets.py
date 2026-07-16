@@ -106,7 +106,7 @@ physics_box = SceneConfig(
         "pbox": RigidObjectConfig(
             urdf_file=_SMALL_BOX,
             usd_file=_SMALL_BOX_USD,
-            position=[0.0, 0.0, 0.6],
+            position=[0.0, 1.5, 0.6],  # y=1.5 clears the origin robot's collapse footprint (see g1_largebox)
             physics=PhysicsConfig(
                 mass=3.0,
                 isaacgym=IsaacGymPhysicsConfig(friction=0.4),
@@ -157,13 +157,16 @@ friction_slide = SceneConfig(
 # known +0.5m-x relative offset. Tri-format so each backend loads its own (MuJoCo xml,
 # IsaacGym urdf, IsaacSim usd); registered bodies are 'scene_free_box' (free) and
 # 'scene_static_post' (static). Placed at a non-trivial world pose to exercise composition.
+# y=1.5 clears the un-actuated harness robot at the origin (which collapses under gravity and
+# would strike the free body, contaminating the fall check — see g1_largebox); the +0.5m-x
+# body-to-body offset the tests assert is translation-invariant, so the move is inert to it.
 multibody = SceneConfig(
     scene_files={
         "scene": SceneFileConfig(
             xml_path="holosoma/data/scene_objects/multibody/multibody.xml",
             urdf_path="holosoma/data/scene_objects/multibody/multibody.urdf",
             usd_path="holosoma/data/scene_objects/multibody/multibody.usda",
-            position=[0.4, 0.0, 0.6],
+            position=[0.4, 1.5, 0.6],
         )
     }
 )
@@ -177,7 +180,7 @@ multibody_override = SceneConfig(
             xml_path="holosoma/data/scene_objects/multibody/multibody.xml",
             urdf_path="holosoma/data/scene_objects/multibody/multibody.urdf",
             usd_path="holosoma/data/scene_objects/multibody/multibody.usda",
-            position=[0.4, 0.0, 0.6],
+            position=[0.4, 1.5, 0.6],  # y=1.5 clears the origin robot's collapse footprint (see multibody)
             object_configs={
                 "free_box": ObjectPatternConfig(fixed=True),
                 "static_post": ObjectPatternConfig(fixed=False),

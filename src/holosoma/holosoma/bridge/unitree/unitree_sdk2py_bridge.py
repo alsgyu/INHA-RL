@@ -1,12 +1,4 @@
 from loguru import logger
-from unitree_interface import (
-    LowState,
-    MessageType,
-    MotorCommand,
-    RobotType,
-    UnitreeInterface,
-    WirelessController,
-)
 
 from holosoma.bridge.base.basic_sdk2py_bridge import BasicSdk2Bridge
 
@@ -16,8 +8,25 @@ class UnitreeSdk2Bridge(BasicSdk2Bridge):
 
     SUPPORTED_ROBOT_TYPES = {"g1_29dof", "h1", "h1-2", "go2_12dof"}
 
+    # robot_type -> SDK enum member NAME (resolved to the real enum via getattr where the binding is
+    # imported). Kept as strings so the parent process can build them without importing the C++
+    # binding — the multiprocess subclass ships them to its child, which owns the CycloneDDS binding.
+    _ROBOT_TYPE_NAMES = {"g1_29dof": "G1", "h1": "H1", "h1-2": "H1_2", "go2_12dof": "GO2"}
+    # Message type (HG for humanoid robots with 35 motors, GO2 for others).
+    _MESSAGE_TYPE_NAMES = {"g1_29dof": "HG", "h1": "GO2", "h1-2": "HG", "go2_12dof": "GO2"}
+
     def _init_sdk_components(self):
         """Initialize Unitree SDK-specific components."""
+        # Imported here (not at module top level) so importing this module never loads the C++
+        # binding's bundled CycloneDDS — the multiprocess subclass keeps the parent binding-free.
+        from unitree_interface import (
+            LowState,
+            MessageType,
+            MotorCommand,
+            RobotType,
+            UnitreeInterface,
+            WirelessController,
+        )
 
         robot_type = self.robot.asset.robot_type
 
@@ -25,24 +34,8 @@ class UnitreeSdk2Bridge(BasicSdk2Bridge):
         if robot_type not in self.SUPPORTED_ROBOT_TYPES:
             raise ValueError(f"Invalid robot type '{robot_type}'. Unitree SDK supports: {self.SUPPORTED_ROBOT_TYPES}")
 
-        # Map robot type to SDK enum
-        robot_type_map = {
-            "g1_29dof": RobotType.G1,
-            "h1": RobotType.H1,
-            "h1-2": RobotType.H1_2,
-            "go2_12dof": RobotType.GO2,
-        }
-
-        # Map to message type (HG for humanoid robots with 35 motors, GO2 for others)
-        message_type_map = {
-            "g1_29dof": MessageType.HG,
-            "h1": MessageType.GO2,
-            "h1-2": MessageType.HG,
-            "go2_12dof": MessageType.GO2,
-        }
-
-        sdk_robot_type = robot_type_map[robot_type]
-        sdk_message_type = message_type_map[robot_type]
+        sdk_robot_type = getattr(RobotType, self._ROBOT_TYPE_NAMES[robot_type])
+        sdk_message_type = getattr(MessageType, self._MESSAGE_TYPE_NAMES[robot_type])
 
         # Get network interface from config
         interface_name = self.bridge_config.interface or "eth0"

@@ -20,6 +20,7 @@ import holosoma.config_values.randomization
 import holosoma.config_values.reward
 import holosoma.config_values.robot
 import holosoma.config_values.scene
+import holosoma.config_values.sensor
 import holosoma.config_values.simulator
 import holosoma.config_values.termination
 import holosoma.config_values.terrain
@@ -34,6 +35,7 @@ from holosoma.config_types.randomization import RandomizationManagerCfg
 from holosoma.config_types.reward import RewardManagerCfg
 from holosoma.config_types.robot import RobotConfig
 from holosoma.config_types.scene import SceneConfig
+from holosoma.config_types.sensor import CameraSensorConfig
 from holosoma.config_types.simulator import SimulatorConfig
 from holosoma.config_types.termination import TerminationManagerCfg
 from holosoma.config_types.terrain import TerrainManagerCfg
@@ -121,9 +123,15 @@ class ExperimentConfig:
     scene: Annotated[SceneConfig, UseRegistry(holosoma.config_values.scene.SCENE_REGISTRY)] = (
         holosoma.config_values.scene.empty
     )
+    # Mounted cameras, declared per-key on the CLI as ``--sensor.<name>:<variant>`` (resolved from
+    # CAMERA_REGISTRY), optionally with per-key field overrides (e.g. ``--sensor.<name>.width 224``).
+    # The dict key becomes the sensor name. Empty by default (no cameras).
+    sensor: dict[str, Annotated[CameraSensorConfig, UseRegistry(holosoma.config_values.sensor.CAMERA_REGISTRY)]] = (
+        dataclasses.field(default_factory=dict)
+    )
     # Plugins, declared per-key as ``plugin.<key>:<variant>`` (resolved from PLUGIN_REGISTRY),
-    # optionally with per-key field overrides. Installed in ``BaseSimulator.__init__``. Threaded into
-    # FullSimConfig so plugins work in the training path (run_sim already exposes the same field).
+    # optionally with per-key field overrides. Includes the camera-frame egress sinks (ROS2 publish,
+    # viz window, video record) and any custom plugin. Installed in ``BaseSimulator.__init__``.
     plugin: dict[str, Annotated[PluginConfig, UseRegistry(holosoma.config_values.plugin.PLUGIN_REGISTRY)]] = (
         dataclasses.field(default_factory=dict)
     )
