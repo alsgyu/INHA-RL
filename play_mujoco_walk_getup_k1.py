@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import yaml
 
+from utils.command_metrics import CommandVelocityMetrics
 from deploy.utils.policy_walk_getup_k1 import Policy
 
 
@@ -43,6 +44,22 @@ def quat_from_euler(roll, pitch, yaw):
     )
 
 
+def wrap_to_pi(angle):
+    return (angle + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def estimate_body_velocity(prev_pos, prev_yaw, data, dt):
+    current_pos = np.array(data.qpos[0:3], dtype=np.float64)
+    current_yaw = float(quat_to_euler(np.array(data.qpos[3:7], dtype=np.float32))[2])
+    world_vel = (current_pos - prev_pos) / dt
+    cos_yaw = np.cos(current_yaw)
+    sin_yaw = np.sin(current_yaw)
+    body_vx = cos_yaw * world_vel[0] + sin_yaw * world_vel[1]
+    body_vy = -sin_yaw * world_vel[0] + cos_yaw * world_vel[1]
+    body_vyaw = wrap_to_pi(current_yaw - prev_yaw) / dt
+    return current_pos, current_yaw, np.array([body_vx, body_vy, body_vyaw], dtype=np.float64)
+
+
 def fallen_rpy(pose):
     if pose == "front":
         return 0.0, 1.45, 0.0
@@ -74,6 +91,10 @@ def main():
     parser.add_argument("--force_fall_after_s", type=float, default=-1.0)
     parser.add_argument("--fall_pose", choices=["front", "back", "left", "right"], default="front")
     parser.add_argument("--start_fallen", action="store_true")
+    parser.add_argument("--metrics_window_s", type=float, default=3.0)
+    parser.add_argument("--metrics_warmup_s", type=float, default=1.0)
+    parser.add_argument("--metrics_csv", default=None)
+    parser.add_argument("--metrics_csv_sample_s", type=float, default=0.05)
     args = parser.parse_args()
 
     import mujoco
@@ -114,12 +135,28 @@ def main():
     forced_fall = args.start_fallen
     start_xy = np.copy(data.qpos[0:2])
     last_report = -1.0
+    mode_time = 0.0
+    metric_pos = np.array(data.qpos[0:3], dtype=np.float64)
+    metric_yaw = float(quat_to_euler(np.array(data.qpos[3:7], dtype=np.float32))[2])
+    actual_velocity = np.zeros(3, dtype=np.float64)
+    metrics = CommandVelocityMetrics(
+        (args.vx, args.vy, args.vyaw),
+        window_s=args.metrics_window_s,
+        csv_path=args.metrics_csv,
+        csv_sample_s=args.metrics_csv_sample_s,
+    )
 
     while data.time < args.duration_s:
         if args.force_fall_after_s >= 0.0 and (not forced_fall) and data.time >= args.force_fall_after_s:
             set_root_pose(data, data.qpos[0:3].copy(), 0.25, fallen_rpy(args.fall_pose))
+            mujoco.mj_forward(model, data)
             policy.mode = "getup"
             forced_fall = True
+            mode_time = 0.0
+            metric_pos = np.array(data.qpos[0:3], dtype=np.float64)
+            metric_yaw = float(quat_to_euler(np.array(data.qpos[3:7], dtype=np.float32))[2])
+            actual_velocity[:] = 0.0
+            metrics.reset_window()
             print(f"[mujoco] forced fall at t={data.time:.2f}s pose={args.fall_pose}")
 
         root_quat = np.array(data.qpos[3:7], dtype=np.float32)
@@ -129,6 +166,7 @@ def main():
 
         if data.time >= next_policy_t:
             next_policy_t += policy_dt
+            previous_mode = policy.mode
             target_qpos[:] = policy.inference(
                 time_now=float(data.time),
                 dof_pos=np.array(data.qpos[7 : 7 + len(default_qpos)], dtype=np.float32),
@@ -140,12 +178,26 @@ def main():
                 vy=args.vy,
                 vyaw=args.vyaw,
             )
+            if policy.mode != previous_mode:
+                mode_time = 0.0
+                metrics.reset_window()
 
         dof_pos = np.array(data.qpos[7 : 7 + len(default_qpos)], dtype=np.float32)
         dof_vel = np.array(data.qvel[6 : 6 + len(default_qpos)], dtype=np.float32)
         torque = stiffness * (target_qpos - dof_pos) - damping * dof_vel
         data.ctrl[:] = np.clip(torque, -torque_limit, torque_limit)
         mujoco.mj_step(model, data)
+        metric_pos, metric_yaw, actual_velocity = estimate_body_velocity(metric_pos, metric_yaw, data, sim_dt)
+        mode_time += sim_dt
+
+        tracked = policy.mode == "walk" and mode_time >= args.metrics_warmup_s
+        metrics_row, metrics_summary = metrics.update(
+            data.time,
+            policy.mode,
+            actual_velocity,
+            policy_command=np.array(policy.smoothed_commands, dtype=np.float64),
+            tracked=tracked,
+        )
 
         if viewer is not None:
             viewer.sync()
@@ -154,14 +206,17 @@ def main():
         if data.time - last_report >= 1.0:
             last_report = data.time
             xy_error = data.qpos[0:2] - start_xy
+            metrics_text = metrics.report(metrics_row, metrics_summary)
             print(
                 f"[mujoco] t={data.time:5.2f}s mode={policy.mode:5s} "
                 f"xy=({data.qpos[0]:+.2f},{data.qpos[1]:+.2f}) "
-                f"drift_y={xy_error[1]:+.3f} rpy=({base_rpy[0]:+.2f},{base_rpy[1]:+.2f},{base_rpy[2]:+.2f})"
+                f"drift_y={xy_error[1]:+.3f} rpy=({base_rpy[0]:+.2f},{base_rpy[1]:+.2f},{base_rpy[2]:+.2f}) "
+                f"{metrics_text}"
             )
 
     if viewer is not None:
         viewer.close()
+    metrics.close()
 
 
 if __name__ == "__main__":

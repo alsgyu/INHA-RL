@@ -5,6 +5,7 @@ import torch
 from isaacgym import gymtorch
 from isaacgym.torch_utils import get_euler_xyz, quat_from_euler_xyz
 
+from utils.command_metrics import CommandVelocityMetrics
 from utils.runner import get_task_class, load_config
 
 
@@ -135,6 +136,10 @@ def main():
     parser.add_argument("--force_fall_after_s", type=float, default=5.0)
     parser.add_argument("--fall_pose", choices=["front", "back", "left", "right"], default="front")
     parser.add_argument("--start_fallen", action="store_true")
+    parser.add_argument("--metrics_window_s", type=float, default=3.0)
+    parser.add_argument("--metrics_warmup_s", type=float, default=1.0)
+    parser.add_argument("--metrics_csv", default=None)
+    parser.add_argument("--metrics_csv_sample_s", type=float, default=0.05)
     args = parser.parse_args()
 
     if not os.path.exists(args.walk_policy):
@@ -169,18 +174,29 @@ def main():
     gait_process = torch.zeros(env.num_envs, dtype=torch.float, device=env.device)
     forced_fall = args.start_fallen
     report_interval = max(1, int(1.0 / env.dt))
+    mode_time = 0.0
+    metrics = CommandVelocityMetrics(
+        (args.vx, args.vy, args.vyaw),
+        window_s=args.metrics_window_s,
+        csv_path=args.metrics_csv,
+        csv_sample_s=args.metrics_csv_sample_s,
+    )
 
     for step_idx in range(int(args.duration_s / env.dt)):
         sim_time = step_idx * env.dt
         if args.force_fall_after_s >= 0.0 and (not forced_fall) and sim_time >= args.force_fall_after_s:
             set_fallen_state(env, args.fall_pose)
             mode = "getup"
+            mode_time = 0.0
+            metrics.reset_window()
             recovered_time = 0.0
             forced_fall = True
             print(f"[gym] forced fall at t={sim_time:.2f}s pose={args.fall_pose}")
 
         if mode == "walk" and bool(is_fallen(env).any().item()):
             mode = "getup"
+            mode_time = 0.0
+            metrics.reset_window()
             recovered_time = 0.0
             getup_actions.zero_()
             print(f"[gym] switching policy: walk -> getup at t={sim_time:.2f}s")
@@ -191,6 +207,8 @@ def main():
                 recovered_time = 0.0
             if recovered_time >= 1.0:
                 mode = "walk"
+                mode_time = 0.0
+                metrics.reset_window()
                 walk_actions.zero_()
                 gait_process.zero_()
                 print(f"[gym] switching policy: getup -> walk at t={sim_time:.2f}s")
@@ -209,14 +227,34 @@ def main():
                 actions[:, LEG_START_INDEX : LEG_START_INDEX + 12] = walk_actions
 
         env.step(actions)
+        mode_time += env.dt
+
+        actual_velocity = (
+            env.base_lin_vel[0, 0].item(),
+            env.base_lin_vel[0, 1].item(),
+            env.base_ang_vel[0, 2].item(),
+        )
+        tracked = mode == "walk" and mode_time >= args.metrics_warmup_s
+        policy_command = (args.vx, args.vy, args.vyaw) if mode == "walk" else (0.0, 0.0, 0.0)
+        metrics_row, metrics_summary = metrics.update(
+            sim_time + env.dt,
+            mode,
+            actual_velocity,
+            policy_command=policy_command,
+            tracked=tracked,
+        )
 
         if step_idx % report_interval == 0:
             roll, pitch, yaw = get_euler_xyz(env.base_quat)
+            metrics_text = metrics.report(metrics_row, metrics_summary)
             print(
                 f"[gym] t={sim_time:5.2f}s mode={mode:5s} "
                 f"pos=({env.base_pos[0,0].item():+.2f},{env.base_pos[0,1].item():+.2f},{env.base_pos[0,2].item():+.2f}) "
-                f"rpy=({roll[0].item():+.2f},{pitch[0].item():+.2f},{yaw[0].item():+.2f})"
+                f"rpy=({roll[0].item():+.2f},{pitch[0].item():+.2f},{yaw[0].item():+.2f}) "
+                f"{metrics_text}"
             )
+
+    metrics.close()
 
 
 if __name__ == "__main__":

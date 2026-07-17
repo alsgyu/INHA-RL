@@ -18,6 +18,7 @@ import torch
 import torch.nn.functional as F
 from utils.models.BaseAC import *
 from utils.buffer import ExperienceBuffer
+from utils.command_metrics import CommandVelocityMetrics
 from utils.utils import discount_values, surrogate_loss
 from utils.recorder import Recorder
 
@@ -232,6 +233,12 @@ class Runner:
         parser.add_argument("--play_body_roll", type=float, help="Play command body roll target [rad].")
         parser.add_argument("--play_feet_offset_x", type=float, help="Play command feet x-offset target [m].")
         parser.add_argument("--play_feet_offset_y", type=float, help="Play command feet y-offset target [m].")
+        parser.add_argument("--play_velocity_metrics", action="store_true", help="Print commanded vs actual base velocity in play mode.")
+        parser.add_argument("--play_metrics_interval_s", type=float, default=1.0, help="Seconds between play velocity metric prints.")
+        parser.add_argument("--play_metrics_window_s", type=float, default=3.0, help="Rolling window for play velocity averages.")
+        parser.add_argument("--play_metrics_warmup_s", type=float, default=1.0, help="Warmup before play velocity samples count.")
+        parser.add_argument("--play_metrics_csv", type=str, help="Optional CSV path for play velocity metrics.")
+        parser.add_argument("--play_metrics_csv_sample_s", type=float, default=0.05, help="Seconds between CSV samples.")
         # Video recording mode arguments (for separate process recording)
         parser.add_argument("--record_video_mode", action="store_true", help="Enable video recording mode (record and exit).")
         parser.add_argument("--disable_record_video", action="store_true", help="Disable video recording even if the config enables it.")
@@ -268,6 +275,12 @@ class Runner:
                 "play_free_yaw",
                 "play_no_disturbance",
                 "play_with_disturbance",
+                "play_velocity_metrics",
+                "play_metrics_interval_s",
+                "play_metrics_window_s",
+                "play_metrics_warmup_s",
+                "play_metrics_csv",
+                "play_metrics_csv_sample_s",
             }
         )
         for arg in vars(self.args):
@@ -669,56 +682,107 @@ class Runner:
                 f"fixed_yaw={bool(play_cfg.get('fixed_yaw', False))} "
                 f"no_disturbance={bool(play_cfg.get('no_disturbance', False))}"
             )
+        metrics_enabled = self.args.play_velocity_metrics or bool(self.args.play_metrics_csv)
+        metrics = None
+        metrics_report_interval = max(1, int(float(self.args.play_metrics_interval_s) / self.env.dt))
+        play_step = 0
+        if metrics_enabled and not (hasattr(self.env, "base_lin_vel") and hasattr(self.env, "base_ang_vel")):
+            print("[play metrics] disabled: environment does not expose base velocity tensors")
+            metrics_enabled = False
+        if metrics_enabled:
+            target_command = (
+                float(play_cfg.get("lin_vel_x", 0.2)),
+                float(play_cfg.get("lin_vel_y", 0.0)),
+                float(play_cfg.get("ang_vel_yaw", 0.0)),
+            )
+            metrics = CommandVelocityMetrics(
+                target_command,
+                window_s=self.args.play_metrics_window_s,
+                csv_path=self.args.play_metrics_csv,
+                csv_sample_s=self.args.play_metrics_csv_sample_s,
+            )
+            print(
+                "[play metrics] enabled "
+                f"window={self.args.play_metrics_window_s:.2f}s "
+                f"warmup={self.args.play_metrics_warmup_s:.2f}s "
+                f"csv={self.args.play_metrics_csv or 'off'}"
+            )
         if self.cfg["viewer"]["record_video"]:
             os.makedirs("videos", exist_ok=True)
             name = time.strftime("%Y-%m-%d-%H-%M-%S.mp4", time.localtime())
             record_time = self.cfg["viewer"]["record_interval"]
-        while True:
-            with torch.no_grad():
-                dist = self.model.act(obs)
-                act = dist.loc
-                obs, rew, done, infos = self.env.step(act)
-                obs, rew, done = obs.to(self.device), rew.to(self.device), done.to(self.device)
-            if done[0]:
-                termination = infos.get("termination", {})
-                if termination:
-                    reason_order = [
-                        "contact",
-                        "lin_vel",
-                        "ang_vel",
-                        "height",
-                        "timeout",
-                        "clear_miss",
-                        "late_chase",
-                        "orbit",
-                        "ball_passed_unblocked",
-                        "through_legs",
-                        "success",
-                    ]
-                    reasons = [name for name in reason_order if bool(termination[name][0].item())]
-                    print(
-                        "[play termination] "
-                        f"reasons={','.join(reasons) if reasons else 'unknown'} "
-                        f"ball_progress={float(termination['ball_progress_ratio'][0].item()):.3f} "
-                        f"robot_progress={float(termination['robot_progress_ratio'][0].item()):.3f} "
-                        f"heading_err={float(termination['heading_error'][0].item()):.3f} "
-                        f"ball_forward={float(termination['ball_forward'][0].item()):.3f} "
-                        f"block_line={float(termination['block_line'][0].item()):.3f} "
-                        f"chosen_block={float(termination['chosen_block_line'][0].item()):.3f} "
-                        f"support_block={float(termination['support_block_line'][0].item()):.3f}"
+        try:
+            while True:
+                with torch.no_grad():
+                    dist = self.model.act(obs)
+                    act = dist.loc
+                    obs, rew, done, infos = self.env.step(act)
+                    obs, rew, done = obs.to(self.device), rew.to(self.device), done.to(self.device)
+                play_step += 1
+                if metrics is not None:
+                    actual_velocity = (
+                        float(self.env.base_lin_vel[0, 0].item()),
+                        float(self.env.base_lin_vel[0, 1].item()),
+                        float(self.env.base_ang_vel[0, 2].item()),
                     )
-            if self.cfg["viewer"]["record_video"]:
-                record_time -= self.env.dt
-                if record_time < 0:
-                    record_time += self.cfg["viewer"]["record_interval"]
-                    self.interrupt = False
-                    signal.signal(signal.SIGINT, self.interrupt_handler)
-                    with imageio.get_writer(os.path.join("videos", name), fps=int(1.0 / self.env.dt)) as self.writer:
-                        for frame in self.env.camera_frames:
-                            self.writer.append_data(frame)
-                    if self.interrupt:
-                        raise KeyboardInterrupt
-                    signal.signal(signal.SIGINT, signal.default_int_handler)
+                    if hasattr(self.env, "commands"):
+                        policy_command = self.env.commands[0, :3].detach().cpu().numpy()
+                    else:
+                        policy_command = None
+                    elapsed = play_step * self.env.dt
+                    tracked = elapsed >= float(self.args.play_metrics_warmup_s)
+                    metrics_row, metrics_summary = metrics.update(
+                        elapsed,
+                        "walk",
+                        actual_velocity,
+                        policy_command=policy_command,
+                        tracked=tracked,
+                    )
+                    if play_step % metrics_report_interval == 0:
+                        print(f"[play metrics] t={elapsed:6.2f}s {metrics.report(metrics_row, metrics_summary)}")
+                if done[0]:
+                    termination = infos.get("termination", {})
+                    if termination:
+                        reason_order = [
+                            "contact",
+                            "lin_vel",
+                            "ang_vel",
+                            "height",
+                            "timeout",
+                            "clear_miss",
+                            "late_chase",
+                            "orbit",
+                            "ball_passed_unblocked",
+                            "through_legs",
+                            "success",
+                        ]
+                        reasons = [name for name in reason_order if bool(termination[name][0].item())]
+                        print(
+                            "[play termination] "
+                            f"reasons={','.join(reasons) if reasons else 'unknown'} "
+                            f"ball_progress={float(termination['ball_progress_ratio'][0].item()):.3f} "
+                            f"robot_progress={float(termination['robot_progress_ratio'][0].item()):.3f} "
+                            f"heading_err={float(termination['heading_error'][0].item()):.3f} "
+                            f"ball_forward={float(termination['ball_forward'][0].item()):.3f} "
+                            f"block_line={float(termination['block_line'][0].item()):.3f} "
+                            f"chosen_block={float(termination['chosen_block_line'][0].item()):.3f} "
+                            f"support_block={float(termination['support_block_line'][0].item()):.3f}"
+                        )
+                if self.cfg["viewer"]["record_video"]:
+                    record_time -= self.env.dt
+                    if record_time < 0:
+                        record_time += self.cfg["viewer"]["record_interval"]
+                        self.interrupt = False
+                        signal.signal(signal.SIGINT, self.interrupt_handler)
+                        with imageio.get_writer(os.path.join("videos", name), fps=int(1.0 / self.env.dt)) as self.writer:
+                            for frame in self.env.camera_frames:
+                                self.writer.append_data(frame)
+                        if self.interrupt:
+                            raise KeyboardInterrupt
+                        signal.signal(signal.SIGINT, signal.default_int_handler)
+        finally:
+            if metrics is not None:
+                metrics.close()
     
     def _play_record_and_exit(self):
         """Record video for a specified duration and save to file, then exit.
