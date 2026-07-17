@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 # NOTE FOR AGENTS/MAINTAINERS: This module is intentionally mirrored with
-# holosoma.utils.tyro_utils. Keep behavior changes in sync.
+# holosoma.utils.tyro_utils. Keep behavior changes in sync, with one deliberate
+# exception: TYRO_CONIFG omits tyro.conf.FlagConversionOff here. Inference CLIs
+# and docs use the --flag/--no-flag negation form because the old
+# config/utils.py marker was nested one tuple too deep and silently ignored;
+# training CLIs use --flag=True/False and keep FlagConversionOff.
 import argparse
 import collections.abc
 import copy
@@ -18,7 +22,6 @@ import tyro.conf
 
 TYRO_CONIFG = (
     tyro.conf.CascadeSubcommandArgs,
-    tyro.conf.FlagConversionOff,
     tyro.conf.UsePythonSyntaxForLiteralCollections,
 )
 
