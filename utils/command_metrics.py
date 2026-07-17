@@ -107,11 +107,15 @@ class CommandVelocityMetrics:
         policy = np.array([row["policy_vx"], row["policy_vy"], row["policy_vyaw"]], dtype=np.float64)
         actual = np.array([row["actual_vx"], row["actual_vy"], row["actual_vyaw"]], dtype=np.float64)
         error = np.array([row["err_vx"], row["err_vy"], row["err_vyaw"]], dtype=np.float64)
+        target_speed = np.linalg.norm(target[:2])
+        actual_speed = np.linalg.norm(actual[:2])
 
         parts = [f"cmd={_fmt_vec(target)}"]
         if np.max(np.abs(policy - target)) > 1.0e-4:
             parts.append(f"policy_cmd={_fmt_vec(policy)}")
         parts.append(f"actual={_fmt_vec(actual)}")
+        parts.append(f"speed_xy={actual_speed:.3f}/{target_speed:.3f}")
+        parts.append(f"speed_err={actual_speed - target_speed:+.3f}")
         parts.append(f"err={_fmt_vec(error)}")
 
         if summary is None:

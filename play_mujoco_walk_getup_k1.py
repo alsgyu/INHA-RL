@@ -138,7 +138,31 @@ def estimate_body_velocity(prev_pos, prev_yaw, data, dt):
     body_vx = cos_yaw * world_vel[0] + sin_yaw * world_vel[1]
     body_vy = -sin_yaw * world_vel[0] + cos_yaw * world_vel[1]
     body_vyaw = wrap_to_pi(current_yaw - prev_yaw) / dt
-    return current_pos, current_yaw, np.array([body_vx, body_vy, body_vyaw], dtype=np.float64)
+    return current_pos, current_yaw, np.array([body_vx, body_vy, body_vyaw], dtype=np.float64), world_vel
+
+
+def command_path_error(start_xy, start_yaw, time_s, current_xy, current_yaw, vx, vy, vyaw):
+    desired_yaw = start_yaw + vyaw * time_s
+    if abs(vyaw) < 1.0e-6:
+        local_dx = vx * time_s
+        local_dy = vy * time_s
+    else:
+        local_dx = (vx * np.sin(vyaw * time_s) + vy * (np.cos(vyaw * time_s) - 1.0)) / vyaw
+        local_dy = (vx * (1.0 - np.cos(vyaw * time_s)) + vy * np.sin(vyaw * time_s)) / vyaw
+    cos_yaw = np.cos(start_yaw)
+    sin_yaw = np.sin(start_yaw)
+    desired_xy = start_xy + np.array(
+        [
+            cos_yaw * local_dx - sin_yaw * local_dy,
+            sin_yaw * local_dx + cos_yaw * local_dy,
+        ],
+        dtype=np.float64,
+    )
+    path_error = np.asarray(current_xy, dtype=np.float64) - desired_xy
+    along_error = cos_yaw * path_error[0] + sin_yaw * path_error[1]
+    lateral_error = -sin_yaw * path_error[0] + cos_yaw * path_error[1]
+    yaw_error = wrap_to_pi(current_yaw - desired_yaw)
+    return along_error, lateral_error, yaw_error
 
 
 def fallen_rpy(pose):
@@ -297,11 +321,14 @@ def main():
     target_qpos = np.copy(default_qpos)
     forced_fall = args.start_fallen
     start_xy = np.copy(data.qpos[0:2])
+    start_yaw = float(quat_to_euler(np.array(data.qpos[3:7], dtype=np.float32))[2])
+    path_start_time = float(data.time)
     last_report = -1.0
     mode_time = 0.0
     metric_pos = np.array(data.qpos[0:3], dtype=np.float64)
     metric_yaw = float(quat_to_euler(np.array(data.qpos[3:7], dtype=np.float32))[2])
     actual_velocity = np.zeros(3, dtype=np.float64)
+    world_velocity = np.zeros(3, dtype=np.float64)
     metrics = CommandVelocityMetrics(
         (args.vx, args.vy, args.vyaw),
         window_s=args.metrics_window_s,
@@ -335,6 +362,10 @@ def main():
             metric_pos = np.array(data.qpos[0:3], dtype=np.float64)
             metric_yaw = float(quat_to_euler(np.array(data.qpos[3:7], dtype=np.float32))[2])
             actual_velocity[:] = 0.0
+            world_velocity[:] = 0.0
+            start_xy = np.copy(data.qpos[0:2])
+            start_yaw = metric_yaw
+            path_start_time = float(data.time)
             metrics.reset_window()
             print(f"[mujoco] forced fall at t={data.time:.2f}s pose={args.fall_pose}")
 
@@ -365,6 +396,9 @@ def main():
             )
             if policy.mode != previous_mode:
                 mode_time = 0.0
+                start_xy = np.copy(data.qpos[0:2])
+                start_yaw = metric_yaw
+                path_start_time = float(data.time)
                 metrics.reset_window()
 
         dof_pos = np.array(data.qpos[7 : 7 + len(default_qpos)], dtype=np.float32)
@@ -372,7 +406,7 @@ def main():
         torque = stiffness * (target_qpos - dof_pos) - damping * dof_vel
         data.ctrl[:] = np.clip(torque, -torque_limit, torque_limit)
         mujoco.mj_step(model, data)
-        metric_pos, metric_yaw, actual_velocity = estimate_body_velocity(metric_pos, metric_yaw, data, sim_dt)
+        metric_pos, metric_yaw, actual_velocity, world_velocity = estimate_body_velocity(metric_pos, metric_yaw, data, sim_dt)
         mode_time += sim_dt
 
         tracked = policy.mode == "walk" and mode_time >= args.metrics_warmup_s
@@ -391,11 +425,29 @@ def main():
         if data.time - last_report >= 1.0:
             last_report = data.time
             xy_error = data.qpos[0:2] - start_xy
+            path_time = max(float(data.time) - path_start_time, 0.0)
+            path_along_error, path_lateral_error, path_yaw_error = command_path_error(
+                start_xy,
+                start_yaw,
+                path_time,
+                data.qpos[0:2],
+                metric_yaw,
+                args.vx,
+                args.vy,
+                args.vyaw,
+            )
+            world_speed_xy = np.linalg.norm(world_velocity[:2])
+            report_rpy = quat_to_euler(np.array(data.qpos[3:7], dtype=np.float32))
             metrics_text = metrics.report(metrics_row, metrics_summary)
             print(
                 f"[mujoco] t={data.time:5.2f}s mode={policy.mode:5s} "
                 f"xy=({data.qpos[0]:+.2f},{data.qpos[1]:+.2f}) "
-                f"drift_y={xy_error[1]:+.3f} rpy=({base_rpy[0]:+.2f},{base_rpy[1]:+.2f},{base_rpy[2]:+.2f}) "
+                f"drift_y={xy_error[1]:+.3f} "
+                f"path_err=({path_along_error:+.3f},{path_lateral_error:+.3f}) "
+                f"yaw_err={path_yaw_error:+.3f} "
+                f"world_v=({world_velocity[0]:+.3f},{world_velocity[1]:+.3f}) "
+                f"world_speed={world_speed_xy:.3f} "
+                f"rpy=({report_rpy[0]:+.2f},{report_rpy[1]:+.2f},{report_rpy[2]:+.2f}) "
                 f"{metrics_text}"
             )
 

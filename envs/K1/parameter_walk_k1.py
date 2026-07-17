@@ -950,6 +950,19 @@ class ParameterWalkK1(BaseTask):
         error_clip = float(self.cfg["rewards"].get("path_lateral_error_clip", 0.5))
         return torch.clamp(torch.square(lateral_error), max=error_clip * error_clip)
 
+    def _straight_walk_mask(self):
+        return (
+            (torch.abs(self.commands[:, 0]) > 0.05)
+            & (torch.abs(self.commands[:, 1]) < 0.05)
+            & (torch.abs(self.commands[:, 2]) < 0.05)
+        ).float()
+
+    def _reward_straight_lateral_vel(self):
+        return torch.square(self.filtered_lin_vel[:, 1]) * self._straight_walk_mask()
+
+    def _reward_straight_yaw_vel(self):
+        return torch.square(self.filtered_ang_vel[:, 2]) * self._straight_walk_mask()
+
     def _reward_base_height(self):
         # Tracking of base height
         base_height = self.base_pos[:, 2] - self.terrain.terrain_heights(self.base_pos)
