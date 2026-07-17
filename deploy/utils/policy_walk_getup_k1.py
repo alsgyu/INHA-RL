@@ -135,7 +135,8 @@ class Policy:
         self.walk_obs[30:42] = dof_vel[leg_start:leg_end] * norm["dof_vel"]
         self.walk_obs[42:54] = self.walk_actions
 
-        output = self.walk_policy(torch.from_numpy(self.walk_obs).unsqueeze(0)).detach().numpy()[0]
+        with torch.no_grad():
+            output = self.walk_policy(torch.from_numpy(self.walk_obs).unsqueeze(0)).detach().numpy()[0]
         self.walk_actions[:] = np.clip(output, -norm["clip_actions"], norm["clip_actions"])
         self.dof_targets[:] = self.default_dof_pos
         self.dof_targets[leg_start:leg_end] = (
@@ -155,7 +156,8 @@ class Policy:
         self.getup_obs[33:55] = dof_vel * norm["dof_vel"]
         self.getup_obs[55:77] = self.getup_actions
 
-        output = self.getup_policy(torch.from_numpy(self.getup_obs).unsqueeze(0)).detach().numpy()[0]
+        with torch.no_grad():
+            output = self.getup_policy(torch.from_numpy(self.getup_obs).unsqueeze(0)).detach().numpy()[0]
         self.getup_actions[:] = np.clip(output, -norm["clip_actions"], norm["clip_actions"])
         self.dof_targets[:] = self.getup_default_dof_pos + float(getup_cfg["control"]["action_scale"]) * self.getup_actions
         return self.dof_targets

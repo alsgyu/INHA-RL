@@ -10,6 +10,8 @@
 !export_model.py
 !export_tflite.py
 !play.py
+!play_mujoco_walk_getup_k1.py
+!play_walk_getup_k1.py
 !train.py
 !requirements.txt
 !README.md

@@ -39,14 +39,14 @@ switching:
   recover_projected_gravity_z: -0.92
   recover_ang_vel_threshold: 0.35
   recover_hold_s: 1.0
-  publish_filter_alpha: 0.2
+  publish_filter_alpha: 0.12
 
 walk_policy:
   policy_path: "./models/parameter_walk_k1.pt"
   num_actions: 12
   num_observations: 54
   leg_start_index: 10
-  gait_frequency: 1.5
+  gait_frequency: 1.3
   foot_yaw_L: 0.0
   foot_yaw_R: 0.0
   body_pitch_target: 0.0
