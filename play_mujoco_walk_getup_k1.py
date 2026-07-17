@@ -82,6 +82,28 @@ def set_root_pose(data, qpos, height, rpy):
     data.qvel[0:6] = 0.0
 
 
+def configure_ground_contact(mujoco, model, friction, condim):
+    ground_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "ground")
+    if ground_id < 0:
+        return False
+    model.geom_friction[ground_id, 0] = float(friction)
+    model.geom_friction[ground_id, 1] = 0.005
+    model.geom_friction[ground_id, 2] = 0.0001
+    model.geom_condim[ground_id] = int(condim)
+    return True
+
+
+def sensor_vector(mujoco, model, data, name, fallback):
+    sensor_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, name)
+    if sensor_id < 0:
+        return fallback
+    adr = int(model.sensor_adr[sensor_id])
+    dim = int(model.sensor_dim[sensor_id])
+    if dim <= 0:
+        return fallback
+    return np.array(data.sensordata[adr : adr + dim], dtype=np.float32)
+
+
 def apply_default_pose_overrides(cfg, args):
     pitch_overrides = {
         0: args.default_hip_pitch,
@@ -130,6 +152,8 @@ def main():
     parser.add_argument("--default_knee_pitch", type=float)
     parser.add_argument("--default_ankle_pitch", type=float)
     parser.add_argument("--default_base_height", type=float, default=0.70)
+    parser.add_argument("--ground_friction", type=float, default=1.0)
+    parser.add_argument("--ground_condim", type=int, default=3)
     parser.add_argument("--metrics_window_s", type=float, default=3.0)
     parser.add_argument("--metrics_warmup_s", type=float, default=1.0)
     parser.add_argument("--metrics_csv", default=None)
@@ -146,6 +170,7 @@ def main():
     enable_getup = (not args.walk_only) and (args.enable_getup or args.start_fallen or args.force_fall_after_s >= 0.0)
     policy = Policy(cfg, enable_getup=enable_getup)
     model = mujoco.MjModel.from_xml_path(args.xml)
+    ground_configured = configure_ground_contact(mujoco, model, args.ground_friction, args.ground_condim)
     data = mujoco.MjData(model)
 
     default_qpos = np.array(cfg["common"]["default_qpos"], dtype=np.float32)
@@ -187,6 +212,11 @@ def main():
         csv_sample_s=args.metrics_csv_sample_s,
     )
     print(f"[mujoco] walk command vx={args.vx:.3f} vy={args.vy:.3f} vyaw={args.vyaw:.3f} getup_enabled={enable_getup}")
+    print(
+        f"[mujoco] model nq={model.nq} nv={model.nv} nu={model.nu} "
+        f"actuated_dof={model.nu} ground_configured={ground_configured} "
+        f"ground_friction={args.ground_friction:.2f} ground_condim={args.ground_condim}"
+    )
     l_hip, l_knee, l_ankle, r_hip, r_knee, r_ankle = leg_default_summary(default_qpos)
     print(
         "[mujoco] default pose "
@@ -211,7 +241,13 @@ def main():
         root_quat = np.array(data.qpos[3:7], dtype=np.float32)
         base_rpy = quat_to_euler(root_quat)
         projected_gravity = quat_to_mat(root_quat).T @ np.array([0.0, 0.0, -1.0], dtype=np.float32)
-        base_ang_vel = np.array(data.qvel[3:6], dtype=np.float32)
+        base_ang_vel = sensor_vector(
+            mujoco,
+            model,
+            data,
+            "angular-velocity",
+            np.array(data.qvel[3:6], dtype=np.float32),
+        )
 
         if data.time >= next_policy_t:
             next_policy_t += policy_dt
