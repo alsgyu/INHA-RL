@@ -244,3 +244,6 @@ rewards:
   soft_torque_limit: 1.0
   swing_period: 0.2
   feet_distance_ref: 0.192
+
+metadata:
+  policy_name: "get_up_k1"

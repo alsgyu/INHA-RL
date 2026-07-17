@@ -524,6 +524,38 @@ class ParameterWalkK1(BaseTask):
             self.commands[env_ids, :10] = command_tensor.unsqueeze(0)
             self.gait_frequency[env_ids] = command_tensor[3]
 
+    def _sample_command_value(self, command_cfg, key, count, default=0.0):
+        value = command_cfg.get(key, default)
+        if isinstance(value, (list, tuple)) and len(value) == 2:
+            return torch_rand_float(float(value[0]), float(value[1]), (count, 1), device=self.device).squeeze(1)
+        return torch.full((count,), float(value), dtype=torch.float, device=self.device)
+
+    def _apply_straight_anchor_command(self, env_ids):
+        if len(env_ids) == 0:
+            return
+        command_cfg = self.cfg["commands"].get("straight", {})
+        command_keys = [
+            "lin_vel_x",
+            "lin_vel_y",
+            "ang_vel_yaw",
+            "gait_frequency",
+            "foot_yaw_L",
+            "foot_yaw_R",
+            "body_pitch_target",
+            "body_roll_target",
+            "feet_offset_x_target",
+            "feet_offset_y_target",
+        ]
+        defaults = self.cfg["commands"].get("fixed", {})
+        for command_idx, key in enumerate(command_keys):
+            self.commands[env_ids, command_idx] = self._sample_command_value(
+                command_cfg,
+                key,
+                len(env_ids),
+                defaults.get(key, 0.0),
+            )
+        self.gait_frequency[env_ids] = self.commands[env_ids, 3]
+
     def _teleport_robot(self):
         if self.terrain.type == "plane":
             return
@@ -583,7 +615,14 @@ class ParameterWalkK1(BaseTask):
                 ).squeeze(1)
             
         self.gait_frequency[env_ids] = self.commands[env_ids, 3]
-        still_envs = env_ids[torch.randperm(len(env_ids))[: int(self.cfg["commands"]["still_proportion"] * len(env_ids))]]
+        straight_count = int(self.cfg["commands"].get("straight_proportion", 0.0) * len(env_ids))
+        perm = torch.randperm(len(env_ids), device=self.device)
+        straight_envs = env_ids[perm[:straight_count]]
+        self._apply_straight_anchor_command(straight_envs)
+
+        remaining_envs = env_ids[perm[straight_count:]]
+        still_count = int(self.cfg["commands"]["still_proportion"] * len(env_ids))
+        still_envs = remaining_envs[:still_count]
         self.commands[still_envs, :10] = 0.0
         self.gait_frequency[still_envs] = 0.0
         self.cmd_resample_time[env_ids] += self._sample_resample_steps(len(env_ids))

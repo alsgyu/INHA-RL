@@ -7,6 +7,38 @@ import argparse
 import torch
 from utils.models.BaseAC import *
 
+
+def merge_dicts(base, override):
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = merge_dicts(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def load_config(cfg_file, visited=None):
+    if visited is None:
+        visited = set()
+    cfg_file = os.path.normpath(cfg_file)
+    if cfg_file in visited:
+        raise ValueError(f"Recursive config inheritance detected for {cfg_file}")
+    visited.add(cfg_file)
+
+    with open(cfg_file, "r", encoding="utf-8") as f:
+        cfg = yaml.load(f.read(), Loader=yaml.FullLoader)
+
+    parent = cfg.pop("extends", None)
+    if not parent:
+        return cfg
+    if not parent.endswith(".yaml"):
+        parent = os.path.join("envs", f"{parent}.yaml")
+    elif not os.path.isabs(parent):
+        parent = os.path.join(os.path.dirname(cfg_file), parent)
+    return merge_dicts(load_config(parent, visited), cfg)
+
+
 def get_robot_type(task_name):
     """Determine robot type from task name."""
     # Check if task name starts with K1 or T1
@@ -24,20 +56,28 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint", type=str, help="Path of model checkpoint to load. Overrides config file if provided.")
     args = parser.parse_args()
     cfg_file = os.path.join("envs", "{}.yaml".format(args.task))
-    with open(cfg_file, "r", encoding="utf-8") as f:
-        cfg = yaml.load(f.read(), Loader=yaml.FullLoader)
+    cfg = load_config(cfg_file)
     if args.checkpoint is not None:
         cfg["basic"]["checkpoint"] = args.checkpoint
 
     model = BaseActorCritic(cfg["env"]["num_actions"], cfg["env"]["num_observations"], cfg["env"]["num_privileged_obs"])
     if not cfg["basic"]["checkpoint"] or (cfg["basic"]["checkpoint"] == "-1") or (cfg["basic"]["checkpoint"] == -1):
         # Look for models in hierarchical structure: logs/robot_type/task_name/**/*.pth
-        task_name = args.task
+        task_name = cfg["basic"].get("log_task", args.task)
         robot_type = get_robot_type(task_name)
         
-        # First try: exact task in robot-specific folder
-        task_log_pattern = os.path.join("logs", robot_type, task_name, "**/*.pth")
-        task_models = sorted(glob.glob(task_log_pattern, recursive=True), key=os.path.getmtime)
+        # First try: exact log task in robot-specific folder
+        search_task_names = [task_name]
+        for fallback_name in (cfg["basic"].get("task"), args.task):
+            if fallback_name and fallback_name not in search_task_names:
+                search_task_names.append(fallback_name)
+
+        task_models = []
+        for search_task_name in search_task_names:
+            task_log_pattern = os.path.join("logs", robot_type, search_task_name, "**/*.pth")
+            task_models = sorted(glob.glob(task_log_pattern, recursive=True), key=os.path.getmtime)
+            if task_models:
+                break
         
         if task_models:
             cfg["basic"]["checkpoint"] = task_models[-1]

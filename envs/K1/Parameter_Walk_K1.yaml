@@ -150,6 +150,18 @@ commands:
     fixed_yaw: true
     no_disturbance: true
   still_proportion: 0.1
+  straight_proportion: 0.30
+  straight:
+    lin_vel_x: [0.15, 0.45]
+    lin_vel_y: 0.0
+    ang_vel_yaw: 0.0
+    gait_frequency: [1.4, 1.8]
+    foot_yaw_L: 0.0
+    foot_yaw_R: 0.0
+    body_pitch_target: 0.0
+    body_roll_target: 0.0
+    feet_offset_x_target: 0.0
+    feet_offset_y_target: 0.0
   lin_vel_x: [-0.6, 0.8] # min max [m/s]
   lin_vel_y: [-0.35, 0.35] # min max [m/s]
   ang_vel_yaw: [-1.2, 1.2]   # min max [rad/s]
@@ -357,8 +369,8 @@ rewards:
     tracking_lin_vel_x: 2.0
     tracking_lin_vel_y: 2.0
     tracking_ang_vel: 2.0
-    heading_tracking: -3.0
-    path_lateral: -2.0
+    heading_tracking: -6.0
+    path_lateral: -4.0
     base_height: -20.
     # Additional parameter rewards
     foot_yaw_L:            -1.0
@@ -393,10 +405,13 @@ rewards:
   penalize_contacts_on: ["Trunk", "H1", "H2", "AL", "AR", "Waist", "Hip", "Shank", "Ankle"]
   only_positive_rewards: true # if true negative total rewards are clipped at zero (avoids early termination problems)
   tracking_sigma: 0.25 # tracking reward = exp(-error^2/sigma)
-  path_lateral_error_clip: 0.5
+  path_lateral_error_clip: 0.35
   base_height_target: 0.52
   soft_dof_pos_limit: 1. # percentage of urdf limits, values above this limit are penalized
   soft_dof_vel_limit: 1.
   soft_torque_limit: 1.
   swing_period: 0.2
   feet_distance_ref: 0.18
+
+metadata:
+  policy_name: "parameter_walk_k1"
