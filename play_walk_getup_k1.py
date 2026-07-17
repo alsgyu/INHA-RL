@@ -25,11 +25,11 @@ def _set_dofs(env, dof_pos):
     env.gym.set_dof_state_tensor(env.sim, gymtorch.unwrap_tensor(env.dof_state))
 
 
-def set_standing_state(env):
+def set_standing_state(env, base_height):
     env_ids = torch.arange(env.num_envs, device=env.device)
     env.root_states[env_ids] = env.base_init_state
     env.root_states[env_ids, 0:2] = env.env_origins[env_ids, 0:2]
-    env.root_states[env_ids, 2] = env.terrain.terrain_heights(env.root_states[env_ids, 0:2]) + 0.70
+    env.root_states[env_ids, 2] = env.terrain.terrain_heights(env.root_states[env_ids, 0:2]) + base_height
     env.root_states[env_ids, 3:7] = quat_from_euler_xyz(
         torch.zeros(env.num_envs, device=env.device),
         torch.zeros(env.num_envs, device=env.device),
@@ -38,6 +38,41 @@ def set_standing_state(env):
     env.root_states[env_ids, 7:13] = 0.0
     env.gym.set_actor_root_state_tensor(env.sim, gymtorch.unwrap_tensor(env.root_states))
     _set_dofs(env, env.default_dof_pos.repeat(env.num_envs, 1))
+
+
+def apply_default_pose_overrides(env, args):
+    pitch_overrides = {
+        0: args.default_hip_pitch,
+        3: args.default_knee_pitch,
+        4: args.default_ankle_pitch,
+        6: args.default_hip_pitch,
+        9: args.default_knee_pitch,
+        10: args.default_ankle_pitch,
+    }
+    if not any(value is not None for value in pitch_overrides.values()):
+        return
+
+    if env.default_dof_pos.ndim == 1:
+        for leg_offset, value in pitch_overrides.items():
+            if value is not None:
+                env.default_dof_pos[LEG_START_INDEX + leg_offset] = float(value)
+        return
+
+    for leg_offset, value in pitch_overrides.items():
+        if value is not None:
+            env.default_dof_pos[:, LEG_START_INDEX + leg_offset] = float(value)
+
+
+def leg_default_summary(env):
+    default = env.default_dof_pos[0] if env.default_dof_pos.ndim == 2 else env.default_dof_pos
+    return (
+        default[LEG_START_INDEX].item(),
+        default[LEG_START_INDEX + 3].item(),
+        default[LEG_START_INDEX + 4].item(),
+        default[LEG_START_INDEX + 6].item(),
+        default[LEG_START_INDEX + 9].item(),
+        default[LEG_START_INDEX + 10].item(),
+    )
 
 
 def fallen_rpy(pose, count, device):
@@ -139,6 +174,10 @@ def main():
     parser.add_argument("--start_fallen", action="store_true")
     parser.add_argument("--enable_getup", action="store_true")
     parser.add_argument("--walk_only", action="store_true")
+    parser.add_argument("--default_hip_pitch", type=float)
+    parser.add_argument("--default_knee_pitch", type=float)
+    parser.add_argument("--default_ankle_pitch", type=float)
+    parser.add_argument("--default_base_height", type=float, default=0.70)
     parser.add_argument("--metrics_window_s", type=float, default=3.0)
     parser.add_argument("--metrics_warmup_s", type=float, default=1.0)
     parser.add_argument("--metrics_csv", default=None)
@@ -162,12 +201,13 @@ def main():
     task_class = get_task_class(task_name)
     env = task_class(cfg)
     env.is_play = True
+    apply_default_pose_overrides(env, args)
     env.reset()
     if args.start_fallen:
         set_fallen_state(env, args.fall_pose)
         mode = "getup"
     else:
-        set_standing_state(env)
+        set_standing_state(env, args.default_base_height)
         mode = "walk"
 
     walk_policy = torch.jit.load(args.walk_policy, map_location=env.device).eval()
@@ -186,6 +226,13 @@ def main():
         csv_sample_s=args.metrics_csv_sample_s,
     )
     print(f"[gym] walk command vx={args.vx:.3f} vy={args.vy:.3f} vyaw={args.vyaw:.3f} getup_enabled={enable_getup}")
+    l_hip, l_knee, l_ankle, r_hip, r_knee, r_ankle = leg_default_summary(env)
+    print(
+        "[gym] default pose "
+        f"L(hip={l_hip:.3f}, knee={l_knee:.3f}, ankle={l_ankle:.3f}) "
+        f"R(hip={r_hip:.3f}, knee={r_knee:.3f}, ankle={r_ankle:.3f}) "
+        f"base_z={args.default_base_height:.3f}"
+    )
 
     for step_idx in range(int(args.duration_s / env.dt)):
         sim_time = step_idx * env.dt

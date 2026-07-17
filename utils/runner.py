@@ -233,6 +233,10 @@ class Runner:
         parser.add_argument("--play_body_roll", type=float, help="Play command body roll target [rad].")
         parser.add_argument("--play_feet_offset_x", type=float, help="Play command feet x-offset target [m].")
         parser.add_argument("--play_feet_offset_y", type=float, help="Play command feet y-offset target [m].")
+        parser.add_argument("--play_default_hip_pitch", type=float, help="Override play default hip pitch [rad].")
+        parser.add_argument("--play_default_knee_pitch", type=float, help="Override play default knee pitch [rad].")
+        parser.add_argument("--play_default_ankle_pitch", type=float, help="Override play default ankle pitch [rad].")
+        parser.add_argument("--play_base_height", type=float, help="Override play initial base height [m].")
         parser.add_argument("--play_velocity_metrics", action="store_true", help="Print commanded vs actual base velocity in play mode.")
         parser.add_argument("--play_metrics_interval_s", type=float, default=1.0, help="Seconds between play velocity metric prints.")
         parser.add_argument("--play_metrics_window_s", type=float, default=3.0, help="Rolling window for play velocity averages.")
@@ -281,6 +285,10 @@ class Runner:
                 "play_metrics_warmup_s",
                 "play_metrics_csv",
                 "play_metrics_csv_sample_s",
+                "play_default_hip_pitch",
+                "play_default_knee_pitch",
+                "play_default_ankle_pitch",
+                "play_base_height",
             }
         )
         for arg in vars(self.args):
@@ -321,6 +329,18 @@ class Runner:
             play_cfg["no_disturbance"] = True
         if self.args.play_with_disturbance:
             play_cfg["no_disturbance"] = False
+        default_joint_arg_map = {
+            "play_default_hip_pitch": "Hip_Pitch",
+            "play_default_knee_pitch": "Knee_Pitch",
+            "play_default_ankle_pitch": "Ankle_Pitch",
+        }
+        default_joint_angles = self.cfg.setdefault("init_state", {}).setdefault("default_joint_angles", {})
+        for arg, cfg_key in default_joint_arg_map.items():
+            value = getattr(self.args, arg)
+            if value is not None:
+                default_joint_angles[cfg_key] = float(value)
+        if self.args.play_base_height is not None:
+            self.cfg.setdefault("init_state", {}).setdefault("pos", [0.0, 0.0, 0.58])[2] = float(self.args.play_base_height)
         if self.args.record_video_mode:
             self.cfg["viewer"]["record_video"] = True
         elif self.args.disable_record_video:
@@ -682,6 +702,15 @@ class Runner:
                 f"fixed_yaw={bool(play_cfg.get('fixed_yaw', False))} "
                 f"no_disturbance={bool(play_cfg.get('no_disturbance', False))}"
             )
+        default_joint_angles = self.cfg.get("init_state", {}).get("default_joint_angles", {})
+        init_pos = self.cfg.get("init_state", {}).get("pos", [0.0, 0.0, 0.0])
+        print(
+            "[play default pose] "
+            f"hip_pitch={float(default_joint_angles.get('Hip_Pitch', 0.0)):.3f} "
+            f"knee_pitch={float(default_joint_angles.get('Knee_Pitch', 0.0)):.3f} "
+            f"ankle_pitch={float(default_joint_angles.get('Ankle_Pitch', 0.0)):.3f} "
+            f"base_z={float(init_pos[2]):.3f}"
+        )
         metrics_enabled = self.args.play_velocity_metrics or bool(self.args.play_metrics_csv)
         metrics = None
         metrics_report_interval = max(1, int(float(self.args.play_metrics_interval_s) / self.env.dt))

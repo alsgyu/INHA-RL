@@ -9,6 +9,9 @@ from utils.command_metrics import CommandVelocityMetrics
 from deploy.utils.policy_walk_getup_k1 import Policy
 
 
+LEG_START_INDEX = 10
+
+
 def quat_to_mat(q):
     w, x, y, z = q
     return np.array(
@@ -79,6 +82,36 @@ def set_root_pose(data, qpos, height, rpy):
     data.qvel[0:6] = 0.0
 
 
+def apply_default_pose_overrides(cfg, args):
+    pitch_overrides = {
+        0: args.default_hip_pitch,
+        3: args.default_knee_pitch,
+        4: args.default_ankle_pitch,
+        6: args.default_hip_pitch,
+        9: args.default_knee_pitch,
+        10: args.default_ankle_pitch,
+    }
+    if not any(value is not None for value in pitch_overrides.values()):
+        return
+
+    for section_name in ("common", "walk_policy"):
+        qpos = cfg[section_name]["default_qpos"]
+        for leg_offset, value in pitch_overrides.items():
+            if value is not None:
+                qpos[LEG_START_INDEX + leg_offset] = float(value)
+
+
+def leg_default_summary(qpos):
+    return (
+        qpos[LEG_START_INDEX],
+        qpos[LEG_START_INDEX + 3],
+        qpos[LEG_START_INDEX + 4],
+        qpos[LEG_START_INDEX + 6],
+        qpos[LEG_START_INDEX + 9],
+        qpos[LEG_START_INDEX + 10],
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="deploy/configs/Walk_GetUp_k1.yaml")
@@ -93,6 +126,10 @@ def main():
     parser.add_argument("--start_fallen", action="store_true")
     parser.add_argument("--enable_getup", action="store_true")
     parser.add_argument("--walk_only", action="store_true")
+    parser.add_argument("--default_hip_pitch", type=float)
+    parser.add_argument("--default_knee_pitch", type=float)
+    parser.add_argument("--default_ankle_pitch", type=float)
+    parser.add_argument("--default_base_height", type=float, default=0.70)
     parser.add_argument("--metrics_window_s", type=float, default=3.0)
     parser.add_argument("--metrics_warmup_s", type=float, default=1.0)
     parser.add_argument("--metrics_csv", default=None)
@@ -103,6 +140,7 @@ def main():
 
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = yaml.load(f.read(), Loader=yaml.FullLoader)
+    apply_default_pose_overrides(cfg, args)
 
     torch.set_num_threads(1)
     enable_getup = (not args.walk_only) and (args.enable_getup or args.start_fallen or args.force_fall_after_s >= 0.0)
@@ -117,7 +155,7 @@ def main():
     if model.actuator_forcerange.shape[0] == len(torque_limit):
         torque_limit = np.minimum(torque_limit, np.abs(model.actuator_forcerange[:, 1]))
 
-    data.qpos[0:3] = np.array([0.0, 0.0, 0.70], dtype=np.float32)
+    data.qpos[0:3] = np.array([0.0, 0.0, args.default_base_height], dtype=np.float32)
     data.qpos[3:7] = quat_from_euler(0.0, 0.0, 0.0)
     data.qpos[7 : 7 + len(default_qpos)] = default_qpos
     data.qvel[:] = 0.0
@@ -149,6 +187,13 @@ def main():
         csv_sample_s=args.metrics_csv_sample_s,
     )
     print(f"[mujoco] walk command vx={args.vx:.3f} vy={args.vy:.3f} vyaw={args.vyaw:.3f} getup_enabled={enable_getup}")
+    l_hip, l_knee, l_ankle, r_hip, r_knee, r_ankle = leg_default_summary(default_qpos)
+    print(
+        "[mujoco] default pose "
+        f"L(hip={l_hip:.3f}, knee={l_knee:.3f}, ankle={l_ankle:.3f}) "
+        f"R(hip={r_hip:.3f}, knee={r_knee:.3f}, ankle={r_ankle:.3f}) "
+        f"base_z={args.default_base_height:.3f}"
+    )
 
     while data.time < args.duration_s:
         if enable_getup and args.force_fall_after_s >= 0.0 and (not forced_fall) and data.time >= args.force_fall_after_s:
