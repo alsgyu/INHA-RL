@@ -4,7 +4,7 @@ from setuptools import find_packages, setup
 # (`unitree_interface`, `booster_robotics_sdk`) — only the distribution names
 # differ from the historical GitHub-release wheels. pip resolves the correct
 # wheel for the running interpreter/platform from the PyPI index.
-UNITREE_VERSION = "0.1.5"
+UNITREE_VERSION = "0.1.6"
 BOOSTER_VERSION = "0.1.1"
 
 unitree_extras = [f"far-unitree-sdk=={UNITREE_VERSION}"]
