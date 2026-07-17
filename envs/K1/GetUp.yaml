@@ -1,0 +1,4 @@
+extends: GetUp_K1.yaml
+
+basic:
+  log_task: "K1/GetUp"

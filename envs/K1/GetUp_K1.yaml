@@ -1,0 +1,246 @@
+extends: Base_Walk_k1.yaml
+
+basic:
+  task: "K1/GetUpK1"
+  log_task: "K1/GetUp"
+  max_iterations: 15000
+  description: "Whole-body K1 get-up policy from randomized fallen poses"
+
+env:
+  num_envs: 2048
+  num_observations: 77
+  num_privileged_obs: 14
+  num_actions: 22
+  env_spacing: 1.
+
+runner:
+  horizon_length: 64
+  mini_epochs: 10
+  save_interval: 500
+  progress_interval: 10
+  use_wandb: false
+  log_video_interval: null
+
+viewer:
+  pos: [3., -3., 2.]
+  lookat: [0., 0., 0.]
+  record_video: false
+  record_interval: 5.
+  record_env_idx: 0
+
+asset:
+  file: "resources/K1/K1_22dof.urdf"
+  mujoco_file: "resources/K1/K1_22dof.xml"
+  name: "K1"
+  base_name: "Trunk"
+  foot_names: ["left_foot_link", "right_foot_link"]
+  feet_edge_pos: [[ 0.11,  0.04, -0.02],
+                  [ 0.11, -0.04, -0.02],
+                  [-0.07,  0.04, -0.02],
+                  [-0.07, -0.04, -0.02]]
+
+init_state:
+  pos: [0.0, 0.0, 0.25]
+  rot: [0.0, 0.0, 0.0, 1.0]
+  lin_vel: [0.0, 0.0, 0.0]
+  ang_vel: [0.0, 0.0, 0.0]
+  default_joint_angles: {
+    "AAHead_yaw": 0.0,
+    "Head_pitch": 0.0,
+    "Shoulder_Pitch": 0.15,
+    "Shoulder_Roll": 0.0,
+    "Elbow_Pitch": 0.25,
+    "Elbow_Yaw": 0.0,
+    "Hip_Pitch": -0.2,
+    "Knee_Pitch": 0.4,
+    "Ankle_Pitch": -0.25,
+    "default": 0.0
+  }
+
+control:
+  stiffness: {
+    "Head": 15.,
+    "Shoulder": 40.,
+    "Elbow": 30.,
+    "Hip_Pitch": 90.,
+    "Hip_Roll": 90.,
+    "Hip_Yaw": 80.,
+    "Knee": 100.,
+    "Ankle": 45.
+  }
+  damping: {
+    "Head": 1.,
+    "Shoulder": 2.,
+    "Elbow": 2.,
+    "Hip_Pitch": 3.,
+    "Hip_Roll": 3.,
+    "Hip_Yaw": 2.,
+    "Knee": 3.,
+    "Ankle": 2.
+  }
+  effort_limit: {
+    "Head": 8.,
+    "Shoulder": 18.,
+    "Elbow": 18.,
+    "Hip_Pitch": 35.,
+    "Hip_Roll": 35.,
+    "Hip_Yaw": 25.,
+    "Knee": 45.,
+    "Ankle": 25.
+  }
+  velocity_limit: {
+    "Head": 8.,
+    "Shoulder": 10.,
+    "Elbow": 12.,
+    "Hip_Pitch": 8.,
+    "Hip_Roll": 12.9,
+    "Hip_Yaw": 18.,
+    "Knee": 12.5,
+    "Ankle": 18.
+  }
+  action_scale: 1.0
+  decimation: 10
+  damping_velocity_filter_alpha: 0.22
+
+terrain:
+  type: "plane"
+  static_friction: 1.0
+  dynamic_friction: 1.0
+  restitution: 0.
+
+commands:
+  num_commands: 3
+  still_proportion: 1.0
+  lin_vel_x: [0.0, 0.0]
+  lin_vel_y: [0.0, 0.0]
+  ang_vel_yaw: [0.0, 0.0]
+  resampling_time_s: [10.0, 10.0]
+  gait_frequency: [0.0, 0.0]
+  curriculum: false
+  update_rate: 0.0
+  lin_vel_levels: 1
+  ang_vel_levels: 1
+  lin_vel_x_resolution: 0.0
+  lin_vel_y_resolution: 0.0
+  ang_vel_resolution: 0.0
+  episode_length_toler: 0.0
+  lin_vel_x_toler: 0.0
+  lin_vel_y_toler: 0.0
+  ang_vel_yaw_toler: 0.0
+
+getup:
+  play_pose: "random"
+  fallen_joint_angles: {
+    "Shoulder_Pitch": 0.5,
+    "Shoulder_Roll": 0.0,
+    "Elbow_Pitch": 0.8,
+    "Hip_Pitch": -0.45,
+    "Knee_Pitch": 0.9,
+    "Ankle_Pitch": -0.35
+  }
+  fallen_poses:
+    - name: "back"
+      probability: 0.25
+      roll: [2.75, 3.14]
+      pitch: [-0.25, 0.25]
+      height: [0.22, 0.32]
+    - name: "front"
+      probability: 0.25
+      roll: [-0.25, 0.25]
+      pitch: [1.25, 1.65]
+      height: [0.22, 0.32]
+    - name: "left_side"
+      probability: 0.25
+      roll: [1.25, 1.65]
+      pitch: [-0.25, 0.25]
+      height: [0.22, 0.34]
+    - name: "right_side"
+      probability: 0.25
+      roll: [-1.65, -1.25]
+      pitch: [-0.25, 0.25]
+      height: [0.22, 0.34]
+
+randomization:
+  enable_disturbances: false
+  init_dof_pos:
+    range: [0., 0.12]
+    operation: "additive"
+    distribution: "gaussian"
+  init_base_pos_xy:
+    range: [-0.2, 0.2]
+    operation: "additive"
+    distribution: "uniform"
+  init_base_lin_vel_xy:
+    range: [0., 0.0]
+    operation: "additive"
+    distribution: "gaussian"
+  base_com:
+    range: [-0.03, 0.03]
+    operation: "additive"
+    distribution: "uniform"
+  base_mass:
+    range: [0.9, 1.1]
+    operation: "scaling"
+    distribution: "uniform"
+  other_com:
+    range: [-0.005, 0.005]
+    operation: "additive"
+    distribution: "uniform"
+  other_mass:
+    range: [0.98, 1.02]
+    operation: "scaling"
+    distribution: "uniform"
+
+rewards:
+  scales:
+    survival: 0.05
+    tracking_lin_vel_x: 0.0
+    tracking_lin_vel_y: 0.0
+    tracking_ang_vel: 0.0
+    getup_success: 8.0
+    upright: 4.0
+    stand_height: 4.0
+    stand_still: 1.0
+    dof_stand: -0.35
+    base_height: 0.0
+    orientation: 0.0
+    torques: -2.e-4
+    torque_tiredness: -5.e-3
+    power: -1.e-3
+    lin_vel_z: 0.0
+    ang_vel_xy: 0.0
+    dof_vel: -1.e-4
+    dof_acc: -1.e-7
+    root_acc: -1.e-4
+    action_rate: -0.5
+    dof_pos_limits: -1.0
+    dof_vel_limits: -0.2
+    torque_limits: -0.2
+    collision: 0.0
+    feet_slip: 0.0
+    feet_vel_z: 0.0
+    feet_yaw_diff: 0.0
+    feet_yaw_mean: 0.0
+    feet_roll: 0.0
+    feet_distance: 0.0
+    feet_swing: 0.0
+  episode_length_s: 10.0
+  terminate_height: 0.0
+  terminate_vel: 120.0
+  terminate_contacts_on: []
+  penalize_contacts_on: []
+  only_positive_rewards: false
+  tracking_sigma: 0.25
+  base_height_target: 0.54
+  stand_height_target: 0.54
+  stand_height_sigma: 0.05
+  upright_sigma: 0.25
+  stable_vel_sigma: 1.0
+  success_height: 0.50
+  success_upright_error: 0.08
+  success_vel: 0.35
+  soft_dof_pos_limit: 0.9
+  soft_dof_vel_limit: 1.0
+  soft_torque_limit: 1.0
+  swing_period: 0.2
+  feet_distance_ref: 0.192
