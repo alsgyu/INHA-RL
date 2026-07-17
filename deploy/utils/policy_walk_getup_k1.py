@@ -5,15 +5,18 @@ import torch
 
 
 class Policy:
-    def __init__(self, cfg, enable_getup=True):
+    def __init__(self, cfg, enable_getup=True, walk_policy=None, walk_policy_path=None):
         self.cfg = cfg
         self.enable_getup = enable_getup
-        self.walk_policy_path = self._resolve_policy_path(cfg["walk_policy"]["policy_path"])
+        self.walk_policy_path = walk_policy_path or cfg["walk_policy"]["policy_path"]
         self.getup_policy_path = self._resolve_policy_path(
             cfg["getup_policy"]["policy_path"],
             allow_missing=not enable_getup,
         )
-        self.walk_policy = torch.jit.load(self.walk_policy_path)
+        self.walk_policy = walk_policy
+        if self.walk_policy is None:
+            self.walk_policy_path = self._resolve_policy_path(self.walk_policy_path)
+            self.walk_policy = torch.jit.load(self.walk_policy_path)
         self.getup_policy = torch.jit.load(self.getup_policy_path) if enable_getup else None
         self.walk_policy.eval()
         if self.getup_policy is not None:

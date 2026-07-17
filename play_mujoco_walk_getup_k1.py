@@ -1,10 +1,13 @@
 import argparse
+import glob
+import os
 import time
 
 import numpy as np
 import torch
 import yaml
 
+from utils.models.BaseAC import BaseActorCritic
 from utils.command_metrics import CommandVelocityMetrics
 from deploy.utils.policy_walk_getup_k1 import Policy
 
@@ -22,6 +25,81 @@ def quat_to_mat(q):
         ],
         dtype=np.float32,
     )
+
+
+def merge_dicts(base, override):
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = merge_dicts(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def load_task_config(cfg_file, visited=None):
+    if visited is None:
+        visited = set()
+    cfg_file = os.path.normpath(cfg_file)
+    if cfg_file in visited:
+        raise ValueError(f"Recursive config inheritance detected for {cfg_file}")
+    visited.add(cfg_file)
+
+    with open(cfg_file, "r", encoding="utf-8") as f:
+        cfg = yaml.load(f.read(), Loader=yaml.FullLoader)
+
+    parent = cfg.pop("extends", None)
+    if not parent:
+        return cfg
+    if not parent.endswith(".yaml"):
+        parent = os.path.join("envs", f"{parent}.yaml")
+    elif not os.path.isabs(parent):
+        parent = os.path.join(os.path.dirname(cfg_file), parent)
+    return merge_dicts(load_task_config(parent, visited), cfg)
+
+
+def robot_type(task_name):
+    return task_name.split("/", 1)[0] if "/" in task_name else "Unknown"
+
+
+def resolve_checkpoint(task, checkpoint):
+    if checkpoint in (None, "", "deploy"):
+        return None
+    if checkpoint not in ("-1", -1):
+        return checkpoint
+
+    task_cfg = load_task_config(os.path.join("envs", f"{task}.yaml"))
+    task_names = [task_cfg.get("basic", {}).get("log_task", task)]
+    for fallback in (task_cfg.get("basic", {}).get("task"), task):
+        if fallback and fallback not in task_names:
+            task_names.append(fallback)
+
+    for task_name in task_names:
+        pattern = os.path.join("logs", robot_type(task_name), task_name, "**", "*.pth")
+        matches = sorted(glob.glob(pattern, recursive=True), key=os.path.getmtime)
+        if matches:
+            return matches[-1]
+    return None
+
+
+def load_checkpoint_actor(task, checkpoint):
+    checkpoint_path = resolve_checkpoint(task, checkpoint)
+    if checkpoint_path is None:
+        return None, None
+
+    task_cfg = load_task_config(os.path.join("envs", f"{task}.yaml"))
+    model = BaseActorCritic(
+        task_cfg["env"]["num_actions"],
+        task_cfg["env"]["num_observations"],
+        task_cfg["env"]["num_privileged_obs"],
+    )
+    try:
+        model_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    except TypeError:
+        model_dict = torch.load(checkpoint_path, map_location="cpu")
+    model.load_state_dict(model_dict["model"], strict=False)
+    model.actor.eval()
+    return model.actor, checkpoint_path
 
 
 def quat_to_euler(q):
@@ -138,6 +216,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="deploy/configs/Walk_GetUp_k1.yaml")
     parser.add_argument("--xml", default="resources/K1/K1_22dof.xml")
+    parser.add_argument("--task", default="K1/ParameterWalk")
+    parser.add_argument("--checkpoint", default="-1", help="Walk .pth checkpoint. Use -1 for latest, or deploy to use deploy/models .pt.")
+    parser.add_argument("--walk_policy", default=None, help="Explicit TorchScript .pt walk policy path. Overrides --checkpoint.")
     parser.add_argument("--duration_s", type=float, default=30.0)
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--vx", type=float, default=0.2)
@@ -168,7 +249,23 @@ def main():
 
     torch.set_num_threads(1)
     enable_getup = (not args.walk_only) and (args.enable_getup or args.start_fallen or args.force_fall_after_s >= 0.0)
-    policy = Policy(cfg, enable_getup=enable_getup)
+    checkpoint_actor = None
+    policy_source = args.walk_policy or cfg["walk_policy"]["policy_path"]
+    checkpoint_warning = None
+    if args.walk_policy:
+        cfg["walk_policy"]["policy_path"] = args.walk_policy
+    else:
+        checkpoint_actor, checkpoint_path = load_checkpoint_actor(args.task, args.checkpoint)
+        if checkpoint_actor is not None:
+            policy_source = checkpoint_path
+        elif args.checkpoint not in (None, "", "deploy"):
+            checkpoint_warning = f"Could not find checkpoint '{args.checkpoint}' for {args.task}; falling back to deploy policy."
+    policy = Policy(
+        cfg,
+        enable_getup=enable_getup,
+        walk_policy=checkpoint_actor,
+        walk_policy_path=policy_source,
+    )
     model = mujoco.MjModel.from_xml_path(args.xml)
     ground_configured = configure_ground_contact(mujoco, model, args.ground_friction, args.ground_condim)
     data = mujoco.MjData(model)
@@ -212,6 +309,9 @@ def main():
         csv_sample_s=args.metrics_csv_sample_s,
     )
     print(f"[mujoco] walk command vx={args.vx:.3f} vy={args.vy:.3f} vyaw={args.vyaw:.3f} getup_enabled={enable_getup}")
+    if checkpoint_warning:
+        print(f"[mujoco] warning: {checkpoint_warning}")
+    print(f"[mujoco] walk policy source={policy.walk_policy_path}")
     print(
         f"[mujoco] model nq={model.nq} nv={model.nv} nu={model.nu} "
         f"actuated_dof={model.nu} ground_configured={ground_configured} "
