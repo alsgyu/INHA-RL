@@ -91,6 +91,8 @@ def main():
     parser.add_argument("--force_fall_after_s", type=float, default=-1.0)
     parser.add_argument("--fall_pose", choices=["front", "back", "left", "right"], default="front")
     parser.add_argument("--start_fallen", action="store_true")
+    parser.add_argument("--enable_getup", action="store_true")
+    parser.add_argument("--walk_only", action="store_true")
     parser.add_argument("--metrics_window_s", type=float, default=3.0)
     parser.add_argument("--metrics_warmup_s", type=float, default=1.0)
     parser.add_argument("--metrics_csv", default=None)
@@ -103,7 +105,8 @@ def main():
         cfg = yaml.load(f.read(), Loader=yaml.FullLoader)
 
     torch.set_num_threads(1)
-    policy = Policy(cfg)
+    enable_getup = (not args.walk_only) and (args.enable_getup or args.start_fallen or args.force_fall_after_s >= 0.0)
+    policy = Policy(cfg, enable_getup=enable_getup)
     model = mujoco.MjModel.from_xml_path(args.xml)
     data = mujoco.MjData(model)
 
@@ -145,9 +148,10 @@ def main():
         csv_path=args.metrics_csv,
         csv_sample_s=args.metrics_csv_sample_s,
     )
+    print(f"[mujoco] walk command vx={args.vx:.3f} vy={args.vy:.3f} vyaw={args.vyaw:.3f} getup_enabled={enable_getup}")
 
     while data.time < args.duration_s:
-        if args.force_fall_after_s >= 0.0 and (not forced_fall) and data.time >= args.force_fall_after_s:
+        if enable_getup and args.force_fall_after_s >= 0.0 and (not forced_fall) and data.time >= args.force_fall_after_s:
             set_root_pose(data, data.qpos[0:3].copy(), 0.25, fallen_rpy(args.fall_pose))
             mujoco.mj_forward(model, data)
             policy.mode = "getup"

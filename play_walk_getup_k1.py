@@ -1,9 +1,10 @@
 import argparse
 import os
 
-import torch
+import isaacgym  # noqa: F401
 from isaacgym import gymtorch
 from isaacgym.torch_utils import get_euler_xyz, quat_from_euler_xyz
+import torch
 
 from utils.command_metrics import CommandVelocityMetrics
 from utils.runner import get_task_class, load_config
@@ -133,9 +134,11 @@ def main():
     parser.add_argument("--vx", type=float, default=0.2)
     parser.add_argument("--vy", type=float, default=0.0)
     parser.add_argument("--vyaw", type=float, default=0.0)
-    parser.add_argument("--force_fall_after_s", type=float, default=5.0)
+    parser.add_argument("--force_fall_after_s", type=float, default=-1.0)
     parser.add_argument("--fall_pose", choices=["front", "back", "left", "right"], default="front")
     parser.add_argument("--start_fallen", action="store_true")
+    parser.add_argument("--enable_getup", action="store_true")
+    parser.add_argument("--walk_only", action="store_true")
     parser.add_argument("--metrics_window_s", type=float, default=3.0)
     parser.add_argument("--metrics_warmup_s", type=float, default=1.0)
     parser.add_argument("--metrics_csv", default=None)
@@ -144,7 +147,8 @@ def main():
 
     if not os.path.exists(args.walk_policy):
         raise FileNotFoundError(f"Missing walk policy: {args.walk_policy}. Run export_model.py for K1/ParameterWalk first.")
-    if not os.path.exists(args.getup_policy):
+    enable_getup = (not args.walk_only) and (args.enable_getup or args.start_fallen or args.force_fall_after_s >= 0.0)
+    if enable_getup and not os.path.exists(args.getup_policy):
         raise FileNotFoundError(f"Missing getup policy: {args.getup_policy}. Run export_model.py for K1/GetUp first.")
 
     cfg = load_config(os.path.join("envs", f"{args.task}.yaml"))
@@ -167,7 +171,7 @@ def main():
         mode = "walk"
 
     walk_policy = torch.jit.load(args.walk_policy, map_location=env.device).eval()
-    getup_policy = torch.jit.load(args.getup_policy, map_location=env.device).eval()
+    getup_policy = torch.jit.load(args.getup_policy, map_location=env.device).eval() if enable_getup else None
     walk_actions = torch.zeros(env.num_envs, 12, dtype=torch.float, device=env.device)
     getup_actions = torch.zeros(env.num_envs, 22, dtype=torch.float, device=env.device)
     recovered_time = 0.0
@@ -181,10 +185,11 @@ def main():
         csv_path=args.metrics_csv,
         csv_sample_s=args.metrics_csv_sample_s,
     )
+    print(f"[gym] walk command vx={args.vx:.3f} vy={args.vy:.3f} vyaw={args.vyaw:.3f} getup_enabled={enable_getup}")
 
     for step_idx in range(int(args.duration_s / env.dt)):
         sim_time = step_idx * env.dt
-        if args.force_fall_after_s >= 0.0 and (not forced_fall) and sim_time >= args.force_fall_after_s:
+        if enable_getup and args.force_fall_after_s >= 0.0 and (not forced_fall) and sim_time >= args.force_fall_after_s:
             set_fallen_state(env, args.fall_pose)
             mode = "getup"
             mode_time = 0.0
@@ -193,14 +198,14 @@ def main():
             forced_fall = True
             print(f"[gym] forced fall at t={sim_time:.2f}s pose={args.fall_pose}")
 
-        if mode == "walk" and bool(is_fallen(env).any().item()):
+        if enable_getup and mode == "walk" and bool(is_fallen(env).any().item()):
             mode = "getup"
             mode_time = 0.0
             metrics.reset_window()
             recovered_time = 0.0
             getup_actions.zero_()
             print(f"[gym] switching policy: walk -> getup at t={sim_time:.2f}s")
-        elif mode == "getup":
+        elif enable_getup and mode == "getup":
             if bool(is_recovered(env).all().item()):
                 recovered_time += env.dt
             else:
@@ -216,6 +221,8 @@ def main():
         actions = torch.zeros(env.num_envs, 22, dtype=torch.float, device=env.device)
         with torch.no_grad():
             if mode == "getup":
+                if getup_policy is None:
+                    raise RuntimeError("getup mode requested but getup policy is not loaded")
                 getup_obs = make_getup_obs(env, getup_actions)
                 getup_actions[:] = torch.clamp(getup_policy(getup_obs), -1.0, 1.0)
                 actions[:] = getup_actions

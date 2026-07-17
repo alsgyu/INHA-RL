@@ -1,15 +1,48 @@
+import os
+
 import numpy as np
 import torch
 
 
 class Policy:
-    def __init__(self, cfg):
+    def __init__(self, cfg, enable_getup=True):
         self.cfg = cfg
-        self.walk_policy = torch.jit.load(cfg["walk_policy"]["policy_path"])
-        self.getup_policy = torch.jit.load(cfg["getup_policy"]["policy_path"])
+        self.enable_getup = enable_getup
+        self.walk_policy_path = self._resolve_policy_path(cfg["walk_policy"]["policy_path"])
+        self.getup_policy_path = self._resolve_policy_path(
+            cfg["getup_policy"]["policy_path"],
+            allow_missing=not enable_getup,
+        )
+        self.walk_policy = torch.jit.load(self.walk_policy_path)
+        self.getup_policy = torch.jit.load(self.getup_policy_path) if enable_getup else None
         self.walk_policy.eval()
-        self.getup_policy.eval()
+        if self.getup_policy is not None:
+            self.getup_policy.eval()
         self._init_inference_variables()
+
+    def _resolve_policy_path(self, configured_path, allow_missing=False):
+        if configured_path and os.path.isabs(configured_path) and os.path.exists(configured_path):
+            return configured_path
+
+        deploy_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        repo_dir = os.path.abspath(os.path.join(deploy_dir, ".."))
+        relative_path = configured_path[2:] if configured_path and configured_path.startswith("./") else configured_path
+        candidates = [
+            configured_path,
+            os.path.join(deploy_dir, relative_path) if relative_path else None,
+            os.path.join(repo_dir, relative_path) if relative_path else None,
+            os.path.join(repo_dir, "deploy", relative_path) if relative_path else None,
+        ]
+        for candidate in candidates:
+            if candidate and os.path.exists(candidate):
+                return candidate
+
+        if allow_missing:
+            return configured_path
+        raise FileNotFoundError(
+            f"Could not resolve policy path '{configured_path}'. "
+            f"Export the model to deploy/models or pass an existing policy path."
+        )
 
     def _init_inference_variables(self):
         self.default_dof_pos = np.array(self.cfg["common"]["default_qpos"], dtype=np.float32)
@@ -55,6 +88,9 @@ class Policy:
         )
 
     def _update_mode(self, base_rpy, projected_gravity, base_ang_vel):
+        if not self.enable_getup:
+            return
+
         if self.mode == "walk" and self._is_fallen(base_rpy, projected_gravity):
             print("Switching policy: walk -> getup")
             self.mode = "getup"
@@ -146,6 +182,8 @@ class Policy:
         return self.dof_targets
 
     def _getup_inference(self, dof_pos, dof_vel, base_ang_vel, projected_gravity):
+        if self.getup_policy is None:
+            raise RuntimeError("getup mode requested but getup policy is not loaded")
         getup_cfg = self.cfg["getup_policy"]
         norm = getup_cfg["normalization"]
         self.getup_obs[0:3] = projected_gravity * norm["gravity"]
