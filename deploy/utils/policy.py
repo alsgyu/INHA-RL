@@ -31,8 +31,19 @@ class Policy:
         self.actions = np.zeros(self.cfg["policy"]["num_actions"], dtype=np.float32)
         self.policy_interval = self.cfg["common"]["dt"] * self.cfg["policy"]["control"]["decimation"]
 
+    def _resolve_gait_frequency(self):
+        cfg = self.cfg["policy"].get("gait_frequency_by_speed", {})
+        if not cfg.get("enabled", False):
+            return float(self.cfg["policy"]["gait_frequency"])
+
+        speed_low, speed_high = cfg.get("speed_range", [0.0, 1.0])
+        freq_low, freq_high = cfg.get("frequency_range", [self.cfg["policy"]["gait_frequency"], self.cfg["policy"]["gait_frequency"]])
+        yaw_weight = float(cfg.get("yaw_weight", 0.0))
+        speed = np.linalg.norm(self.smoothed_commands[:2]) + yaw_weight * abs(float(self.smoothed_commands[2]))
+        ratio = np.clip((speed - float(speed_low)) / max(float(speed_high) - float(speed_low), 1.0e-6), 0.0, 1.0)
+        return float(freq_low) + ratio * (float(freq_high) - float(freq_low))
+
     def inference(self, time_now, dof_pos, dof_vel, base_ang_vel, projected_gravity, vx, vy, vyaw):
-        self.gait_process = np.fmod(time_now * self.gait_frequency, 1.0)
         self.commands[0] = vx
         self.commands[1] = vy
         self.commands[2] = vyaw
@@ -42,7 +53,8 @@ class Policy:
         if np.linalg.norm(self.smoothed_commands) < 1e-5:
             self.gait_frequency = 0.0
         else:
-            self.gait_frequency = self.cfg["policy"]["gait_frequency"]
+            self.gait_frequency = self._resolve_gait_frequency()
+        self.gait_process = np.fmod(self.gait_process + self.policy_interval * self.gait_frequency, 1.0)
 
         self.obs[0:3] = projected_gravity * self.cfg["policy"]["normalization"]["gravity"]
         self.obs[3:6] = base_ang_vel * self.cfg["policy"]["normalization"]["ang_vel"]

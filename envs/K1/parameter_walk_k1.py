@@ -297,6 +297,12 @@ class ParameterWalkK1(BaseTask):
                     found = True
             if not found:
                 self.default_dof_pos[:, i] = self.cfg["init_state"]["default_joint_angles"]["default"]
+        self.named_dof_indices = {name: idx for idx, name in enumerate(self.dof_names)}
+        self.right_leg_twist_dof_indices = [
+            self.named_dof_indices[name]
+            for name in ("Right_Hip_Yaw", "Right_Ankle_Roll")
+            if name in self.named_dof_indices
+        ]
 
     def _prepare_reward_function(self):
         """Prepares a list of reward functions, whcih will be called to compute the total reward.
@@ -530,6 +536,33 @@ class ParameterWalkK1(BaseTask):
             return torch_rand_float(float(value[0]), float(value[1]), (count, 1), device=self.device).squeeze(1)
         return torch.full((count,), float(value), dtype=torch.float, device=self.device)
 
+    def _apply_speed_conditioned_gait_frequency(self, env_ids):
+        if len(env_ids) == 0:
+            return
+        cfg = self.cfg["commands"].get("gait_frequency_by_speed", {})
+        if not cfg.get("enabled", False):
+            return
+
+        speed_low, speed_high = cfg.get("speed_range", [0.0, 1.0])
+        freq_low, freq_high = cfg.get("frequency_range", self._command_range("gait_frequency"))
+        yaw_weight = float(cfg.get("yaw_weight", 0.0))
+        speed = torch.linalg.norm(self.commands[env_ids, 0:2], dim=-1) + yaw_weight * torch.abs(self.commands[env_ids, 2])
+        ratio = torch.clamp((speed - float(speed_low)) / max(float(speed_high) - float(speed_low), 1.0e-6), 0.0, 1.0)
+        gait_frequency = float(freq_low) + ratio * (float(freq_high) - float(freq_low))
+
+        noise_range = cfg.get("noise", [0.0, 0.0])
+        if abs(float(noise_range[1]) - float(noise_range[0])) > 1.0e-8:
+            gait_frequency += torch_rand_float(
+                float(noise_range[0]),
+                float(noise_range[1]),
+                (len(env_ids), 1),
+                device=self.device,
+            ).squeeze(1)
+
+        command_low, command_high = self._command_range("gait_frequency")
+        self.commands[env_ids, 3] = torch.clamp(gait_frequency, min=float(command_low), max=float(command_high))
+        self.gait_frequency[env_ids] = self.commands[env_ids, 3]
+
     def _apply_straight_anchor_command(self, env_ids):
         if len(env_ids) == 0:
             return
@@ -619,6 +652,7 @@ class ParameterWalkK1(BaseTask):
         perm = torch.randperm(len(env_ids), device=self.device)
         straight_envs = env_ids[perm[:straight_count]]
         self._apply_straight_anchor_command(straight_envs)
+        self._apply_speed_conditioned_gait_frequency(env_ids)
 
         remaining_envs = env_ids[perm[straight_count:]]
         still_count = int(self.cfg["commands"]["still_proportion"] * len(env_ids))
@@ -695,6 +729,7 @@ class ParameterWalkK1(BaseTask):
         self.commands[env_ids, 9] = torch_rand_float(
             self.cfg["commands"]["feet_offset_y_target"][0], self.cfg["commands"]["feet_offset_y_target"][1], (len(env_ids), 1), device=self.device
         ).squeeze(1)
+        self._apply_speed_conditioned_gait_frequency(env_ids)
 
     def step(self, actions):
         # pre physics step
@@ -1069,6 +1104,27 @@ class ParameterWalkK1(BaseTask):
 
     def _reward_feet_pitch(self):
         return torch.sum(torch.square(self.feet_pitch), dim=-1)
+
+    def _reward_stance_feet_yaw(self):
+        target_yaw = self.commands[:, 4:6]
+        yaw_error = (self.feet_yaw_rel - target_yaw + torch.pi) % (2 * torch.pi) - torch.pi
+        return (
+            torch.sum(torch.square(yaw_error) * self.feet_contact.float(), dim=-1)
+            * (self.episode_length_buf > 1).float()
+        )
+
+    def _reward_stance_feet_roll(self):
+        return (
+            torch.sum(torch.square(self.feet_roll) * self.feet_contact.float(), dim=-1)
+            * (self.episode_length_buf > 1).float()
+        )
+
+    def _reward_right_leg_twist(self):
+        if len(self.right_leg_twist_dof_indices) == 0 or len(self.feet_indices) < 2:
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        right_contact = self.feet_contact[:, 1].float()
+        twist_error = self.dof_pos[:, self.right_leg_twist_dof_indices] - self.default_dof_pos[:, self.right_leg_twist_dof_indices]
+        return torch.sum(torch.square(twist_error), dim=-1) * right_contact * (self.episode_length_buf > 1).float()
 
     def _reward_feet_yaw_diff(self):
         """

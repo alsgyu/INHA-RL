@@ -256,7 +256,7 @@ def main():
     parser.add_argument("--default_hip_pitch", type=float)
     parser.add_argument("--default_knee_pitch", type=float)
     parser.add_argument("--default_ankle_pitch", type=float)
-    parser.add_argument("--default_base_height", type=float, default=0.70)
+    parser.add_argument("--default_base_height", type=float, default=0.66)
     parser.add_argument("--ground_friction", type=float, default=1.0)
     parser.add_argument("--ground_condim", type=int, default=3)
     parser.add_argument("--metrics_window_s", type=float, default=3.0)
@@ -445,6 +445,7 @@ def main():
                 f"drift_y={xy_error[1]:+.3f} "
                 f"path_err=({path_along_error:+.3f},{path_lateral_error:+.3f}) "
                 f"yaw_err={path_yaw_error:+.3f} "
+                f"gait={getattr(policy, 'current_walk_gait_frequency', 0.0):.2f} "
                 f"world_v=({world_velocity[0]:+.3f},{world_velocity[1]:+.3f}) "
                 f"world_speed={world_speed_xy:.3f} "
                 f"rpy=({report_rpy[0]:+.2f},{report_rpy[1]:+.2f},{report_rpy[2]:+.2f}) "

@@ -102,8 +102,14 @@ def set_fallen_state(env, pose):
     _set_dofs(env, env.default_dof_pos.repeat(env.num_envs, 1))
 
 
+def resolve_walk_gait_frequency(vx, vy, vyaw):
+    speed = (vx * vx + vy * vy) ** 0.5 + 0.25 * abs(vyaw)
+    ratio = min(max(speed / 1.5, 0.0), 1.0)
+    return 1.1 + ratio * (2.4 - 1.1)
+
+
 def make_walk_obs(env, walk_actions, gait_process, vx, vy, vyaw):
-    gait_frequency = 1.3 if abs(vx) + abs(vy) + abs(vyaw) > 1.0e-5 else 0.0
+    gait_frequency = resolve_walk_gait_frequency(vx, vy, vyaw) if abs(vx) + abs(vy) + abs(vyaw) > 1.0e-5 else 0.0
     commands = torch.zeros(env.num_envs, 10, dtype=torch.float, device=env.device)
     commands[:, 0] = vx
     commands[:, 1] = vy
@@ -177,7 +183,7 @@ def main():
     parser.add_argument("--default_hip_pitch", type=float)
     parser.add_argument("--default_knee_pitch", type=float)
     parser.add_argument("--default_ankle_pitch", type=float)
-    parser.add_argument("--default_base_height", type=float, default=0.70)
+    parser.add_argument("--default_base_height", type=float, default=0.66)
     parser.add_argument("--metrics_window_s", type=float, default=3.0)
     parser.add_argument("--metrics_warmup_s", type=float, default=1.0)
     parser.add_argument("--metrics_csv", default=None)
@@ -216,6 +222,7 @@ def main():
     getup_actions = torch.zeros(env.num_envs, 22, dtype=torch.float, device=env.device)
     recovered_time = 0.0
     gait_process = torch.zeros(env.num_envs, dtype=torch.float, device=env.device)
+    current_gait_frequency = 0.0
     forced_fall = args.start_fallen
     report_interval = max(1, int(1.0 / env.dt))
     mode_time = 0.0
@@ -274,8 +281,12 @@ def main():
                 getup_actions[:] = torch.clamp(getup_policy(getup_obs), -1.0, 1.0)
                 actions[:] = getup_actions
             else:
-                gait_frequency = 1.3 if abs(args.vx) + abs(args.vy) + abs(args.vyaw) > 1.0e-5 else 0.0
-                gait_process[:] = torch.fmod(gait_process + env.dt * gait_frequency, 1.0)
+                current_gait_frequency = (
+                    resolve_walk_gait_frequency(args.vx, args.vy, args.vyaw)
+                    if abs(args.vx) + abs(args.vy) + abs(args.vyaw) > 1.0e-5
+                    else 0.0
+                )
+                gait_process[:] = torch.fmod(gait_process + env.dt * current_gait_frequency, 1.0)
                 walk_obs = make_walk_obs(env, walk_actions, gait_process, args.vx, args.vy, args.vyaw)
                 walk_actions[:] = torch.clamp(walk_policy(walk_obs), -1.0, 1.0)
                 actions[:, LEG_START_INDEX : LEG_START_INDEX + 12] = walk_actions
@@ -304,6 +315,7 @@ def main():
             print(
                 f"[gym] t={sim_time:5.2f}s mode={mode:5s} "
                 f"pos=({env.base_pos[0,0].item():+.2f},{env.base_pos[0,1].item():+.2f},{env.base_pos[0,2].item():+.2f}) "
+                f"gait={current_gait_frequency:.2f} "
                 f"rpy=({roll[0].item():+.2f},{pitch[0].item():+.2f},{yaw[0].item():+.2f}) "
                 f"{metrics_text}"
             )
