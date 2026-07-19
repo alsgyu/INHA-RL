@@ -152,7 +152,7 @@ commands:
   still_proportion: 0.05
   straight_proportion: 0.60
   straight:
-    lin_vel_x: [0.15, 1.30]
+    lin_vel_x: [0.15, 1.50]
     lin_vel_y: 0.0
     ang_vel_yaw: 0.0
     gait_frequency: [1.1, 2.4]
@@ -377,8 +377,8 @@ rewards:
     tracking_ang_vel: 3.0
     heading_tracking: -18.0
     path_lateral: -14.0
-    straight_lateral_vel: -4.0
-    straight_yaw_vel: -4.0
+    straight_lateral_vel: -6.0
+    straight_yaw_vel: -6.0
     base_height: -20.
     # Additional parameter rewards
     foot_yaw_L:            -2.5
