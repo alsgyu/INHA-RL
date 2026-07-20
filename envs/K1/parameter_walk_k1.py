@@ -1070,6 +1070,27 @@ class ParameterWalkK1(BaseTask):
     def _reward_feet_pitch(self):
         return torch.sum(torch.square(self.feet_pitch), dim=-1)
 
+    def _reward_stance_feet_xy_vel(self):
+        feet_vel = (self.last_feet_pos - self.feet_pos) / self.dt
+        return (
+            torch.sum(torch.sum(torch.square(feet_vel[:, :, :2]), dim=-1) * self.feet_contact.float(), dim=-1)
+            * (self.episode_length_buf > 1).float()
+        )
+
+    def _reward_stance_feet_yaw(self):
+        target_yaw = self.commands[:, 4:6]
+        yaw_error = (self.feet_yaw_rel - target_yaw + torch.pi) % (2 * torch.pi) - torch.pi
+        return (
+            torch.sum(torch.square(yaw_error) * self.feet_contact.float(), dim=-1)
+            * (self.episode_length_buf > 1).float()
+        )
+
+    def _reward_stance_feet_roll(self):
+        return (
+            torch.sum(torch.square(self.feet_roll) * self.feet_contact.float(), dim=-1)
+            * (self.episode_length_buf > 1).float()
+        )
+
     def _reward_feet_yaw_diff(self):
         """
         Reward for tracking the commanded difference between left and right foot yaw angles.

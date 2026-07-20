@@ -1,0 +1,4 @@
+extends: Parameter_Walk_K1.yaml
+
+basic:
+  log_task: "K1/ParameterWalkGeneral"

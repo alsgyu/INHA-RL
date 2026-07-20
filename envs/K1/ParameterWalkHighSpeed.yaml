@@ -1,0 +1,97 @@
+extends: ParameterWalk.yaml
+
+basic:
+  log_task: "K1/ParameterWalkHighSpeed"
+
+commands:
+  straight_proportion: 0.75
+  straight:
+    lin_vel_x: [0.20, 1.30]
+    lin_vel_y: 0.0
+    ang_vel_yaw: 0.0
+    gait_frequency: [1.15, 2.0]
+    foot_yaw_L: 0.0
+    foot_yaw_R: 0.0
+    body_pitch_target: [0.0, 0.08]
+    body_roll_target: 0.0
+    feet_offset_x_target: 0.0
+    feet_offset_y_target: [0.0, 0.04]
+  lin_vel_x: [-0.4, 1.5]
+  lin_vel_y: [-0.25, 0.25]
+  ang_vel_yaw: [-0.9, 0.9]
+  gait_frequency: [1.05, 2.05]
+  foot_yaw_L: [-0.12, 0.12]
+  foot_yaw_R: [-0.12, 0.12]
+  training_phases:
+    - start_iteration: 0
+      disturbance_scale: 0.45
+      resampling_time_s: [5.0, 8.0]
+      lin_vel_x: [-0.35, 0.9]
+      lin_vel_y: [-0.15, 0.15]
+      ang_vel_yaw: [-0.65, 0.65]
+      gait_frequency: [1.0, 1.75]
+      foot_yaw_L: [-0.10, 0.10]
+      foot_yaw_R: [-0.10, 0.10]
+      body_pitch_target: [-0.03, 0.10]
+      body_roll_target: [0.0, 0.0]
+      feet_offset_x_target: [-0.05, 0.05]
+      feet_offset_y_target: [-0.02, 0.055]
+    - start_iteration: 6000
+      disturbance_scale: 0.75
+      resampling_time_s: [6.0, 9.0]
+      lin_vel_x: [-0.4, 1.1]
+      lin_vel_y: [-0.20, 0.20]
+      ang_vel_yaw: [-0.8, 0.8]
+      gait_frequency: [1.05, 1.85]
+      foot_yaw_L: [-0.12, 0.12]
+      foot_yaw_R: [-0.12, 0.12]
+      body_pitch_target: [-0.04, 0.11]
+      body_roll_target: [0.0, 0.0]
+      feet_offset_x_target: [-0.06, 0.06]
+      feet_offset_y_target: [-0.025, 0.06]
+    - start_iteration: 12000
+      disturbance_scale: 0.90
+      resampling_time_s: [6.0, 10.0]
+      lin_vel_x: [-0.4, 1.25]
+      lin_vel_y: [-0.25, 0.25]
+      ang_vel_yaw: [-0.9, 0.9]
+      gait_frequency: [1.10, 1.95]
+      foot_yaw_L: [-0.12, 0.12]
+      foot_yaw_R: [-0.12, 0.12]
+      body_pitch_target: [-0.04, 0.12]
+      body_roll_target: [0.0, 0.0]
+      feet_offset_x_target: [-0.065, 0.065]
+      feet_offset_y_target: [-0.03, 0.065]
+    - start_iteration: 20000
+      disturbance_scale: 1.0
+      resampling_time_s: [7.0, 11.0]
+      lin_vel_x: [-0.3, 1.4]
+      lin_vel_y: [-0.25, 0.25]
+      ang_vel_yaw: [-0.9, 0.9]
+      gait_frequency: [1.15, 2.0]
+      foot_yaw_L: [-0.10, 0.10]
+      foot_yaw_R: [-0.10, 0.10]
+      body_pitch_target: [-0.04, 0.12]
+      body_roll_target: [0.0, 0.0]
+      feet_offset_x_target: [-0.07, 0.07]
+      feet_offset_y_target: [-0.03, 0.07]
+    - start_iteration: 28000
+      disturbance_scale: 1.0
+      resampling_time_s: [7.0, 12.0]
+      lin_vel_x: [-0.2, 1.5]
+      lin_vel_y: [-0.20, 0.20]
+      ang_vel_yaw: [-0.8, 0.8]
+      gait_frequency: [1.15, 2.05]
+      foot_yaw_L: [-0.08, 0.08]
+      foot_yaw_R: [-0.08, 0.08]
+      body_pitch_target: [-0.03, 0.12]
+      body_roll_target: [0.0, 0.0]
+      feet_offset_x_target: [-0.07, 0.07]
+      feet_offset_y_target: [-0.025, 0.07]
+
+rewards:
+  scales:
+    feet_slip: -1.2
+    stance_feet_xy_vel: -0.45
+    stance_feet_yaw: -0.45
+    stance_feet_roll: -0.25
