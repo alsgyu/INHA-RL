@@ -992,16 +992,11 @@ class ParameterWalkK1(BaseTask):
             & (torch.abs(self.commands[:, 2]) < 0.05)
         ).float()
 
-    def _straight_speed_weight(self):
-        max_forward_vel = max(abs(float(v)) for v in self.cfg["commands"]["lin_vel_x"])
-        speed_ratio = torch.clamp(torch.abs(self.commands[:, 0]) / max(max_forward_vel, 1.0e-6), 0.0, 1.0)
-        return 1.0 + speed_ratio
-
     def _reward_straight_lateral_vel(self):
-        return torch.square(self.filtered_lin_vel[:, 1]) * self._straight_walk_mask() * self._straight_speed_weight()
+        return torch.square(self.filtered_lin_vel[:, 1]) * self._straight_walk_mask()
 
     def _reward_straight_yaw_vel(self):
-        return torch.square(self.filtered_ang_vel[:, 2]) * self._straight_walk_mask() * self._straight_speed_weight()
+        return torch.square(self.filtered_ang_vel[:, 2]) * self._straight_walk_mask()
 
     def _reward_base_height(self):
         # Tracking of base height
