@@ -15,7 +15,7 @@ from booster_robotics_sdk_python import (
 )
 
 from utils.command import create_prepare_cmd, create_first_frame_rl_cmd
-from utils.remote_control_service import RemoteControlService
+from utils.remote_control_service import JoystickConfig, RemoteControlService
 from utils.rotate import rotate_vector_inverse_rpy
 from utils.timer import TimerConfig, Timer
 from utils.policy_thomas import Policy
@@ -32,7 +32,15 @@ class Controller:
             self.cfg = yaml.load(f.read(), Loader=yaml.FullLoader)
 
         # Initialize components
-        self.remoteControlService = RemoteControlService()
+        remote_cfg = self.cfg.get("remote_control", {})
+        self.remoteControlService = RemoteControlService(
+            JoystickConfig(
+                max_vx=float(remote_cfg.get("max_vx", 0.5)),
+                max_vy=float(remote_cfg.get("max_vy", 0.5)),
+                max_vyaw=float(remote_cfg.get("max_vyaw", 0.5)),
+                control_threshold=float(remote_cfg.get("control_threshold", 0.1)),
+            )
+        )
         self.policy = Policy(cfg=self.cfg)
 
         self._init_timer()

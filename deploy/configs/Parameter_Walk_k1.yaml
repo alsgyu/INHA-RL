@@ -31,17 +31,16 @@ common:
   ]
 
 policy:
-  policy_path: "./models/model_4600.pt"
+  policy_path: "./models/parameter_walk_k1.pt"
   num_actions: 12
   num_observations: 54
-  gait_frequency: 1
+  gait_frequency: 1.5
 
   normalization:
     gravity: 1.0
     lin_vel: 1.0
     ang_vel: 1.0
     gait_frequency: 1.0
-    foot_yaw: 1.0
     foot_yaw: 1.0
     body_pitch_target: 1.0
     body_roll_target: 1.0
@@ -54,6 +53,12 @@ policy:
   control:
     action_scale: 1.
     decimation: 10
+
+remote_control:
+  max_vx: 1.2
+  max_vy: 0.25
+  max_vyaw: 0.9
+  control_threshold: 0.1
 
 mech:
   parallel_mech_indexes: [14, 15, 20, 21]

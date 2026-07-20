@@ -120,10 +120,29 @@ if policy is not None:
         st.markdown("Control the robot's movement commands in real-time")
         
         # Define walk command parameters
+        remote_cfg = cfg.get("remote_control", {})
         walk_params = {
-            "vx": {"name": "Forward Velocity", "description": "Forward/backward movement", "default": 0.0, "min": -1.0, "max": 1.0},
-            "vy": {"name": "Lateral Velocity", "description": "Left/right movement", "default": 0.0, "min": -1.0, "max": 1.0},
-            "vyaw": {"name": "Yaw Velocity", "description": "Rotation left/right", "default": 0.0, "min": -3.0, "max": 3.0}
+            "vx": {
+                "name": "Forward Velocity",
+                "description": "Forward/backward movement",
+                "default": 0.0,
+                "min": -float(remote_cfg.get("max_vx", 1.0)),
+                "max": float(remote_cfg.get("max_vx", 1.0)),
+            },
+            "vy": {
+                "name": "Lateral Velocity",
+                "description": "Left/right movement",
+                "default": 0.0,
+                "min": -float(remote_cfg.get("max_vy", 1.0)),
+                "max": float(remote_cfg.get("max_vy", 1.0)),
+            },
+            "vyaw": {
+                "name": "Yaw Velocity",
+                "description": "Rotation left/right",
+                "default": 0.0,
+                "min": -float(remote_cfg.get("max_vyaw", 3.0)),
+                "max": float(remote_cfg.get("max_vyaw", 3.0)),
+            },
         }
         
         # Create sliders for walk commands
@@ -260,4 +279,4 @@ else:
 # Footer
 st.markdown("---")
 st.markdown("**Note:** This app provides real-time control of observation values 9-15 and walk commands (vx, vy, vyaw). Changes are immediately applied to the running deployment script via the shared observation controller.")
-st.markdown("**Usage:** 1. Start the deployment script (`python deploy_thomas.py`) 2. Use this app to control the observation values and walk commands in real-time") 
+st.markdown("**Usage:** 1. Start the deployment script (`python deploy_thomas.py`) 2. Use this app to control the observation values and walk commands in real-time")

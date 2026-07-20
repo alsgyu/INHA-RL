@@ -938,6 +938,10 @@ class ParameterWalkK1(BaseTask):
         # Tracking of angular velocity commands (yaw)
         return torch.exp(-torch.square(self.commands[:, 2] - self.filtered_ang_vel[:, 2]) / self.cfg["rewards"]["tracking_sigma"])
 
+    def _reward_lin_vel_x_error(self):
+        moving = (torch.abs(self.commands[:, 0]) > 0.05).float()
+        return torch.square(self.commands[:, 0] - self.filtered_lin_vel[:, 0]) * moving
+
     def _reward_heading_tracking(self):
         yaw_error = self._wrap_to_pi(self._get_base_yaw() - self.desired_yaw)
         return torch.square(yaw_error)

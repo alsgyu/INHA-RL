@@ -14,10 +14,10 @@ class ObservationController:
         self.lock = threading.Lock()
         self._file_mtime = 0  # Track file modification time
         self._default_values = {
-            "obs_9": 1.7,   # gait_frequency
+            "obs_9": 1.5,   # gait_frequency
             "obs_10": 0.0,  # foot_yaw_left
             "obs_11": 0.0,  # foot_yaw_right
-            "obs_12": 0.1,  # body_pitch_target
+            "obs_12": 0.0,  # body_pitch_target
             "obs_13": 0.0,  # body_roll_target
             "obs_14": 0.0,  # feet_offset_x_target
             "obs_15": 0.0,  # feet_offset_y_target
@@ -165,4 +165,4 @@ def get_controller() -> ObservationController:
     global _controller
     if _controller is None:
         _controller = ObservationController()
-    return _controller 
+    return _controller
