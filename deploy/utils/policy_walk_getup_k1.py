@@ -68,7 +68,6 @@ class Policy:
         self.commands = np.zeros(3, dtype=np.float32)
         self.smoothed_commands = np.zeros(3, dtype=np.float32)
         self.walk_gait_process = 0.0
-        self.current_walk_gait_frequency = 0.0
         self.policy_interval = self.cfg["common"]["dt"] * self.cfg["walk_policy"]["control"]["decimation"]
 
     def get_policy_interval(self):
@@ -115,18 +114,6 @@ class Policy:
                 self.walk_gait_process = 0.0
                 self.recovered_time = 0.0
 
-    def _resolve_walk_gait_frequency(self, walk_cfg):
-        cfg = walk_cfg.get("gait_frequency_by_speed", {})
-        if not cfg.get("enabled", False):
-            return float(walk_cfg["gait_frequency"])
-
-        speed_low, speed_high = cfg.get("speed_range", [0.0, 1.0])
-        freq_low, freq_high = cfg.get("frequency_range", [walk_cfg["gait_frequency"], walk_cfg["gait_frequency"]])
-        yaw_weight = float(cfg.get("yaw_weight", 0.0))
-        speed = np.linalg.norm(self.smoothed_commands[:2]) + yaw_weight * abs(float(self.smoothed_commands[2]))
-        ratio = np.clip((speed - float(speed_low)) / max(float(speed_high) - float(speed_low), 1.0e-6), 0.0, 1.0)
-        return float(freq_low) + ratio * (float(freq_high) - float(freq_low))
-
     def inference(self, time_now, dof_pos, dof_vel, base_ang_vel, projected_gravity, base_rpy, vx, vy, vyaw):
         self._update_mode(base_rpy, projected_gravity, base_ang_vel)
         if self.mode == "getup":
@@ -143,8 +130,7 @@ class Policy:
         self.smoothed_commands += np.clip(self.commands - self.smoothed_commands, *clip_range)
 
         moving = np.linalg.norm(self.smoothed_commands) > float(walk_cfg.get("stand_command_threshold", 1.0e-5))
-        gait_frequency = self._resolve_walk_gait_frequency(walk_cfg) if moving else 0.0
-        self.current_walk_gait_frequency = gait_frequency
+        gait_frequency = float(walk_cfg["gait_frequency"]) if moving else 0.0
         self.walk_gait_process = np.fmod(self.walk_gait_process + self.policy_interval * gait_frequency, 1.0)
 
         command_block = np.array(
