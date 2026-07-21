@@ -273,6 +273,17 @@ def main():
     parser.add_argument("--walk_policy", default=None, help="Explicit TorchScript .pt walk policy path. Overrides --checkpoint.")
     parser.add_argument("--duration_s", type=float, default=30.0)
     parser.add_argument("--headless", action="store_true")
+    parser.add_argument(
+        "--cmd_pose6",
+        "--cmds",
+        nargs=6,
+        type=float,
+        metavar=("ROBOT_X", "ROBOT_Y", "ROBOT_THETA", "TARGET_X", "TARGET_Y", "TARGET_THETA"),
+        help="Six pose command values: robot_x robot_y robot_theta target_x target_y target_theta.",
+    )
+    parser.add_argument("--robot_x", type=float, default=0.0)
+    parser.add_argument("--robot_y", type=float, default=0.0)
+    parser.add_argument("--robot_theta", type=float, default=0.0)
     parser.add_argument("--vx", type=float, default=0.2)
     parser.add_argument("--vy", type=float, default=0.0)
     parser.add_argument("--vyaw", type=float, default=0.0)
@@ -298,6 +309,15 @@ def main():
     parser.add_argument("--metrics_csv", default=None)
     parser.add_argument("--metrics_csv_sample_s", type=float, default=0.05)
     args = parser.parse_args()
+    if args.cmd_pose6 is not None:
+        (
+            args.robot_x,
+            args.robot_y,
+            args.robot_theta,
+            args.target_x,
+            args.target_y,
+            args.target_theta,
+        ) = args.cmd_pose6
 
     import mujoco
 
@@ -335,12 +355,12 @@ def main():
     if model.actuator_forcerange.shape[0] == len(torque_limit):
         torque_limit = np.minimum(torque_limit, np.abs(model.actuator_forcerange[:, 1]))
 
-    data.qpos[0:3] = np.array([0.0, 0.0, args.default_base_height], dtype=np.float32)
-    data.qpos[3:7] = quat_from_euler(0.0, 0.0, 0.0)
+    data.qpos[0:3] = np.array([args.robot_x, args.robot_y, args.default_base_height], dtype=np.float32)
+    data.qpos[3:7] = quat_from_euler(0.0, 0.0, args.robot_theta)
     data.qpos[7 : 7 + len(default_qpos)] = default_qpos
     data.qvel[:] = 0.0
     if args.start_fallen:
-        set_root_pose(data, np.array([0.0, 0.0, 0.25], dtype=np.float32), 0.25, fallen_rpy(args.fall_pose))
+        set_root_pose(data, np.array([args.robot_x, args.robot_y, 0.25], dtype=np.float32), 0.25, fallen_rpy(args.fall_pose))
     mujoco.mj_forward(model, data)
 
     viewer = None
@@ -373,6 +393,9 @@ def main():
     if target_pose is None:
         print(f"[mujoco] walk command vx={args.vx:.3f} vy={args.vy:.3f} vyaw={args.vyaw:.3f} getup_enabled={enable_getup}")
     else:
+        print(
+            f"[mujoco] robot pose x={args.robot_x:.3f} y={args.robot_y:.3f} theta={args.robot_theta:.3f} "
+        )
         print(
             f"[mujoco] target pose x={target_pose[0]:.3f} y={target_pose[1]:.3f} "
             f"theta={target_pose[2]:.3f} getup_enabled={enable_getup}"
