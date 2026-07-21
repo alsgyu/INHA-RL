@@ -120,6 +120,69 @@ class Policy:
             return self._getup_inference(dof_pos, dof_vel, base_ang_vel, projected_gravity)
         return self._walk_inference(dof_pos, dof_vel, base_ang_vel, projected_gravity, vx, vy, vyaw)
 
+    def target_pose_inference(
+        self,
+        time_now,
+        dof_pos,
+        dof_vel,
+        base_ang_vel,
+        projected_gravity,
+        base_rpy,
+        base_pos,
+        target_x,
+        target_y,
+        target_theta,
+    ):
+        self._update_mode(base_rpy, projected_gravity, base_ang_vel)
+        if self.mode == "getup":
+            return self._getup_inference(dof_pos, dof_vel, base_ang_vel, projected_gravity)
+        vx, vy, vyaw = self._target_pose_to_walk_command(base_pos, base_rpy, target_x, target_y, target_theta)
+        return self._walk_inference(dof_pos, dof_vel, base_ang_vel, projected_gravity, vx, vy, vyaw)
+
+    def _target_pose_to_walk_command(self, base_pos, base_rpy, target_x, target_y, target_theta):
+        walk_cfg = self.cfg["walk_policy"]
+        nav_cfg = walk_cfg.get("target_navigation", {})
+        yaw = float(base_rpy[2])
+        dx = float(target_x) - float(base_pos[0])
+        dy = float(target_y) - float(base_pos[1])
+        cos_yaw = np.cos(yaw)
+        sin_yaw = np.sin(yaw)
+        local_x = cos_yaw * dx + sin_yaw * dy
+        local_y = -sin_yaw * dx + cos_yaw * dy
+        distance = np.hypot(local_x, local_y)
+        bearing = self._wrap_to_pi(np.arctan2(local_y, local_x))
+        heading_error = self._wrap_to_pi(float(target_theta) - yaw)
+
+        stop_distance = float(nav_cfg.get("stop_distance", 0.18))
+        heading_stop_error = float(nav_cfg.get("heading_stop_error", 0.20))
+        final_heading_distance = float(nav_cfg.get("final_heading_distance", 0.45))
+        max_forward_speed = float(nav_cfg.get("max_forward_speed", 1.25))
+        max_lateral_speed = float(nav_cfg.get("max_lateral_speed", 0.20))
+        max_yaw_speed = float(nav_cfg.get("max_yaw_speed", 1.0))
+        target_speed_gain = float(nav_cfg.get("target_speed_gain", 0.75))
+        lateral_speed_gain = float(nav_cfg.get("lateral_speed_gain", 0.55))
+        bearing_yaw_gain = float(nav_cfg.get("bearing_yaw_gain", 1.35))
+        final_heading_gain = float(nav_cfg.get("final_heading_gain", 1.15))
+
+        speed_distance = max(distance - stop_distance, 0.0)
+        forward_alignment = np.clip(np.cos(bearing), 0.0, 1.0)
+        vx = np.clip(target_speed_gain * speed_distance, 0.0, max_forward_speed) * forward_alignment
+        vy = np.clip(lateral_speed_gain * local_y, -max_lateral_speed, max_lateral_speed)
+        near_weight = np.exp(-(distance * distance) / max(final_heading_distance * final_heading_distance, 1.0e-6))
+        far_yaw = bearing_yaw_gain * bearing
+        near_yaw = final_heading_gain * heading_error
+        vyaw = np.clip((1.0 - near_weight) * far_yaw + near_weight * near_yaw, -max_yaw_speed, max_yaw_speed)
+
+        stopped = distance < stop_distance
+        arrived = stopped and abs(heading_error) < heading_stop_error
+        if stopped:
+            vx = 0.0
+            vy = 0.0
+            vyaw = np.clip(near_yaw, -max_yaw_speed, max_yaw_speed)
+        if arrived:
+            vyaw = 0.0
+        return float(vx), float(vy), float(vyaw)
+
     def _walk_inference(self, dof_pos, dof_vel, base_ang_vel, projected_gravity, vx, vy, vyaw):
         walk_cfg = self.cfg["walk_policy"]
         leg_start = int(walk_cfg.get("leg_start_index", self.cfg["common"]["joint_cnt"] - walk_cfg["num_actions"]))
@@ -199,6 +262,10 @@ class Policy:
             1.0,
         )
         return min_frequency + drive * (max_frequency - min_frequency)
+
+    @staticmethod
+    def _wrap_to_pi(angle):
+        return (angle + np.pi) % (2.0 * np.pi) - np.pi
 
     def _getup_inference(self, dof_pos, dof_vel, base_ang_vel, projected_gravity):
         if self.getup_policy is None:

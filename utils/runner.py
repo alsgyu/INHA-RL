@@ -233,6 +233,12 @@ class Runner:
         parser.add_argument("--play_body_roll", type=float, help="Play command body roll target [rad].")
         parser.add_argument("--play_feet_offset_x", type=float, help="Play command feet x-offset target [m].")
         parser.add_argument("--play_feet_offset_y", type=float, help="Play command feet y-offset target [m].")
+        parser.add_argument("--play_target_x", type=float, help="Play absolute target x [m] for target-pose tasks.")
+        parser.add_argument("--play_target_y", type=float, help="Play absolute target y [m] for target-pose tasks.")
+        parser.add_argument("--play_target_theta", type=float, help="Play absolute target heading [rad] for target-pose tasks.")
+        parser.add_argument("--play_target_local_x", type=float, help="Play local target x [m] for target-pose tasks.")
+        parser.add_argument("--play_target_local_y", type=float, help="Play local target y [m] for target-pose tasks.")
+        parser.add_argument("--play_target_heading_offset", type=float, help="Play target heading offset [rad] for target-pose tasks.")
         parser.add_argument("--play_default_hip_pitch", type=float, help="Override play default hip pitch [rad].")
         parser.add_argument("--play_default_knee_pitch", type=float, help="Override play default knee pitch [rad].")
         parser.add_argument("--play_default_ankle_pitch", type=float, help="Override play default ankle pitch [rad].")
@@ -271,7 +277,16 @@ class Runner:
             "play_feet_offset_x": "feet_offset_x_target",
             "play_feet_offset_y": "feet_offset_y_target",
         }
+        play_target_arg_map = {
+            "play_target_x": "target_x",
+            "play_target_y": "target_y",
+            "play_target_theta": "target_theta",
+            "play_target_local_x": "target_local_x",
+            "play_target_local_y": "target_local_y",
+            "play_target_heading_offset": "target_heading_offset",
+        }
         play_arg_names = set(play_command_arg_map)
+        play_arg_names.update(play_target_arg_map)
         play_arg_names.update(
             {
                 "play_straight_eval",
@@ -318,6 +333,10 @@ class Runner:
                 }
             )
         for arg, cfg_key in play_command_arg_map.items():
+            value = getattr(self.args, arg)
+            if value is not None:
+                play_cfg[cfg_key] = value
+        for arg, cfg_key in play_target_arg_map.items():
             value = getattr(self.args, arg)
             if value is not None:
                 play_cfg[cfg_key] = value
@@ -702,6 +721,16 @@ class Runner:
                 f"fixed_yaw={bool(play_cfg.get('fixed_yaw', False))} "
                 f"no_disturbance={bool(play_cfg.get('no_disturbance', False))}"
             )
+            if any(key in play_cfg for key in ("target_x", "target_y", "target_local_x", "target_local_y")):
+                print(
+                    "[play target] "
+                    f"abs=({play_cfg.get('target_x', 'auto')},"
+                    f"{play_cfg.get('target_y', 'auto')},"
+                    f"{play_cfg.get('target_theta', 'auto')}) "
+                    f"local=({play_cfg.get('target_local_x', 'auto')},"
+                    f"{play_cfg.get('target_local_y', 'auto')},"
+                    f"{play_cfg.get('target_heading_offset', 'auto')})"
+                )
         default_joint_angles = self.cfg.get("init_state", {}).get("default_joint_angles", {})
         init_pos = self.cfg.get("init_state", {}).get("pos", [0.0, 0.0, 0.0])
         print(
@@ -754,7 +783,9 @@ class Runner:
                         float(self.env.base_lin_vel[0, 1].item()),
                         float(self.env.base_ang_vel[0, 2].item()),
                     )
-                    if hasattr(self.env, "commands"):
+                    if hasattr(self.env, "policy_commands"):
+                        policy_command = self.env.policy_commands[0, :3].detach().cpu().numpy()
+                    elif hasattr(self.env, "commands"):
                         policy_command = self.env.commands[0, :3].detach().cpu().numpy()
                     else:
                         policy_command = None

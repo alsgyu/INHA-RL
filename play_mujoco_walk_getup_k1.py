@@ -184,6 +184,34 @@ def set_root_pose(data, qpos, height, rpy):
     data.qvel[0:6] = 0.0
 
 
+def resolve_target_pose(args, start_xy, start_yaw):
+    has_absolute = args.target_x is not None or args.target_y is not None
+    has_local = args.target_local_x is not None or args.target_local_y is not None
+    if not has_absolute and not has_local:
+        return None
+    if has_absolute and (args.target_x is None or args.target_y is None):
+        raise ValueError("--target_x and --target_y must be provided together.")
+    if has_absolute and has_local:
+        raise ValueError("Use either absolute target_x/target_y or local target_local_x/target_local_y, not both.")
+
+    if has_absolute:
+        target_x = float(args.target_x)
+        target_y = float(args.target_y)
+    else:
+        local_x = float(args.target_local_x or 0.0)
+        local_y = float(args.target_local_y or 0.0)
+        cos_yaw = np.cos(start_yaw)
+        sin_yaw = np.sin(start_yaw)
+        target_x = float(start_xy[0] + cos_yaw * local_x - sin_yaw * local_y)
+        target_y = float(start_xy[1] + sin_yaw * local_x + cos_yaw * local_y)
+
+    if args.target_theta is not None:
+        target_theta = float(args.target_theta)
+    else:
+        target_theta = float(start_yaw + (args.target_heading_offset or 0.0))
+    return np.array([target_x, target_y, wrap_to_pi(target_theta)], dtype=np.float64)
+
+
 def configure_ground_contact(mujoco, model, friction, condim):
     ground_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "ground")
     if ground_id < 0:
@@ -248,6 +276,12 @@ def main():
     parser.add_argument("--vx", type=float, default=0.2)
     parser.add_argument("--vy", type=float, default=0.0)
     parser.add_argument("--vyaw", type=float, default=0.0)
+    parser.add_argument("--target_x", type=float, default=None)
+    parser.add_argument("--target_y", type=float, default=None)
+    parser.add_argument("--target_theta", type=float, default=None)
+    parser.add_argument("--target_local_x", type=float, default=None)
+    parser.add_argument("--target_local_y", type=float, default=None)
+    parser.add_argument("--target_heading_offset", type=float, default=0.0)
     parser.add_argument("--force_fall_after_s", type=float, default=-1.0)
     parser.add_argument("--fall_pose", choices=["front", "back", "left", "right"], default="front")
     parser.add_argument("--start_fallen", action="store_true")
@@ -322,6 +356,7 @@ def main():
     forced_fall = args.start_fallen
     start_xy = np.copy(data.qpos[0:2])
     start_yaw = float(quat_to_euler(np.array(data.qpos[3:7], dtype=np.float32))[2])
+    target_pose = resolve_target_pose(args, start_xy, start_yaw)
     path_start_time = float(data.time)
     last_report = -1.0
     mode_time = 0.0
@@ -330,12 +365,18 @@ def main():
     actual_velocity = np.zeros(3, dtype=np.float64)
     world_velocity = np.zeros(3, dtype=np.float64)
     metrics = CommandVelocityMetrics(
-        (args.vx, args.vy, args.vyaw),
+        (0.0, 0.0, 0.0) if target_pose is not None else (args.vx, args.vy, args.vyaw),
         window_s=args.metrics_window_s,
         csv_path=args.metrics_csv,
         csv_sample_s=args.metrics_csv_sample_s,
     )
-    print(f"[mujoco] walk command vx={args.vx:.3f} vy={args.vy:.3f} vyaw={args.vyaw:.3f} getup_enabled={enable_getup}")
+    if target_pose is None:
+        print(f"[mujoco] walk command vx={args.vx:.3f} vy={args.vy:.3f} vyaw={args.vyaw:.3f} getup_enabled={enable_getup}")
+    else:
+        print(
+            f"[mujoco] target pose x={target_pose[0]:.3f} y={target_pose[1]:.3f} "
+            f"theta={target_pose[2]:.3f} getup_enabled={enable_getup}"
+        )
     if checkpoint_warning:
         print(f"[mujoco] warning: {checkpoint_warning}")
     print(f"[mujoco] walk policy source={policy.walk_policy_path}")
@@ -383,17 +424,31 @@ def main():
         if data.time >= next_policy_t:
             next_policy_t += policy_dt
             previous_mode = policy.mode
-            target_qpos[:] = policy.inference(
-                time_now=float(data.time),
-                dof_pos=np.array(data.qpos[7 : 7 + len(default_qpos)], dtype=np.float32),
-                dof_vel=np.array(data.qvel[6 : 6 + len(default_qpos)], dtype=np.float32),
-                base_ang_vel=base_ang_vel,
-                projected_gravity=projected_gravity,
-                base_rpy=base_rpy,
-                vx=args.vx,
-                vy=args.vy,
-                vyaw=args.vyaw,
-            )
+            if target_pose is None:
+                target_qpos[:] = policy.inference(
+                    time_now=float(data.time),
+                    dof_pos=np.array(data.qpos[7 : 7 + len(default_qpos)], dtype=np.float32),
+                    dof_vel=np.array(data.qvel[6 : 6 + len(default_qpos)], dtype=np.float32),
+                    base_ang_vel=base_ang_vel,
+                    projected_gravity=projected_gravity,
+                    base_rpy=base_rpy,
+                    vx=args.vx,
+                    vy=args.vy,
+                    vyaw=args.vyaw,
+                )
+            else:
+                target_qpos[:] = policy.target_pose_inference(
+                    time_now=float(data.time),
+                    dof_pos=np.array(data.qpos[7 : 7 + len(default_qpos)], dtype=np.float32),
+                    dof_vel=np.array(data.qvel[6 : 6 + len(default_qpos)], dtype=np.float32),
+                    base_ang_vel=base_ang_vel,
+                    projected_gravity=projected_gravity,
+                    base_rpy=base_rpy,
+                    base_pos=np.array(data.qpos[0:3], dtype=np.float32),
+                    target_x=target_pose[0],
+                    target_y=target_pose[1],
+                    target_theta=target_pose[2],
+                )
             if policy.mode != previous_mode:
                 mode_time = 0.0
                 start_xy = np.copy(data.qpos[0:2])
@@ -425,17 +480,23 @@ def main():
         if data.time - last_report >= 1.0:
             last_report = data.time
             xy_error = data.qpos[0:2] - start_xy
-            path_time = max(float(data.time) - path_start_time, 0.0)
-            path_along_error, path_lateral_error, path_yaw_error = command_path_error(
-                start_xy,
-                start_yaw,
-                path_time,
-                data.qpos[0:2],
-                metric_yaw,
-                args.vx,
-                args.vy,
-                args.vyaw,
-            )
+            if target_pose is None:
+                path_time = max(float(data.time) - path_start_time, 0.0)
+                path_along_error, path_lateral_error, path_yaw_error = command_path_error(
+                    start_xy,
+                    start_yaw,
+                    path_time,
+                    data.qpos[0:2],
+                    metric_yaw,
+                    args.vx,
+                    args.vy,
+                    args.vyaw,
+                )
+                path_text = f"path_err=({path_along_error:+.3f},{path_lateral_error:+.3f}) yaw_err={path_yaw_error:+.3f} "
+            else:
+                target_dist = np.linalg.norm(target_pose[0:2] - data.qpos[0:2])
+                target_heading_err = wrap_to_pi(target_pose[2] - metric_yaw)
+                path_text = f"target_err=(dist={target_dist:.3f},yaw={target_heading_err:+.3f}) "
             world_speed_xy = np.linalg.norm(world_velocity[:2])
             report_rpy = quat_to_euler(np.array(data.qpos[3:7], dtype=np.float32))
             metrics_text = metrics.report(metrics_row, metrics_summary)
@@ -443,8 +504,7 @@ def main():
                 f"[mujoco] t={data.time:5.2f}s mode={policy.mode:5s} "
                 f"xy=({data.qpos[0]:+.2f},{data.qpos[1]:+.2f}) "
                 f"drift_y={xy_error[1]:+.3f} "
-                f"path_err=({path_along_error:+.3f},{path_lateral_error:+.3f}) "
-                f"yaw_err={path_yaw_error:+.3f} "
+                f"{path_text}"
                 f"world_v=({world_velocity[0]:+.3f},{world_velocity[1]:+.3f}) "
                 f"world_speed={world_speed_xy:.3f} "
                 f"rpy=({report_rpy[0]:+.2f},{report_rpy[1]:+.2f},{report_rpy[2]:+.2f}) "
