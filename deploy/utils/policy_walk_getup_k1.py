@@ -130,7 +130,7 @@ class Policy:
         self.smoothed_commands += np.clip(self.commands - self.smoothed_commands, *clip_range)
 
         moving = np.linalg.norm(self.smoothed_commands) > float(walk_cfg.get("stand_command_threshold", 1.0e-5))
-        gait_frequency = float(walk_cfg["gait_frequency"]) if moving else 0.0
+        gait_frequency = self._resolve_walk_gait_frequency(walk_cfg) if moving else 0.0
         self.walk_gait_process = np.fmod(self.walk_gait_process + self.policy_interval * gait_frequency, 1.0)
 
         command_block = np.array(
@@ -183,6 +183,22 @@ class Policy:
             + float(walk_cfg["control"]["action_scale"]) * self.walk_actions
         )
         return self.dof_targets
+
+    def _resolve_walk_gait_frequency(self, walk_cfg):
+        profile = walk_cfg.get("gait_frequency_by_lin_vel_x")
+        if not profile:
+            return float(walk_cfg["gait_frequency"])
+
+        min_speed = float(profile.get("min_speed", 0.0))
+        max_speed = float(profile.get("max_speed", 1.0))
+        min_frequency = float(profile.get("min_frequency", walk_cfg["gait_frequency"]))
+        max_frequency = float(profile.get("max_frequency", walk_cfg["gait_frequency"]))
+        drive = np.clip(
+            (abs(float(self.smoothed_commands[0])) - min_speed) / max(max_speed - min_speed, 1.0e-6),
+            0.0,
+            1.0,
+        )
+        return min_frequency + drive * (max_frequency - min_frequency)
 
     def _getup_inference(self, dof_pos, dof_vel, base_ang_vel, projected_gravity):
         if self.getup_policy is None:

@@ -275,6 +275,7 @@ class ParameterWalkK1(BaseTask):
             "feet_offset_y_target",
         ]
         self.current_command_ranges = {key: list(self.cfg["commands"][key]) for key in command_keys}
+        self.current_straight_command = dict(self.cfg["commands"].get("straight", {}))
         self.current_resampling_time = list(self.cfg["commands"].get("resampling_time_s", [3.0, 8.0]))
         self.current_disturbance_scale = 1.0
         self.training_phase_index = 0
@@ -387,6 +388,7 @@ class ParameterWalkK1(BaseTask):
             "feet_offset_y_target",
         ]
         self.current_command_ranges = {key: list(command_cfg[key]) for key in command_keys}
+        self.current_straight_command = dict(command_cfg.get("straight", {}))
         self.current_resampling_time = list(command_cfg.get("resampling_time_s", [3.0, 8.0]))
         self.current_disturbance_scale = 1.0
         self.training_phase_index = 0
@@ -408,6 +410,8 @@ class ParameterWalkK1(BaseTask):
         for key in command_keys:
             if key in phase:
                 self.current_command_ranges[key] = list(phase[key])
+        if "straight" in phase:
+            self.current_straight_command.update(phase["straight"])
         self.current_resampling_time = list(phase.get("resampling_time_s", self.current_resampling_time))
         self.current_disturbance_scale = float(phase.get("disturbance_scale", self.current_disturbance_scale))
         self.training_phase_index = active_idx
@@ -533,7 +537,7 @@ class ParameterWalkK1(BaseTask):
     def _apply_straight_anchor_command(self, env_ids):
         if len(env_ids) == 0:
             return
-        command_cfg = self.cfg["commands"].get("straight", {})
+        command_cfg = self.current_straight_command
         command_keys = [
             "lin_vel_x",
             "lin_vel_y",
@@ -554,6 +558,18 @@ class ParameterWalkK1(BaseTask):
                 len(env_ids),
                 defaults.get(key, 0.0),
             )
+        frequency_profile = command_cfg.get("gait_frequency_by_lin_vel_x")
+        if frequency_profile:
+            min_speed = float(frequency_profile.get("min_speed", 0.0))
+            max_speed = float(frequency_profile.get("max_speed", 1.0))
+            min_frequency = float(frequency_profile.get("min_frequency", self.commands[env_ids, 3].min().item()))
+            max_frequency = float(frequency_profile.get("max_frequency", self.commands[env_ids, 3].max().item()))
+            drive = torch.clamp(
+                (torch.abs(self.commands[env_ids, 0]) - min_speed) / max(max_speed - min_speed, 1.0e-6),
+                min=0.0,
+                max=1.0,
+            )
+            self.commands[env_ids, 3] = min_frequency + drive * (max_frequency - min_frequency)
         self.gait_frequency[env_ids] = self.commands[env_ids, 3]
 
     def _teleport_robot(self):
@@ -954,12 +970,24 @@ class ParameterWalkK1(BaseTask):
         error_clip = float(self.cfg["rewards"].get("path_lateral_error_clip", 0.5))
         return torch.clamp(torch.square(lateral_error), max=error_clip * error_clip)
 
+    def _reward_straight_path_lateral(self):
+        path_error = self.base_pos[:, 0:2] - self.desired_pos_xy
+        sin_yaw = torch.sin(self.desired_yaw)
+        cos_yaw = torch.cos(self.desired_yaw)
+        lateral_error = -sin_yaw * path_error[:, 0] + cos_yaw * path_error[:, 1]
+        error_clip = float(self.cfg["rewards"].get("straight_path_lateral_error_clip", 0.8))
+        return torch.clamp(torch.square(lateral_error), max=error_clip * error_clip) * self._straight_walk_mask()
+
     def _straight_walk_mask(self):
         return (
             (torch.abs(self.commands[:, 0]) > 0.05)
             & (torch.abs(self.commands[:, 1]) < 0.05)
             & (torch.abs(self.commands[:, 2]) < 0.05)
         ).float()
+
+    def _reward_straight_heading(self):
+        yaw_error = self._wrap_to_pi(self._get_base_yaw() - self.desired_yaw)
+        return torch.square(yaw_error) * self._straight_walk_mask()
 
     def _reward_straight_lateral_vel(self):
         return torch.square(self.filtered_lin_vel[:, 1]) * self._straight_walk_mask()
@@ -1078,6 +1106,16 @@ class ParameterWalkK1(BaseTask):
         feet_vel = (self.last_feet_pos - self.feet_pos) / self.dt
         return (
             torch.sum(torch.sum(torch.square(feet_vel[:, :, :2]), dim=-1) * self.feet_contact.float(), dim=-1)
+            * (self.episode_length_buf > 1).float()
+        )
+
+    def _reward_fast_stance_feet_xy_vel(self):
+        feet_vel = (self.last_feet_pos - self.feet_pos) / self.dt
+        speed_weight = torch.clamp((torch.abs(self.commands[:, 0]) - 0.70) / 0.50, min=0.0, max=1.0)
+        return (
+            torch.sum(torch.sum(torch.square(feet_vel[:, :, :2]), dim=-1) * self.feet_contact.float(), dim=-1)
+            * speed_weight
+            * self._straight_walk_mask()
             * (self.episode_length_buf > 1).float()
         )
 
