@@ -26,8 +26,29 @@ class TargetPoseWalkK1(ParameterWalkK1):
         self.target_bearing_error = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         self.target_heading_error = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         self.target_reached = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.target_hold_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.target_start_pos_xy = torch.zeros(self.num_envs, 2, dtype=torch.float, device=self.device)
+        self.target_start_yaw = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         self.current_target_ranges = {key: list(self.cfg["commands"][key]) for key in self.TARGET_KEYS}
         self.current_navigation_config = dict(self.cfg["commands"].get("navigation", {}))
+        self.current_straight_target_proportion = float(self.cfg["commands"].get("straight_target_proportion", 0.0))
+        self.policy_command_defaults = torch.tensor(
+            [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                float(self.cfg["commands"].get("policy_defaults", {}).get("foot_yaw_L", 0.0)),
+                float(self.cfg["commands"].get("policy_defaults", {}).get("foot_yaw_R", 0.0)),
+                float(self.cfg["commands"].get("policy_defaults", {}).get("body_pitch_target", 0.0)),
+                float(self.cfg["commands"].get("policy_defaults", {}).get("body_roll_target", 0.0)),
+                float(self.cfg["commands"].get("policy_defaults", {}).get("feet_offset_x_target", 0.0)),
+                float(self.cfg["commands"].get("policy_defaults", {}).get("feet_offset_y_target", 0.0)),
+            ],
+            dtype=torch.float,
+            device=self.device,
+        )
+        self.hip_yaw_indices = self._find_dof_indices("Hip_Yaw")
 
     def update_training_curriculum(self, iteration):
         command_cfg = self.cfg["commands"]
@@ -35,6 +56,7 @@ class TargetPoseWalkK1(ParameterWalkK1):
         self.current_resampling_time = list(command_cfg.get("resampling_time_s", [4.0, 8.0]))
         self.current_disturbance_scale = 1.0
         self.current_navigation_config = dict(command_cfg.get("navigation", {}))
+        self.current_straight_target_proportion = float(command_cfg.get("straight_target_proportion", 0.0))
         self.training_phase_index = 0
         self.training_phase_progress = 1.0
 
@@ -56,6 +78,9 @@ class TargetPoseWalkK1(ParameterWalkK1):
                 self.current_target_ranges[key] = list(phase[key])
         if "navigation" in phase:
             self.current_navigation_config.update(phase["navigation"])
+        self.current_straight_target_proportion = float(
+            phase.get("straight_target_proportion", self.current_straight_target_proportion)
+        )
         self.current_resampling_time = list(phase.get("resampling_time_s", self.current_resampling_time))
         self.current_disturbance_scale = float(phase.get("disturbance_scale", self.current_disturbance_scale))
         self.training_phase_index = active_idx
@@ -68,6 +93,12 @@ class TargetPoseWalkK1(ParameterWalkK1):
 
     def _update_curriculum(self, env_ids):
         return
+
+    def _find_dof_indices(self, pattern):
+        indices = [i for i, name in enumerate(self.dof_names) if pattern in name]
+        if not indices:
+            return None
+        return torch.tensor(indices, dtype=torch.long, device=self.device)
 
     def _target_range(self, key):
         return self.current_target_ranges.get(key, self.cfg["commands"][key])
@@ -93,9 +124,12 @@ class TargetPoseWalkK1(ParameterWalkK1):
         self.commands[env_ids, 5] = base_yaw[env_ids]
         self.desired_yaw[env_ids] = base_yaw[env_ids]
         self.desired_pos_xy[env_ids] = self.root_states[env_ids, 0:2]
+        self.target_start_pos_xy[env_ids] = self.root_states[env_ids, 0:2]
+        self.target_start_yaw[env_ids] = base_yaw[env_ids]
         self.prev_target_distance[env_ids] = 0.0
         self.target_distance[env_ids] = 0.0
         self.target_reached[env_ids] = False
+        self.target_hold_steps[env_ids] = 0
         self.policy_commands[env_ids] = 0.0
 
     def _sample_range_value(self, key, count):
@@ -109,11 +143,20 @@ class TargetPoseWalkK1(ParameterWalkK1):
         local_x = self._sample_range_value("target_local_x", len(env_ids))
         local_y = self._sample_range_value("target_local_y", len(env_ids))
         heading_offset = self._sample_range_value("target_heading_offset", len(env_ids))
+        straight_count = int(self.current_straight_target_proportion * len(env_ids))
+        if straight_count > 0:
+            perm = torch.randperm(len(env_ids), device=self.device)
+            straight_slots = perm[:straight_count]
+            local_y[straight_slots] = 0.0
+            heading_offset[straight_slots] = 0.0
         cos_yaw = torch.cos(base_yaw[env_ids])
         sin_yaw = torch.sin(base_yaw[env_ids])
+        self.target_start_pos_xy[env_ids] = self.root_states[env_ids, 0:2]
+        self.target_start_yaw[env_ids] = base_yaw[env_ids]
         self.commands[env_ids, 3] = self.root_states[env_ids, 0] + cos_yaw * local_x - sin_yaw * local_y
         self.commands[env_ids, 4] = self.root_states[env_ids, 1] + sin_yaw * local_x + cos_yaw * local_y
         self.commands[env_ids, 5] = self._wrap_to_pi(base_yaw[env_ids] + heading_offset)
+        self.target_hold_steps[env_ids] = 0
         self._update_target_state(env_ids, store_previous=False)
         self._compute_navigation_commands(env_ids)
 
@@ -123,6 +166,8 @@ class TargetPoseWalkK1(ParameterWalkK1):
         if len(env_ids) == 0:
             return
         base_yaw = self._sync_current_pose_commands(env_ids)
+        self.target_start_pos_xy[env_ids] = self.root_states[env_ids, 0:2]
+        self.target_start_yaw[env_ids] = base_yaw[env_ids]
 
         if "target_x" in command_cfg and "target_y" in command_cfg:
             self.commands[env_ids, 3] = float(command_cfg["target_x"])
@@ -147,6 +192,7 @@ class TargetPoseWalkK1(ParameterWalkK1):
             self.commands[env_ids, 5] = self._wrap_to_pi(base_yaw[env_ids] + heading_offset)
 
         self._update_target_state(env_ids, store_previous=False)
+        self.target_hold_steps[env_ids] = 0
         self._compute_navigation_commands(env_ids)
 
     def _resample_commands(self):
@@ -178,6 +224,9 @@ class TargetPoseWalkK1(ParameterWalkK1):
             self.commands[still_envs, 5] = self.commands[still_envs, 2]
             self.policy_commands[still_envs] = 0.0
             self.gait_frequency[still_envs] = 0.0
+            self.target_hold_steps[still_envs] = 0
+            self.target_start_pos_xy[still_envs] = self.commands[still_envs, 0:2]
+            self.target_start_yaw[still_envs] = self.commands[still_envs, 2]
             self._update_target_state(still_envs, store_previous=False)
 
         self.cmd_resample_time[env_ids] += self._sample_resample_steps(len(env_ids))
@@ -187,6 +236,11 @@ class TargetPoseWalkK1(ParameterWalkK1):
         self._sync_navigation_state(store_previous=True)
         self.desired_pos_xy[:, :] = self.commands[:, 3:5]
         self.desired_yaw[:] = self.commands[:, 5]
+        self.target_hold_steps[:] = torch.where(
+            self.target_reached,
+            self.target_hold_steps + 1,
+            torch.zeros_like(self.target_hold_steps),
+        )
 
     def _sync_navigation_state(self, store_previous):
         self._sync_current_pose_commands()
@@ -269,7 +323,7 @@ class TargetPoseWalkK1(ParameterWalkK1):
         moving = gait_drive > self._nav_value("stand_command_threshold", 0.03)
         gait_frequency = torch.where(moving, gait_frequency, torch.zeros_like(gait_frequency))
 
-        self.policy_commands[env_ids] = 0.0
+        self.policy_commands[env_ids] = self.policy_command_defaults.unsqueeze(0)
         self.policy_commands[env_ids, 0] = vx
         self.policy_commands[env_ids, 1] = vy
         self.policy_commands[env_ids, 2] = yaw_cmd
@@ -329,8 +383,8 @@ class TargetPoseWalkK1(ParameterWalkK1):
 
     def _check_termination(self):
         super()._check_termination()
-        min_arrival_steps = int(float(self.cfg["rewards"].get("target_min_arrival_time_s", 0.5)) / self.dt)
-        arrival_done = self.target_reached & (self.episode_length_buf >= min_arrival_steps)
+        hold_steps = int(float(self.cfg["rewards"].get("target_hold_time_s", 2.0)) / self.dt)
+        arrival_done = self.target_reached & (self.target_hold_steps >= hold_steps)
         self.reset_buf |= arrival_done
 
     def _straight_walk_mask(self):
@@ -383,8 +437,67 @@ class TargetPoseWalkK1(ParameterWalkK1):
     def _reward_target_arrival(self):
         return self.target_reached.float()
 
+    def _reward_target_hold(self):
+        hold_steps = max(1, int(float(self.cfg["rewards"].get("target_hold_time_s", 2.0)) / self.dt))
+        return torch.clamp(self.target_hold_steps.float() / hold_steps, max=1.0) * self.target_reached.float()
+
+    def _reward_target_path_lateral(self):
+        path_vec = self.commands[:, 3:5] - self.target_start_pos_xy
+        current_vec = self.commands[:, 0:2] - self.target_start_pos_xy
+        path_len = torch.sqrt(torch.sum(torch.square(path_vec), dim=-1) + 1.0e-8)
+        cross = path_vec[:, 0] * current_vec[:, 1] - path_vec[:, 1] * current_vec[:, 0]
+        lateral_error = cross / torch.clamp(path_len, min=0.20)
+        error_clip = float(self.cfg["rewards"].get("target_path_lateral_error_clip", 0.45))
+        moving_mask = (self.target_distance > float(self.cfg["rewards"].get("target_arrival_distance", 0.18))).float()
+        valid_path = (path_len > 0.25).float()
+        return torch.clamp(torch.square(lateral_error), max=error_clip * error_clip) * moving_mask * valid_path
+
+    def _reward_target_bearing(self):
+        sigma = float(self.cfg["rewards"].get("target_bearing_sigma", 0.30))
+        final_heading_distance = self._nav_value("final_heading_distance", 0.45)
+        far_weight = 1.0 - torch.exp(-torch.square(self.target_distance) / max(final_heading_distance * final_heading_distance, 1.0e-6))
+        return torch.exp(-torch.square(self.target_bearing_error) / sigma) * far_weight
+
+    def _reward_target_stand_still(self):
+        stand_mask = self._stand_mask()
+        lin_xy = torch.sum(torch.square(self.filtered_lin_vel[:, :2]), dim=-1)
+        ang_z = torch.square(self.filtered_ang_vel[:, 2])
+        return (lin_xy + 0.5 * ang_z) * stand_mask
+
+    def _reward_target_stand_upright(self):
+        return torch.sum(torch.square(self.projected_gravity[:, :2]), dim=-1) * self._stand_mask()
+
+    def _reward_target_stand_action(self):
+        return torch.sum(torch.square(self.actions), dim=-1) * self._stand_mask()
+
+    def _reward_target_stand_default_pose(self):
+        return torch.mean(torch.square(self.dof_pos - self.default_dof_pos), dim=-1) * self._stand_mask()
+
     def _reward_nav_lateral_vel(self):
         return torch.square(self.filtered_lin_vel[:, 1] - self.policy_commands[:, 1])
 
     def _reward_nav_yaw_oscillation(self):
         return torch.square(self.filtered_ang_vel[:, 2] - self.policy_commands[:, 2])
+
+    def _reward_feet_yaw_zero(self):
+        return torch.sum(torch.square(self.feet_yaw_rel), dim=-1)
+
+    def _reward_feet_yaw_asymmetry(self):
+        if self.feet_yaw_rel.shape[1] < 2:
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        return torch.square(self.feet_yaw_rel[:, 0] - self.feet_yaw_rel[:, 1])
+
+    def _reward_feet_width(self):
+        _, feet_y_offset = self.get_feet_offset()
+        width_clip = float(self.cfg["rewards"].get("feet_width_error_clip", 0.12))
+        return torch.clamp(torch.square(feet_y_offset), max=width_clip * width_clip)
+
+    def _reward_hip_yaw_zero(self):
+        if self.hip_yaw_indices is None:
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        return torch.sum(torch.square(self.dof_pos[:, self.hip_yaw_indices]), dim=-1)
+
+    def _stand_mask(self):
+        stand_distance = float(self.cfg["rewards"].get("target_stand_distance", 0.28))
+        stand_heading = float(self.cfg["rewards"].get("target_stand_heading", self.cfg["rewards"].get("target_arrival_heading", 0.20)))
+        return ((self.target_distance < stand_distance) & (torch.abs(self.target_heading_error) < stand_heading)).float()

@@ -2,10 +2,10 @@ extends: Parameter_Walk_K1.yaml
 
 basic:
   task: "K1/TargetPoseWalkK1"
-  log_task: "K1/TargetPoseWalk"
+  log_task: "K1/TargetPoseWalkRobustStand"
   checkpoint: "logs/K1/K1/ParameterWalkGeneral/2026-07-18-01-28-00/nn/model_12000.pth"
-  max_iterations: 12000
-  description: "Fine-tune the stable K1 walk checkpoint with six public pose/target commands and target-arrival rewards."
+  max_iterations: 30000
+  description: "Robust fine-tune for K1 target-pose walking with low slip, straight tracking, and stable standing after arrival."
 
 env:
   num_observations: 54
@@ -13,16 +13,16 @@ env:
   num_actions: 12
 
 runner:
-  horizon_length: 24
-  mini_epochs: 12
-  save_interval: 250
+  horizon_length: 48
+  mini_epochs: 10
+  save_interval: 500
   progress_interval: 10
   use_wandb: false
 
 algorithm:
-  learning_rate: 1.0e-5
+  learning_rate: 8.0e-6
   desired_kl: 0.01
-  entropy_coef: -0.006
+  entropy_coef: -0.003
   min_entropy: -14
   max_entropy: -5.0
 
@@ -31,23 +31,31 @@ commands:
   command_order: [robot_x, robot_y, robot_theta, target_x, target_y, target_theta]
   training_mode: sampled
   curriculum: false
-  still_proportion: 0.04
-  target_local_x: [0.40, 2.50]
-  target_local_y: [-0.80, 0.80]
-  target_heading_offset: [-1.57, 1.57]
-  resampling_time_s: [5.0, 9.0]
+  still_proportion: 0.08
+  straight_target_proportion: 0.70
+  target_local_x: [0.35, 2.80]
+  target_local_y: [-0.60, 0.60]
+  target_heading_offset: [-1.20, 1.20]
+  resampling_time_s: [7.0, 12.0]
+  policy_defaults:
+    foot_yaw_L: 0.0
+    foot_yaw_R: 0.0
+    body_pitch_target: 0.0
+    body_roll_target: 0.0
+    feet_offset_x_target: 0.0
+    feet_offset_y_target: 0.0
   navigation:
     max_forward_speed: 1.25
-    max_lateral_speed: 0.20
-    max_yaw_speed: 1.00
-    target_speed_gain: 0.75
-    lateral_speed_gain: 0.55
-    bearing_yaw_gain: 1.35
-    final_heading_gain: 1.15
-    final_heading_distance: 0.45
-    stop_distance: 0.18
-    heading_stop_error: 0.20
-    stand_command_threshold: 0.03
+    max_lateral_speed: 0.12
+    max_yaw_speed: 0.90
+    target_speed_gain: 0.62
+    lateral_speed_gain: 0.25
+    bearing_yaw_gain: 1.65
+    final_heading_gain: 1.25
+    final_heading_distance: 0.55
+    stop_distance: 0.24
+    heading_stop_error: 0.16
+    stand_command_threshold: 0.04
     gait_frequency_min: 1.20
     gait_frequency_max: 1.95
     gait_frequency_speed_min: 0.15
@@ -64,69 +72,95 @@ commands:
     no_disturbance: true
   training_phases:
     - start_iteration: 0
-      disturbance_scale: 0.10
-      resampling_time_s: [4.0, 6.0]
-      target_local_x: [0.30, 1.00]
-      target_local_y: [-0.20, 0.20]
-      target_heading_offset: [-0.30, 0.30]
+      disturbance_scale: 0.0
+      straight_target_proportion: 0.95
+      resampling_time_s: [7.0, 10.0]
+      target_local_x: [0.30, 0.90]
+      target_local_y: [-0.04, 0.04]
+      target_heading_offset: [-0.08, 0.08]
+      navigation:
+        max_forward_speed: 0.55
+        max_lateral_speed: 0.04
+        max_yaw_speed: 0.30
+        target_speed_gain: 0.45
+        bearing_yaw_gain: 1.20
+        gait_frequency_max: 1.55
+    - start_iteration: 4000
+      disturbance_scale: 0.08
+      straight_target_proportion: 0.90
+      resampling_time_s: [7.0, 11.0]
+      target_local_x: [0.35, 1.30]
+      target_local_y: [-0.12, 0.12]
+      target_heading_offset: [-0.25, 0.25]
       navigation:
         max_forward_speed: 0.75
-        max_lateral_speed: 0.10
+        max_lateral_speed: 0.06
         max_yaw_speed: 0.45
-        gait_frequency_max: 1.65
-    - start_iteration: 2500
-      disturbance_scale: 0.20
-      resampling_time_s: [4.5, 7.0]
-      target_local_x: [0.35, 1.50]
-      target_local_y: [-0.35, 0.35]
-      target_heading_offset: [-0.70, 0.70]
+        target_speed_gain: 0.52
+        gait_frequency_max: 1.68
+    - start_iteration: 9000
+      disturbance_scale: 0.18
+      straight_target_proportion: 0.82
+      resampling_time_s: [8.0, 12.0]
+      target_local_x: [0.40, 1.80]
+      target_local_y: [-0.25, 0.25]
+      target_heading_offset: [-0.55, 0.55]
       navigation:
         max_forward_speed: 0.95
-        max_lateral_speed: 0.14
-        max_yaw_speed: 0.65
-        gait_frequency_max: 1.78
-    - start_iteration: 5500
-      disturbance_scale: 0.35
-      resampling_time_s: [5.0, 8.0]
-      target_local_x: [0.40, 2.10]
-      target_local_y: [-0.55, 0.55]
-      target_heading_offset: [-1.10, 1.10]
+        max_lateral_speed: 0.08
+        max_yaw_speed: 0.60
+        gait_frequency_max: 1.88
+    - start_iteration: 16000
+      disturbance_scale: 0.32
+      straight_target_proportion: 0.75
+      resampling_time_s: [8.0, 13.0]
+      target_local_x: [0.45, 2.40]
+      target_local_y: [-0.45, 0.45]
+      target_heading_offset: [-0.90, 0.90]
       navigation:
         max_forward_speed: 1.12
-        max_lateral_speed: 0.17
-        max_yaw_speed: 0.85
-        gait_frequency_max: 1.88
-    - start_iteration: 9000
-      disturbance_scale: 0.50
-      resampling_time_s: [5.5, 9.0]
-      target_local_x: [0.45, 2.80]
-      target_local_y: [-0.80, 0.80]
-      target_heading_offset: [-1.57, 1.57]
+        max_lateral_speed: 0.10
+        max_yaw_speed: 0.78
+        gait_frequency_max: 1.92
+    - start_iteration: 23000
+      disturbance_scale: 0.45
+      straight_target_proportion: 0.70
+      resampling_time_s: [8.0, 14.0]
+      target_local_x: [0.50, 3.00]
+      target_local_y: [-0.60, 0.60]
+      target_heading_offset: [-1.20, 1.20]
       navigation:
         max_forward_speed: 1.25
-        max_lateral_speed: 0.20
-        max_yaw_speed: 1.00
+        max_lateral_speed: 0.12
+        max_yaw_speed: 0.90
         gait_frequency_max: 1.95
 
 rewards:
   scales:
-    survival: 0.20
-    tracking_lin_vel_x: 2.6
-    tracking_lin_vel_y: 1.6
-    tracking_ang_vel: 1.8
-    lin_vel_x_error: -0.8
+    survival: 0.15
+    tracking_lin_vel_x: 2.2
+    tracking_lin_vel_y: 1.0
+    tracking_ang_vel: 1.6
+    lin_vel_x_error: -0.6
     heading_tracking: 0.0
     path_lateral: 0.0
     straight_path_lateral: 0.0
     straight_heading: 0.0
     straight_lateral_vel: 0.0
     straight_yaw_vel: 0.0
-    target_progress: 8.0
-    target_position: 3.0
-    target_heading: 1.8
-    target_arrival: 10.0
-    nav_lateral_vel: -1.2
-    nav_yaw_oscillation: -0.8
+    target_progress: 5.0
+    target_position: 2.0
+    target_heading: 1.5
+    target_arrival: 4.0
+    target_hold: 6.0
+    target_path_lateral: -18.0
+    target_bearing: 1.5
+    target_stand_still: -16.0
+    target_stand_upright: -24.0
+    target_stand_action: -2.5
+    target_stand_default_pose: -8.0
+    nav_lateral_vel: -2.8
+    nav_yaw_oscillation: -1.6
     base_height: -20.0
     foot_yaw_L: 0.0
     foot_yaw_R: 0.0
@@ -143,25 +177,35 @@ rewards:
     dof_vel: -2.e-4
     dof_acc: -5.e-7
     root_acc: -2.e-4
-    action_rate: -3.4
+    action_rate: -4.2
     dof_pos_limits: -1.0
     collision: -1.0
-    feet_slip: -1.2
-    stance_feet_xy_vel: -0.25
-    fast_stance_feet_xy_vel: -0.45
+    feet_slip: -3.0
+    stance_feet_xy_vel: -0.85
+    fast_stance_feet_xy_vel: -1.10
     stance_feet_yaw: 0.0
     stance_feet_roll: -0.15
+    feet_yaw_zero: -2.8
+    feet_yaw_asymmetry: -1.4
+    feet_width: -4.0
+    hip_yaw_zero: -1.2
     feet_roll: -0.2
     feet_pitch: -0.1
     feet_swing: 1.5
+  only_positive_rewards: false
   tracking_sigma: 0.14
   target_progress_clip: 0.08
   target_position_sigma: 0.25
   target_heading_sigma: 0.35
+  target_bearing_sigma: 0.28
+  target_path_lateral_error_clip: 0.45
   target_arrival_distance: 0.18
-  target_arrival_heading: 0.20
-  target_min_arrival_time_s: 0.5
-  episode_length_s: 12.0
+  target_arrival_heading: 0.16
+  target_stand_distance: 0.30
+  target_stand_heading: 0.24
+  target_hold_time_s: 2.0
+  feet_width_error_clip: 0.12
+  episode_length_s: 16.0
 
 metadata:
   policy_name: "target_pose_walk_k1"

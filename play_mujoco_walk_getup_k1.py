@@ -212,13 +212,13 @@ def resolve_target_pose(args, start_xy, start_yaw):
     return np.array([target_x, target_y, wrap_to_pi(target_theta)], dtype=np.float64)
 
 
-def configure_ground_contact(mujoco, model, friction, condim):
+def configure_ground_contact(mujoco, model, friction, torsional_friction, rolling_friction, condim):
     ground_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "ground")
     if ground_id < 0:
         return False
     model.geom_friction[ground_id, 0] = float(friction)
-    model.geom_friction[ground_id, 1] = 0.005
-    model.geom_friction[ground_id, 2] = 0.0001
+    model.geom_friction[ground_id, 1] = float(torsional_friction)
+    model.geom_friction[ground_id, 2] = float(rolling_friction)
     model.geom_condim[ground_id] = int(condim)
     return True
 
@@ -303,7 +303,9 @@ def main():
     parser.add_argument("--default_ankle_pitch", type=float)
     parser.add_argument("--default_base_height", type=float, default=0.70)
     parser.add_argument("--ground_friction", type=float, default=1.0)
-    parser.add_argument("--ground_condim", type=int, default=3)
+    parser.add_argument("--ground_torsional_friction", type=float, default=0.05)
+    parser.add_argument("--ground_rolling_friction", type=float, default=0.001)
+    parser.add_argument("--ground_condim", type=int, default=6)
     parser.add_argument("--metrics_window_s", type=float, default=3.0)
     parser.add_argument("--metrics_warmup_s", type=float, default=1.0)
     parser.add_argument("--metrics_csv", default=None)
@@ -345,7 +347,14 @@ def main():
         walk_policy_path=policy_source,
     )
     model = mujoco.MjModel.from_xml_path(args.xml)
-    ground_configured = configure_ground_contact(mujoco, model, args.ground_friction, args.ground_condim)
+    ground_configured = configure_ground_contact(
+        mujoco,
+        model,
+        args.ground_friction,
+        args.ground_torsional_friction,
+        args.ground_rolling_friction,
+        args.ground_condim,
+    )
     data = mujoco.MjData(model)
 
     default_qpos = np.array(cfg["common"]["default_qpos"], dtype=np.float32)
@@ -406,7 +415,8 @@ def main():
     print(
         f"[mujoco] model nq={model.nq} nv={model.nv} nu={model.nu} "
         f"actuated_dof={model.nu} ground_configured={ground_configured} "
-        f"ground_friction={args.ground_friction:.2f} ground_condim={args.ground_condim}"
+        f"ground_friction=({args.ground_friction:.2f},{args.ground_torsional_friction:.3f},"
+        f"{args.ground_rolling_friction:.4f}) ground_condim={args.ground_condim}"
     )
     l_hip, l_knee, l_ankle, r_hip, r_knee, r_ankle = leg_default_summary(default_qpos)
     print(

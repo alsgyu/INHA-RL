@@ -193,6 +193,8 @@ class Policy:
         self.smoothed_commands += np.clip(self.commands - self.smoothed_commands, *clip_range)
 
         moving = np.linalg.norm(self.smoothed_commands) > float(walk_cfg.get("stand_command_threshold", 1.0e-5))
+        if not moving:
+            self.walk_actions *= float(walk_cfg.get("stand_action_decay", 0.0))
         gait_frequency = self._resolve_walk_gait_frequency(walk_cfg) if moving else 0.0
         self.walk_gait_process = np.fmod(self.walk_gait_process + self.policy_interval * gait_frequency, 1.0)
 
