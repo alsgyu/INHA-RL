@@ -1,0 +1,207 @@
+extends: Parameter_Walk_K1.yaml
+
+basic:
+  task: "K1/Velocity_Command_Walk_K1"
+  log_task: "K1/VelocityCommandWalkSIRL"
+  checkpoint: null
+  max_iterations: 30000
+  description: "K1 three-command velocity walking with explicit zero-command standing and SIRL elite imitation."
+
+runner:
+  horizon_length: 48
+  mini_epochs: 10
+  save_interval: 500
+  progress_interval: 10
+  use_wandb: false
+  log_reward_terms: true
+
+algorithm:
+  learning_rate: 8.0e-6
+  desired_kl: 0.01
+  entropy_coef: -0.003
+  min_entropy: -14
+  max_entropy: -5.0
+  sirl:
+    enabled: true
+    start_iteration: 200
+    buffer_size: 131072
+    min_replay_size: 4096
+    bc_batch_size: 4096
+    bc_coef: 0.035
+    coef_warmup_iterations: 1200
+    top_fraction: 0.14
+    max_dones_per_horizon: 0
+    terminal_penalty: 2.0
+    loss: "mse"
+    score_metric_reduction: "mean"
+    score_weights:
+      velocity_error: -2.0
+      feet_slip: -0.35
+      swing_clearance_deficit: -4.0
+      base_tilt: -1.0
+      low_height: -2.0
+      stand_drift: -3.0
+
+commands:
+  num_commands: 10
+  num_public_commands: 3
+  public_command_order: [lin_vel_x, lin_vel_y, ang_vel_yaw]
+  command_order: [lin_vel_x, lin_vel_y, ang_vel_yaw, gait_frequency,
+                  foot_yaw_L, foot_yaw_R, body_pitch_target, body_roll_target,
+                  feet_offset_x_target, feet_offset_y_target]
+  training_mode: sampled
+  curriculum: false
+  still_proportion: 0.25
+  straight_proportion: 0.55
+  lin_vel_x: [-0.45, 1.05]
+  lin_vel_y: [-0.25, 0.25]
+  ang_vel_yaw: [-0.90, 0.90]
+  gait_frequency: [0.0, 0.0]
+  foot_yaw_L: [0.0, 0.0]
+  foot_yaw_R: [0.0, 0.0]
+  body_pitch_target: [0.0, 0.0]
+  body_roll_target: [0.0, 0.0]
+  feet_offset_x_target: [0.0, 0.0]
+  feet_offset_y_target: [0.0, 0.0]
+  fixed:
+    lin_vel_x: 0.0
+    lin_vel_y: 0.0
+    ang_vel_yaw: 0.0
+  play:
+    lin_vel_x: 0.0
+    lin_vel_y: 0.0
+    ang_vel_yaw: 0.0
+    fixed_yaw: true
+    no_disturbance: true
+  straight:
+    lin_vel_x: [0.12, 0.85]
+    lin_vel_y: 0.0
+    ang_vel_yaw: 0.0
+  adapter:
+    stand_command_threshold: 0.035
+    gait_frequency_min: 1.15
+    gait_frequency_max: 1.95
+    gait_frequency_speed_min: 0.08
+    gait_frequency_speed_max: 1.05
+    max_yaw_speed_for_drive: 0.90
+    foot_yaw_from_yaw_gain: 0.12
+    foot_yaw_target_clip: [-0.22, 0.22]
+    body_pitch_gain: 0.08
+    body_pitch_target_clip: [-0.04, 0.12]
+    body_roll_gain: -0.08
+    body_roll_target_clip: [-0.08, 0.08]
+  resampling_time_s: [4.0, 8.0]
+  training_phases:
+    - start_iteration: 0
+      disturbance_scale: 0.0
+      still_proportion: 0.35
+      straight_proportion: 0.85
+      resampling_time_s: [4.0, 6.0]
+      lin_vel_x: [0.10, 0.35]
+      lin_vel_y: [0.0, 0.0]
+      ang_vel_yaw: [0.0, 0.0]
+      adapter:
+        gait_frequency_max: 1.45
+    - start_iteration: 3000
+      disturbance_scale: 0.08
+      still_proportion: 0.30
+      straight_proportion: 0.75
+      resampling_time_s: [4.0, 7.0]
+      lin_vel_x: [-0.10, 0.55]
+      lin_vel_y: [-0.06, 0.06]
+      ang_vel_yaw: [-0.25, 0.25]
+      adapter:
+        gait_frequency_max: 1.60
+    - start_iteration: 8000
+      disturbance_scale: 0.20
+      still_proportion: 0.25
+      straight_proportion: 0.65
+      resampling_time_s: [5.0, 8.0]
+      lin_vel_x: [-0.25, 0.80]
+      lin_vel_y: [-0.14, 0.14]
+      ang_vel_yaw: [-0.55, 0.55]
+      adapter:
+        gait_frequency_max: 1.78
+    - start_iteration: 16000
+      disturbance_scale: 0.35
+      still_proportion: 0.22
+      straight_proportion: 0.55
+      resampling_time_s: [5.0, 8.0]
+      lin_vel_x: [-0.45, 1.05]
+      lin_vel_y: [-0.25, 0.25]
+      ang_vel_yaw: [-0.90, 0.90]
+      adapter:
+        gait_frequency_max: 1.95
+
+rewards:
+  scales:
+    survival: 0.18
+    tracking_lin_vel_x: 3.2
+    tracking_lin_vel_y: 2.2
+    tracking_ang_vel: 2.4
+    lin_vel_x_error: -0.9
+    lin_vel_y_error: -0.45
+    ang_vel_yaw_error: -0.50
+    heading_tracking: 0.0
+    path_lateral: 0.0
+    straight_lateral_vel: -3.0
+    straight_yaw_vel: -3.0
+    base_height: -20.0
+    foot_yaw_L: 0.0
+    foot_yaw_R: 0.0
+    orientation: -60.0
+    torques: -5.e-4
+    torque_tiredness: -1.5e-2
+    power: -5.e-3
+    lin_vel_z: -2.0
+    ang_vel_xy: -0.2
+    dof_vel: -2.e-4
+    dof_acc: -5.e-7
+    root_acc: -2.e-4
+    action_rate: -4.0
+    dof_pos_limits: -1.0
+    dof_vel_limits: 0.0
+    torque_limits: 0.0
+    collision: -1.0
+    feet_slip: -3.5
+    stance_feet_xy_vel: -1.0
+    fast_stance_feet_xy_vel: -1.3
+    stance_feet_yaw: 0.0
+    stance_feet_roll: -0.15
+    feet_yaw_diff: 0.0
+    feet_yaw_mean: 0.0
+    feet_roll: -0.2
+    feet_pitch: -0.1
+    feet_offset_x: 0.0
+    feet_offset_y: 0.0
+    feet_swing: 1.7
+    swing_clearance: 2.5
+    scuff_clearance: -22.0
+    command_stand_still: -35.0
+    command_stand_action: -4.0
+    command_stand_default_pose: -10.0
+    command_stand_feet_slip: -8.0
+  episode_length_s: 24.0
+  terminate_height: 0.35
+  terminate_vel: 50.0
+  terminate_contacts_on: []
+  penalize_contacts_on: ["Trunk", "H1", "H2", "AL", "AR", "Waist", "Hip", "Shank", "Ankle"]
+  only_positive_rewards: false
+  tracking_sigma: 0.14
+  base_height_target: 0.52
+  soft_dof_pos_limit: 1.0
+  soft_dof_vel_limit: 1.0
+  soft_torque_limit: 1.0
+  swing_period: 0.22
+  swing_clearance_target: 0.105
+  swing_clearance_sigma: 0.012
+  scuff_clearance_threshold: 0.050
+  feet_distance_ref: 0.18
+
+metadata:
+  policy_name: "velocity_command_walk_k1"
+  public_command_order: [lin_vel_x, lin_vel_y, ang_vel_yaw]
+  internal_command_order: [lin_vel_x, lin_vel_y, ang_vel_yaw, gait_frequency,
+                           foot_yaw_L, foot_yaw_R, body_pitch_target, body_roll_target,
+                           feet_offset_x_target, feet_offset_y_target]
+  zero_command_behavior: "stand still with gait_frequency=0 and zero phase features"

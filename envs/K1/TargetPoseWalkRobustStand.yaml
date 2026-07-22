@@ -1,0 +1,5 @@
+extends: TargetPoseWalk.yaml
+
+basic:
+  task: "K1/TargetPoseWalkK1"
+  log_task: "K1/TargetPoseWalkRobustStand"
