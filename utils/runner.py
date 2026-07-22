@@ -205,6 +205,7 @@ class Runner:
         self.buffer.add_buffer("rewards", ())
         self.buffer.add_buffer("dones", (), dtype=bool)
         self.buffer.add_buffer("time_outs", (), dtype=bool)
+        self._init_sirl()
 
     def _get_args(self):
         parser = argparse.ArgumentParser()
@@ -380,6 +381,160 @@ class Runner:
         torch.cuda.manual_seed(self.cfg["basic"]["seed"])
         torch.cuda.manual_seed_all(self.cfg["basic"]["seed"])
 
+    def _init_sirl(self):
+        self.sirl_cfg = self.cfg.get("algorithm", {}).get("sirl", {})
+        self.sirl_enabled = bool(self.sirl_cfg.get("enabled", False))
+        self.sirl_metric_buffers = {}
+        self.sirl_last_stats = {}
+        if not self.sirl_enabled:
+            self.sirl_replay_count = 0
+            self.sirl_replay_write_idx = 0
+            return
+
+        self.sirl_replay_size = int(self.sirl_cfg.get("buffer_size", 131072))
+        self.sirl_replay_obs = torch.zeros(self.sirl_replay_size, self.env.num_obs, dtype=torch.float, device=self.device)
+        self.sirl_replay_actions = torch.zeros(
+            self.sirl_replay_size,
+            self.env.num_actions,
+            dtype=torch.float,
+            device=self.device,
+        )
+        self.sirl_replay_count = 0
+        self.sirl_replay_write_idx = 0
+
+    def _reset_sirl_rollout_metrics(self):
+        if self.sirl_enabled:
+            self.sirl_metric_buffers = {}
+
+    def _store_sirl_infos(self, step_idx, infos):
+        if not self.sirl_enabled:
+            return
+        sirl_infos = infos.get("sirl", {})
+        if not sirl_infos:
+            return
+        horizon = self.cfg["runner"]["horizon_length"]
+        for key, value in sirl_infos.items():
+            if not torch.is_tensor(value):
+                value = torch.as_tensor(value, dtype=torch.float, device=self.device)
+            value = value.to(self.device).float()
+            if value.ndim == 0:
+                value = value.expand(self.env.num_envs)
+            value = value.reshape(self.env.num_envs)
+            if key not in self.sirl_metric_buffers:
+                self.sirl_metric_buffers[key] = torch.zeros(horizon, self.env.num_envs, dtype=torch.float, device=self.device)
+            self.sirl_metric_buffers[key][step_idx, :] = value.detach()
+
+    def _add_sirl_samples(self, obses, actions):
+        obses = obses.reshape(-1, self.env.num_obs).detach()
+        actions = actions.reshape(-1, self.env.num_actions).detach()
+        sample_count = obses.shape[0]
+        if sample_count == 0:
+            return
+        if sample_count >= self.sirl_replay_size:
+            obses = obses[-self.sirl_replay_size :]
+            actions = actions[-self.sirl_replay_size :]
+            sample_count = self.sirl_replay_size
+
+        indices = (torch.arange(sample_count, device=self.device) + self.sirl_replay_write_idx) % self.sirl_replay_size
+        self.sirl_replay_obs[indices] = obses
+        self.sirl_replay_actions[indices] = actions
+        self.sirl_replay_write_idx = (self.sirl_replay_write_idx + sample_count) % self.sirl_replay_size
+        self.sirl_replay_count = min(self.sirl_replay_size, self.sirl_replay_count + sample_count)
+
+    def _sirl_bc_coef(self, iteration):
+        if not self.sirl_enabled:
+            return 0.0
+        start_iteration = int(self.sirl_cfg.get("start_iteration", 0))
+        if iteration < start_iteration:
+            return 0.0
+        coef = float(self.sirl_cfg.get("bc_coef", 0.0))
+        warmup_iterations = int(self.sirl_cfg.get("coef_warmup_iterations", 0))
+        if warmup_iterations > 0:
+            progress = min(1.0, max(0.0, (iteration - start_iteration + 1) / warmup_iterations))
+            coef *= progress
+        return coef
+
+    def _update_sirl_replay(self, iteration):
+        stats = {
+            "sirl/elite_score_mean": 0.0,
+            "sirl/elite_score_min": 0.0,
+            "sirl/selected_envs": 0.0,
+            "sirl/added_samples": 0.0,
+            "sirl/buffer_count": float(self.sirl_replay_count),
+        }
+        if not self.sirl_enabled or iteration < int(self.sirl_cfg.get("start_iteration", 0)):
+            return stats
+
+        rewards = self.buffer["rewards"].detach()
+        score = rewards.sum(dim=0)
+        reduction = str(self.sirl_cfg.get("score_metric_reduction", "mean"))
+        for key, weight in self.sirl_cfg.get("score_weights", {}).items():
+            metric = self.sirl_metric_buffers.get(key)
+            if metric is None:
+                continue
+            if reduction == "sum":
+                metric_score = metric.sum(dim=0)
+            elif reduction == "max":
+                metric_score = metric.max(dim=0).values
+            else:
+                metric_score = metric.mean(dim=0)
+            score = score + float(weight) * metric_score
+
+        done_count = self.buffer["dones"].float().sum(dim=0)
+        max_dones = int(self.sirl_cfg.get("max_dones_per_horizon", 0))
+        eligible = done_count <= max_dones
+        if not bool(eligible.any().item()):
+            return stats
+
+        terminal_penalty = float(self.sirl_cfg.get("terminal_penalty", 0.0))
+        score = score - terminal_penalty * done_count
+        score = torch.where(eligible, score, torch.full_like(score, -torch.inf))
+
+        top_fraction = float(self.sirl_cfg.get("top_fraction", 0.15))
+        eligible_count = int(eligible.sum().item())
+        top_k = max(1, int(np.ceil(top_fraction * self.env.num_envs)))
+        top_k = min(top_k, eligible_count)
+        elite_scores, elite_env_ids = torch.topk(score, top_k)
+        if "min_score" in self.sirl_cfg:
+            keep = elite_scores >= float(self.sirl_cfg["min_score"])
+            elite_scores = elite_scores[keep]
+            elite_env_ids = elite_env_ids[keep]
+        if elite_env_ids.numel() == 0:
+            return stats
+
+        elite_obses = self.buffer["obses"][:, elite_env_ids, :]
+        elite_actions = self.buffer["actions"][:, elite_env_ids, :]
+        added_samples = elite_obses.numel() // self.env.num_obs
+        self._add_sirl_samples(elite_obses, elite_actions)
+
+        stats.update(
+            {
+                "sirl/elite_score_mean": float(elite_scores.mean().item()),
+                "sirl/elite_score_min": float(elite_scores.min().item()),
+                "sirl/selected_envs": float(elite_env_ids.numel()),
+                "sirl/added_samples": float(added_samples),
+                "sirl/buffer_count": float(self.sirl_replay_count),
+            }
+        )
+        return stats
+
+    def _compute_sirl_bc_loss(self, iteration):
+        coef = self._sirl_bc_coef(iteration)
+        min_replay_size = int(self.sirl_cfg.get("min_replay_size", 4096))
+        if coef <= 0.0 or self.sirl_replay_count < min_replay_size:
+            return None, 0.0
+
+        batch_size = min(int(self.sirl_cfg.get("bc_batch_size", 4096)), self.sirl_replay_count)
+        indices = torch.randint(0, self.sirl_replay_count, (batch_size,), device=self.device)
+        bc_obs = self.sirl_replay_obs[indices]
+        bc_actions = self.sirl_replay_actions[indices]
+        bc_dist = self.model.act(bc_obs)
+        if str(self.sirl_cfg.get("loss", "mse")).lower() == "nll":
+            bc_loss = -bc_dist.log_prob(bc_actions).sum(dim=-1).mean()
+        else:
+            bc_loss = F.mse_loss(bc_dist.loc, bc_actions)
+        return bc_loss, coef
+
     @staticmethod
     def _format_duration(seconds):
         seconds = max(0, int(seconds))
@@ -475,6 +630,7 @@ class Runner:
         for it in range(max_iterations):
             rollout_reward_sum = 0.0
             rollout_done_count = 0
+            self._reset_sirl_rollout_metrics()
             if hasattr(self.env, "update_training_curriculum"):
                 self.env.update_training_curriculum(it)
             # Check if it's time to log a video
@@ -531,12 +687,15 @@ class Runner:
                 self.buffer.update_data("rewards", n, rew)
                 self.buffer.update_data("dones", n, done)
                 self.buffer.update_data("time_outs", n, infos["time_outs"].to(self.device))
+                self._store_sirl_infos(n, infos)
                 ep_info = {"reward": rew}
                 if log_reward_terms:
                     ep_info.update(infos["rew_terms"])
                 if log_env_metrics and "metrics" in infos and bool(done.any().item()):
                     ep_info.update(infos["metrics"])
                 self.recorder.record_episode_statistics(done, ep_info, it, n == (self.cfg["runner"]["horizon_length"] - 1))
+
+            sirl_rollout_stats = self._update_sirl_replay(it)
 
             with torch.no_grad():
                 old_dist = self.model.act(self.buffer["obses"])
@@ -564,6 +723,8 @@ class Runner:
             mean_actor_loss = 0
             mean_bound_loss = 0
             mean_entropy = 0
+            mean_sirl_bc_loss = 0.0
+            mean_sirl_bc_coef = 0.0
             for n in range(self.cfg["runner"]["mini_epochs"]):
                 values = self.model.est_value(self.buffer["obses"], self.buffer["privileged_obses"])
 
@@ -595,6 +756,7 @@ class Runner:
                     loss_entropy = torch.mean((torch.clamp(entropy.mean(), min=min_entropy, max=max_entropy) - entropy.mean())**2)
                 else:
                     loss_entropy = 0.0
+                sirl_bc_loss, sirl_bc_coef = self._compute_sirl_bc_loss(it)
                 loss = (
                     value_loss
                     + actor_loss
@@ -603,6 +765,8 @@ class Runner:
                     + 0.01 * loss_entropy
                     #+ self.cfg["algorithm"]["symmetry_coef"] * sym_loss
                 )
+                if sirl_bc_loss is not None:
+                    loss = loss + sirl_bc_coef * sirl_bc_loss
 
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -613,6 +777,9 @@ class Runner:
                 mean_actor_loss += actor_loss.item()
                 mean_bound_loss += bound_loss.item()
                 mean_entropy += entropy.mean()
+                if sirl_bc_loss is not None:
+                    mean_sirl_bc_loss += sirl_bc_loss.item()
+                    mean_sirl_bc_coef += sirl_bc_coef
 
             # Calculate KL divergence after all mini epochs (between old and final policy)
             with torch.no_grad():
@@ -640,28 +807,33 @@ class Runner:
             mean_actor_loss /= self.cfg["runner"]["mini_epochs"]
             mean_bound_loss /= self.cfg["runner"]["mini_epochs"]
             mean_entropy /= self.cfg["runner"]["mini_epochs"]
-            self.recorder.record_statistics(
-                {
-                    "value_loss": mean_value_loss,
-                    "actor_loss": mean_actor_loss,
-                    "bound_loss": mean_bound_loss,
-                    "entropy": mean_entropy,
-                    "kl_mean": kl_mean,
-                    "lr": self.learning_rate,
-                    "curriculum/mean_lin_vel_level": self.env.mean_lin_vel_level,
-                    "curriculum/mean_ang_vel_level": self.env.mean_ang_vel_level,
-                    "curriculum/max_lin_vel_level": self.env.max_lin_vel_level,
-                    "curriculum/max_ang_vel_level": self.env.max_ang_vel_level,
-                    "training_phase/index": float(getattr(self.env, "training_phase_index", 0)),
-                    "training_phase/progress": float(getattr(self.env, "training_phase_progress", 0.0)),
-                    "training_phase/locomotion_core": float(getattr(self.env, "reward_group_multipliers", {}).get("locomotion_core", 1.0)),
-                    "training_phase/approach_core": float(getattr(self.env, "reward_group_multipliers", {}).get("approach_core", 1.0)),
-                    "training_phase/failure_core": float(getattr(self.env, "reward_group_multipliers", {}).get("failure_core", 1.0)),
-                    "training_phase/intercept_core": float(getattr(self.env, "reward_group_multipliers", {}).get("intercept_core", 1.0)),
-                    "training_phase/control_core": float(getattr(self.env, "reward_group_multipliers", {}).get("control_core", 1.0)),
-                },
-                it,
-            )
+            mean_sirl_bc_loss /= self.cfg["runner"]["mini_epochs"]
+            mean_sirl_bc_coef /= self.cfg["runner"]["mini_epochs"]
+            statistics = {
+                "value_loss": mean_value_loss,
+                "actor_loss": mean_actor_loss,
+                "bound_loss": mean_bound_loss,
+                "entropy": mean_entropy,
+                "kl_mean": kl_mean,
+                "lr": self.learning_rate,
+                "curriculum/mean_lin_vel_level": self.env.mean_lin_vel_level,
+                "curriculum/mean_ang_vel_level": self.env.mean_ang_vel_level,
+                "curriculum/max_lin_vel_level": self.env.max_lin_vel_level,
+                "curriculum/max_ang_vel_level": self.env.max_ang_vel_level,
+                "training_phase/index": float(getattr(self.env, "training_phase_index", 0)),
+                "training_phase/progress": float(getattr(self.env, "training_phase_progress", 0.0)),
+                "training_phase/locomotion_core": float(getattr(self.env, "reward_group_multipliers", {}).get("locomotion_core", 1.0)),
+                "training_phase/approach_core": float(getattr(self.env, "reward_group_multipliers", {}).get("approach_core", 1.0)),
+                "training_phase/failure_core": float(getattr(self.env, "reward_group_multipliers", {}).get("failure_core", 1.0)),
+                "training_phase/intercept_core": float(getattr(self.env, "reward_group_multipliers", {}).get("intercept_core", 1.0)),
+                "training_phase/control_core": float(getattr(self.env, "reward_group_multipliers", {}).get("control_core", 1.0)),
+            }
+            if self.sirl_enabled:
+                statistics.update(sirl_rollout_stats)
+                statistics["sirl/bc_loss"] = mean_sirl_bc_loss
+                statistics["sirl/bc_coef"] = mean_sirl_bc_coef
+                statistics["sirl/buffer_count"] = float(self.sirl_replay_count)
+            self.recorder.record_statistics(statistics, it)
 
             should_report_progress = (
                 (it + 1) == 1
@@ -693,6 +865,11 @@ class Runner:
                     f"entropy {mean_entropy_value:.4f} | "
                     f"kl {kl_mean_value:.6f} | "
                     f"lr {self.learning_rate:.2e}"
+                    + (
+                        f" | sirl_bc {mean_sirl_bc_loss:.5f} | sirl_buf {self.sirl_replay_count}"
+                        if self.sirl_enabled
+                        else ""
+                    )
                 )
 
     def play(self):

@@ -25,6 +25,25 @@ algorithm:
   entropy_coef: -0.003
   min_entropy: -14
   max_entropy: -5.0
+  sirl:
+    enabled: true
+    start_iteration: 200
+    buffer_size: 131072
+    min_replay_size: 4096
+    bc_batch_size: 4096
+    bc_coef: 0.035
+    coef_warmup_iterations: 1200
+    top_fraction: 0.14
+    max_dones_per_horizon: 0
+    terminal_penalty: 2.0
+    loss: "mse"
+    score_metric_reduction: "mean"
+    score_weights:
+      velocity_error: -2.0
+      feet_slip: -0.35
+      swing_clearance_deficit: -4.0
+      base_tilt: -1.0
+      low_height: -2.0
 
 commands:
   num_commands: 6
@@ -141,7 +160,9 @@ rewards:
     tracking_lin_vel_x: 2.2
     tracking_lin_vel_y: 1.0
     tracking_ang_vel: 1.6
-    lin_vel_x_error: -0.6
+    lin_vel_x_error: -0.9
+    lin_vel_y_error: -0.35
+    ang_vel_yaw_error: -0.45
     heading_tracking: 0.0
     path_lateral: 0.0
     straight_path_lateral: 0.0
@@ -180,9 +201,9 @@ rewards:
     action_rate: -4.2
     dof_pos_limits: -1.0
     collision: -1.0
-    feet_slip: -3.0
-    stance_feet_xy_vel: -0.85
-    fast_stance_feet_xy_vel: -1.10
+    feet_slip: -3.8
+    stance_feet_xy_vel: -1.10
+    fast_stance_feet_xy_vel: -1.35
     stance_feet_yaw: 0.0
     stance_feet_roll: -0.15
     feet_yaw_zero: -2.8
@@ -191,9 +212,14 @@ rewards:
     hip_yaw_zero: -1.2
     feet_roll: -0.2
     feet_pitch: -0.1
-    feet_swing: 1.5
+    feet_swing: 1.7
+    swing_clearance: 2.4
+    scuff_clearance: -20.0
   only_positive_rewards: false
-  tracking_sigma: 0.14
+  tracking_sigma: 0.12
+  swing_clearance_target: 0.105
+  swing_clearance_sigma: 0.012
+  scuff_clearance_threshold: 0.050
   target_progress_clip: 0.08
   target_position_sigma: 0.25
   target_heading_sigma: 0.35

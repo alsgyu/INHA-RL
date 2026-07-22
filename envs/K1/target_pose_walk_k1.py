@@ -380,6 +380,50 @@ class TargetPoseWalkK1(ParameterWalkK1):
             dim=-1,
         )
         self.extras["privileged_obs"] = self.privileged_obs_buf
+        self.extras["sirl"] = self._compute_sirl_info()
+
+    def _swing_masks(self):
+        swing_half_period = 0.5 * self.cfg["rewards"]["swing_period"]
+        gait_active = self.gait_frequency > 1.0e-8
+        left_swing = (torch.abs(self.gait_process - 0.25) < swing_half_period) & gait_active
+        right_swing = (torch.abs(self.gait_process - 0.75) < swing_half_period) & gait_active
+        return left_swing, right_swing
+
+    def _foot_clearance(self):
+        flat_feet_pos = self.feet_pos.reshape(-1, 3)
+        ground_height = self.terrain.terrain_heights(flat_feet_pos).reshape(self.num_envs, len(self.feet_indices))
+        return self.feet_pos[:, :, 2] - ground_height
+
+    def _compute_sirl_info(self):
+        velocity_error = (
+            torch.abs(self.policy_commands[:, 0] - self.filtered_lin_vel[:, 0])
+            + 0.75 * torch.abs(self.policy_commands[:, 1] - self.filtered_lin_vel[:, 1])
+            + 0.50 * torch.abs(self.policy_commands[:, 2] - self.filtered_ang_vel[:, 2])
+        )
+        feet_vel_xy = torch.norm((self.last_feet_pos[:, :, :2] - self.feet_pos[:, :, :2]) / self.dt, dim=-1)
+        stance_count = torch.clamp(self.feet_contact.float().sum(dim=-1), min=1.0)
+        feet_slip = torch.sum(feet_vel_xy * self.feet_contact.float(), dim=-1) / stance_count
+        feet_slip = feet_slip * (self.episode_length_buf > 1).float()
+
+        left_swing, right_swing = self._swing_masks()
+        swing_mask = torch.stack((left_swing, right_swing), dim=-1).float()
+        swing_count = torch.clamp(swing_mask.sum(dim=-1), min=1.0)
+        clearance = self._foot_clearance()
+        clearance_target = float(self.cfg["rewards"].get("swing_clearance_target", 0.10))
+        swing_clearance_deficit = torch.sum(torch.clamp(clearance_target - clearance, min=0.0) * swing_mask, dim=-1) / swing_count
+
+        base_tilt = torch.sum(torch.square(self.projected_gravity[:, :2]), dim=-1)
+        base_height = self.base_pos[:, 2] - self.terrain.terrain_heights(self.base_pos)
+        low_height_target = float(self.cfg["rewards"].get("base_height_target", 0.52)) - 0.04
+        low_height = torch.clamp(low_height_target - base_height, min=0.0)
+        return {
+            "velocity_error": velocity_error,
+            "feet_slip": feet_slip,
+            "swing_clearance_deficit": swing_clearance_deficit,
+            "base_tilt": base_tilt,
+            "low_height": low_height,
+            "target_distance": self.target_distance,
+        }
 
     def _check_termination(self):
         super()._check_termination()
@@ -407,6 +451,14 @@ class TargetPoseWalkK1(ParameterWalkK1):
         moving = (torch.abs(self.policy_commands[:, 0]) > 0.05).float()
         return torch.square(self.policy_commands[:, 0] - self.filtered_lin_vel[:, 0]) * moving
 
+    def _reward_lin_vel_y_error(self):
+        moving = (torch.abs(self.policy_commands[:, 1]) > 0.03).float()
+        return torch.square(self.policy_commands[:, 1] - self.filtered_lin_vel[:, 1]) * moving
+
+    def _reward_ang_vel_yaw_error(self):
+        moving = (torch.abs(self.policy_commands[:, 2]) > 0.05).float()
+        return torch.square(self.policy_commands[:, 2] - self.filtered_ang_vel[:, 2]) * moving
+
     def _reward_orientation(self):
         return torch.sum(torch.square(self.projected_gravity[:, :2]), dim=-1)
 
@@ -419,6 +471,24 @@ class TargetPoseWalkK1(ParameterWalkK1):
             * speed_weight
             * (self.episode_length_buf > 1).float()
         )
+
+    def _reward_swing_clearance(self):
+        left_swing, right_swing = self._swing_masks()
+        swing_mask = torch.stack((left_swing, right_swing), dim=-1).float()
+        swing_count = torch.clamp(swing_mask.sum(dim=-1), min=1.0)
+        clearance = self._foot_clearance()
+        target = float(self.cfg["rewards"].get("swing_clearance_target", 0.10))
+        sigma = max(float(self.cfg["rewards"].get("swing_clearance_sigma", 0.015)), 1.0e-6)
+        clearance_reward = torch.exp(-torch.square(clearance - target) / sigma)
+        return torch.sum(clearance_reward * swing_mask, dim=-1) / swing_count
+
+    def _reward_scuff_clearance(self):
+        left_swing, right_swing = self._swing_masks()
+        swing_mask = torch.stack((left_swing, right_swing), dim=-1).float()
+        swing_count = torch.clamp(swing_mask.sum(dim=-1), min=1.0)
+        clearance = self._foot_clearance()
+        threshold = float(self.cfg["rewards"].get("scuff_clearance_threshold", 0.045))
+        return torch.sum(torch.clamp(threshold - clearance, min=0.0) * swing_mask, dim=-1) / swing_count
 
     def _reward_target_progress(self):
         progress_clip = float(self.cfg["rewards"].get("target_progress_clip", 0.08))
