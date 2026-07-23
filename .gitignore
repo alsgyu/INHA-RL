@@ -3,6 +3,7 @@
 
 # But include these specific directories and files
 !deploy/
+!docs/
 !envs/
 !resources/
 !utils/
@@ -13,6 +14,7 @@
 !play_mujoco_walk_getup_k1.py
 !play_walk_getup_k1.py
 !train.py
+!train_sirl_worldmodel.py
 !requirements.txt
 !README.md
 !htwk_walk01.gif
@@ -20,6 +22,7 @@
 
 # Include all files within the allowed directories
 !deploy/**
+!docs/**
 !envs/**
 !resources/**
 !utils/**

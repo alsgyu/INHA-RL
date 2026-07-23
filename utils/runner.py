@@ -17,8 +17,16 @@ from envs import *
 import torch
 import torch.nn.functional as F
 from utils.models.BaseAC import *
+from utils.models.WorldModel import WorldModel
 from utils.buffer import ExperienceBuffer
 from utils.command_metrics import CommandVelocityMetrics
+from utils.sirl_replay import (
+    SIRL_METRIC_KEYS,
+    TrajectorySIRLReplayBuffer,
+    WorldModelReplayBuffer,
+    normalize_by_percentiles,
+    percentile,
+)
 from utils.utils import discount_values, surrogate_loss
 from utils.recorder import Recorder
 
@@ -196,16 +204,18 @@ class Runner:
         model_class = get_model_class(model_name)
         self.model = model_class(self.env.num_actions, self.env.num_obs, self.env.num_privileged_obs).to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
-        self._load()
 
         self.buffer = ExperienceBuffer(self.cfg["runner"]["horizon_length"], self.env.num_envs, self.device)
         self.buffer.add_buffer("actions", (self.env.num_actions,))
         self.buffer.add_buffer("obses", (self.env.num_obs,))
+        self.buffer.add_buffer("next_obses", (self.env.num_obs,))
         self.buffer.add_buffer("privileged_obses", (self.env.num_privileged_obs,))
         self.buffer.add_buffer("rewards", ())
         self.buffer.add_buffer("dones", (), dtype=bool)
         self.buffer.add_buffer("time_outs", (), dtype=bool)
         self._init_sirl()
+        self._init_world_model()
+        self._load()
 
     def _get_args(self):
         parser = argparse.ArgumentParser()
@@ -384,14 +394,32 @@ class Runner:
     def _init_sirl(self):
         self.sirl_cfg = self.cfg.get("algorithm", {}).get("sirl", {})
         self.sirl_enabled = bool(self.sirl_cfg.get("enabled", False))
+        self.sirl_mode = str(self.sirl_cfg.get("mode", "sirl_lite")).lower()
+        self.sirl_trajectory_mode = self.sirl_enabled and self.sirl_mode in {
+            "trajectory",
+            "trajectory_return",
+            "return",
+        }
         self.sirl_metric_buffers = {}
         self.sirl_last_stats = {}
+        self.sirl_last_bc_stats = {}
+        self.sirl_trajectory_replay = None
+        self.sirl_replay_size = int(self.sirl_cfg.get("buffer_size", 131072))
         if not self.sirl_enabled:
             self.sirl_replay_count = 0
             self.sirl_replay_write_idx = 0
             return
 
-        self.sirl_replay_size = int(self.sirl_cfg.get("buffer_size", 131072))
+        if self.sirl_trajectory_mode:
+            self.sirl_trajectory_replay = TrajectorySIRLReplayBuffer(
+                self.env.num_obs,
+                self.env.num_actions,
+                capacity_transitions=self.sirl_replay_size,
+            )
+            self.sirl_replay_count = 0
+            self.sirl_replay_write_idx = 0
+            return
+
         self.sirl_replay_obs = torch.zeros(self.sirl_replay_size, self.env.num_obs, dtype=torch.float, device=self.device)
         self.sirl_replay_actions = torch.zeros(
             self.sirl_replay_size,
@@ -402,9 +430,81 @@ class Runner:
         self.sirl_replay_count = 0
         self.sirl_replay_write_idx = 0
 
+    def _init_world_model(self):
+        self.world_model_cfg = self.cfg.get("algorithm", {}).get("world_model", {})
+        self.world_model_enabled = bool(self.world_model_cfg.get("enabled", False))
+        self.world_model = None
+        self.world_model_optimizer = None
+        self.world_model_replay = None
+        self.world_model_command_dim = 0
+        self.world_model_use_amp = False
+        self.world_model_scaler = None
+        self.world_model_last_stats = {}
+        if not self.world_model_enabled:
+            return
+
+        if bool(self.world_model_cfg.get("use_command", False)):
+            self.world_model_command_dim = int(self.world_model_cfg.get("command_dim", 3))
+        hidden_dims = self.world_model_cfg.get("hidden_dims", [512, 512])
+        self.world_model = WorldModel(
+            self.env.num_obs,
+            self.env.num_actions,
+            hidden_dims=hidden_dims,
+            command_dim=self.world_model_command_dim,
+        ).to(self.device)
+        self.world_model_optimizer = torch.optim.Adam(
+            self.world_model.parameters(),
+            lr=float(self.world_model_cfg.get("lr", 1.0e-4)),
+        )
+        self.world_model_replay = WorldModelReplayBuffer(
+            self.env.num_obs,
+            self.env.num_actions,
+            capacity_transitions=int(self.world_model_cfg.get("buffer_size", 1000000)),
+            command_dim=self.world_model_command_dim,
+        )
+        self.world_model_use_amp = bool(self.world_model_cfg.get("use_amp", False)) and str(self.device).startswith("cuda")
+        self.world_model_scaler = torch.cuda.amp.GradScaler(enabled=self.world_model_use_amp)
+
+    def _rollout_command_dim(self):
+        command_dims = []
+        if self.sirl_trajectory_mode:
+            command_dims.append(int(self.sirl_cfg.get("command_dim", 3)))
+        if self.world_model_enabled and self.world_model_command_dim > 0:
+            command_dims.append(self.world_model_command_dim)
+        return max(command_dims) if command_dims else 0
+
     def _reset_sirl_rollout_metrics(self):
         if self.sirl_enabled:
             self.sirl_metric_buffers = {}
+        command_dim = self._rollout_command_dim()
+        if command_dim > 0:
+            horizon = self.cfg["runner"]["horizon_length"]
+            self.rollout_command_buffer = torch.zeros(
+                horizon,
+                self.env.num_envs,
+                command_dim,
+                dtype=torch.float,
+                device=self.device,
+            )
+        else:
+            self.rollout_command_buffer = None
+
+    def _store_rollout_command(self, step_idx, obs=None):
+        if getattr(self, "rollout_command_buffer", None) is None:
+            return
+        command_dim = self.rollout_command_buffer.shape[-1]
+        command = None
+        if hasattr(self.env, "commands"):
+            command = self.env.commands[:, : min(command_dim, self.env.commands.shape[-1])]
+        elif obs is not None and obs.shape[-1] >= 6 + command_dim:
+            command = obs[:, 6 : 6 + command_dim]
+        if command is None:
+            return
+        if command.shape[-1] < command_dim:
+            padded_command = torch.zeros(self.env.num_envs, command_dim, dtype=torch.float, device=self.device)
+            padded_command[:, : command.shape[-1]] = command.to(self.device).float()
+            command = padded_command
+        self.rollout_command_buffer[step_idx, :, :] = command.to(self.device).float().detach()
 
     def _store_sirl_infos(self, step_idx, infos):
         if not self.sirl_enabled:
@@ -419,6 +519,8 @@ class Runner:
             value = value.to(self.device).float()
             if value.ndim == 0:
                 value = value.expand(self.env.num_envs)
+            if value.numel() != self.env.num_envs:
+                continue
             value = value.reshape(self.env.num_envs)
             if key not in self.sirl_metric_buffers:
                 self.sirl_metric_buffers[key] = torch.zeros(horizon, self.env.num_envs, dtype=torch.float, device=self.device)
@@ -455,6 +557,11 @@ class Runner:
         return coef
 
     def _update_sirl_replay(self, iteration):
+        if self.sirl_trajectory_mode:
+            return self._update_trajectory_sirl_replay(iteration)
+        return self._update_sirl_lite_replay(iteration)
+
+    def _update_sirl_lite_replay(self, iteration):
         stats = {
             "sirl/elite_score_mean": 0.0,
             "sirl/elite_score_min": 0.0,
@@ -518,11 +625,265 @@ class Runner:
         )
         return stats
 
+    def _empty_trajectory_sirl_stats(self):
+        stats = {
+            "sirl/elite_score_mean": 0.0,
+            "sirl/elite_score_min": 0.0,
+            "sirl/selected_envs": 0.0,
+            "sirl/selected_trajectories": 0.0,
+            "sirl/added_samples": 0.0,
+            "sirl/trajectory_return_mean": 0.0,
+            "sirl/trajectory_return_p50": 0.0,
+            "sirl/trajectory_return_p90": 0.0,
+            "sirl/bc_weight_mean": 0.0,
+            "sirl/bc_weight_max": 0.0,
+            "sirl/model_error_mean": 0.0,
+            "sirl/model_done_prob_mean": 0.0,
+            "sirl/model_error_high_return_mean": 0.0,
+            "sirl/buffer_trajectories": 0.0,
+            "sirl/buffer_transitions": 0.0,
+            "sirl/buffer_count": 0.0,
+        }
+        if self.sirl_trajectory_replay is not None:
+            stats.update(self.sirl_trajectory_replay.stats())
+        return stats
+
+    def _rollout_segment_returns(self):
+        rewards = self.buffer["rewards"].detach()
+        if bool(self.sirl_cfg.get("discounted_return", False)):
+            gamma = float(self.sirl_cfg.get("return_gamma", self.cfg["algorithm"].get("gamma", 1.0)))
+            steps = torch.arange(rewards.shape[0], dtype=torch.float, device=self.device)
+            discounts = torch.pow(torch.full_like(steps, gamma), steps).unsqueeze(-1)
+            return (rewards * discounts).sum(dim=0)
+        return rewards.sum(dim=0)
+
+    def _trajectory_metric_penalties(self):
+        penalties = dict(self.sirl_cfg.get("metric_penalties", {}))
+        if penalties:
+            return penalties
+        for key, weight in self.sirl_cfg.get("score_weights", {}).items():
+            weight = float(weight)
+            if weight < 0.0:
+                penalties[key] = -weight
+        return penalties
+
+    def _score_rollout_with_world_model(self):
+        if not self.world_model_enabled or self.world_model is None or self.world_model_replay is None:
+            return None
+        filter_cfg = self.sirl_cfg.get("world_model_filter", {})
+        min_replay_size = int(filter_cfg.get("min_replay_size", self.world_model_cfg.get("batch_size", 1024)))
+        if len(self.world_model_replay) < min_replay_size:
+            return None
+
+        obs = self.buffer["obses"].detach().reshape(-1, self.env.num_obs)
+        action = self.buffer["actions"].detach().reshape(-1, self.env.num_actions)
+        next_obs = self.buffer["next_obses"].detach().reshape(-1, self.env.num_obs)
+        reward = self.buffer["rewards"].detach().reshape(-1)
+        done = self.buffer["dones"].detach().reshape(-1)
+        command = None
+        if self.world_model_command_dim > 0 and getattr(self, "rollout_command_buffer", None) is not None:
+            command = self.rollout_command_buffer[:, :, : self.world_model_command_dim].detach().reshape(
+                -1,
+                self.world_model_command_dim,
+            )
+
+        eval_batch_size = int(self.world_model_cfg.get("eval_batch_size", 16384))
+        obs_errors = []
+        done_probs = []
+        self.world_model.eval()
+        with torch.no_grad():
+            for start in range(0, obs.shape[0], eval_batch_size):
+                end = min(start + eval_batch_size, obs.shape[0])
+                batch_command = None if command is None else command[start:end]
+                pred = self.world_model(obs[start:end], action[start:end], batch_command)
+                target_delta = next_obs[start:end] - obs[start:end]
+                delta_error = torch.mean(torch.square(pred["delta_obs"] - target_delta), dim=-1)
+                reward_error = torch.square(pred["reward"] - reward[start:end])
+                obs_errors.append(delta_error + 0.1 * reward_error)
+                done_probs.append(torch.sigmoid(pred["done_logit"]))
+        self.world_model.train()
+
+        horizon = self.cfg["runner"]["horizon_length"]
+        obs_error = torch.cat(obs_errors, dim=0).reshape(horizon, self.env.num_envs)
+        done_prob = torch.cat(done_probs, dim=0).reshape(horizon, self.env.num_envs)
+        valid = (~done.bool()).float().reshape(horizon, self.env.num_envs)
+        if bool(self.world_model_cfg.get("mask_done_obs_delta", True)):
+            model_error = (obs_error * valid).sum(dim=0) / torch.clamp(valid.sum(dim=0), min=1.0)
+        else:
+            model_error = obs_error.mean(dim=0)
+        return {
+            "model_error": model_error,
+            "done_prob": done_prob.mean(dim=0),
+        }
+
+    def _update_trajectory_sirl_replay(self, iteration):
+        stats = self._empty_trajectory_sirl_stats()
+        if not self.sirl_enabled or iteration < int(self.sirl_cfg.get("start_iteration", 0)):
+            return stats
+
+        returns = self._rollout_segment_returns()
+        return_p50 = percentile(returns, 50)
+        return_p90 = percentile(returns, 90)
+        normalized_return = normalize_by_percentiles(returns, 50, 90)
+        return_alpha = max(float(self.sirl_cfg.get("return_weight_alpha", 1.0)), 0.0)
+        score = normalized_return.pow(return_alpha).clone()
+
+        normalize_metrics = bool(self.sirl_cfg.get("normalize_metric_penalties", True))
+        metric_penalties = self._trajectory_metric_penalties()
+        for key in SIRL_METRIC_KEYS:
+            if key not in metric_penalties:
+                continue
+            metric = self.sirl_metric_buffers.get(key)
+            if metric is None:
+                continue
+            metric_mean = metric.mean(dim=0)
+            metric_score = normalize_by_percentiles(metric_mean, 50, 90) if normalize_metrics else metric_mean
+            score = score - float(metric_penalties[key]) * metric_score
+        for key, weight in metric_penalties.items():
+            if key in SIRL_METRIC_KEYS:
+                continue
+            metric = self.sirl_metric_buffers.get(key)
+            if metric is None:
+                continue
+            metric_mean = metric.mean(dim=0)
+            metric_score = normalize_by_percentiles(metric_mean, 50, 90) if normalize_metrics else metric_mean
+            score = score - float(weight) * metric_score
+
+        done_count = self.buffer["dones"].float().sum(dim=0)
+        time_outs = self.buffer["time_outs"].bool()
+        terminal = self.buffer["dones"].bool().any(dim=0).float()
+        max_dones = int(self.sirl_cfg.get("max_dones_per_horizon", 0))
+        eligible = done_count <= max_dones
+        min_return_percentile = float(self.sirl_cfg.get("min_return_percentile", 0.0))
+        if min_return_percentile > 0.0:
+            eligible &= returns >= percentile(returns, min_return_percentile)
+        fall_penalty = float(self.sirl_cfg.get("fall_penalty", self.sirl_cfg.get("terminal_penalty", 0.0)))
+        score = score - fall_penalty * terminal
+
+        world_scores = self._score_rollout_with_world_model()
+        model_error = None
+        model_done_prob = None
+        normalized_model_error = None
+        world_filter_cfg = self.sirl_cfg.get("world_model_filter", {})
+        if world_scores is not None and bool(world_filter_cfg.get("enabled", True)):
+            model_error = world_scores["model_error"]
+            model_done_prob = world_scores["done_prob"]
+            normalized_model_error = normalize_by_percentiles(model_error, 50, 90)
+            score = score - float(world_filter_cfg.get("error_penalty", 0.0)) * normalized_model_error
+            score = score - float(world_filter_cfg.get("done_prob_penalty", 0.0)) * model_done_prob
+            if "max_done_prob" in world_filter_cfg:
+                eligible &= model_done_prob <= float(world_filter_cfg["max_done_prob"])
+
+        eligible_count = int(eligible.sum().item())
+        stats.update(
+            {
+                "sirl/trajectory_return_mean": float(returns.mean().item()),
+                "sirl/trajectory_return_p50": float(return_p50.item()),
+                "sirl/trajectory_return_p90": float(return_p90.item()),
+            }
+        )
+        if model_error is not None:
+            high_return = returns >= return_p90
+            high_error = model_error[high_return].mean() if bool(high_return.any().item()) else model_error.mean()
+            stats.update(
+                {
+                    "sirl/model_error_mean": float(model_error.mean().item()),
+                    "sirl/model_done_prob_mean": float(model_done_prob.mean().item()),
+                    "sirl/model_error_high_return_mean": float(high_error.item()),
+                }
+            )
+        if eligible_count <= 0:
+            stats.update(self.sirl_trajectory_replay.stats())
+            return stats
+
+        score = torch.where(eligible, score, torch.full_like(score, -torch.inf))
+        top_fraction = float(self.sirl_cfg.get("top_fraction", 0.15))
+        top_k = max(1, int(np.ceil(top_fraction * eligible_count)))
+        elite_scores, elite_env_ids = torch.topk(score, top_k)
+        finite_keep = torch.isfinite(elite_scores)
+        if "min_score" in self.sirl_cfg:
+            finite_keep &= elite_scores >= float(self.sirl_cfg["min_score"])
+        elite_scores = elite_scores[finite_keep]
+        elite_env_ids = elite_env_ids[finite_keep]
+        if elite_env_ids.numel() == 0:
+            stats.update(self.sirl_trajectory_replay.stats())
+            return stats
+
+        max_bc_weight = float(self.sirl_cfg.get("max_bc_weight", 1.0))
+        if bool(self.sirl_cfg.get("dynamic_bc_weight", True)):
+            bc_weights = normalized_return.pow(return_alpha)
+        else:
+            bc_weights = torch.ones_like(normalized_return)
+        bc_weights = torch.clamp(bc_weights * max_bc_weight, min=0.0, max=max_bc_weight)
+        if model_error is not None and normalized_model_error is not None:
+            error_decay = float(world_filter_cfg.get("bc_weight_error_decay", 0.0))
+            done_decay = float(world_filter_cfg.get("bc_weight_done_decay", 0.0))
+            model_scale = torch.clamp(1.0 - error_decay * normalized_model_error - done_decay * model_done_prob, min=0.0, max=1.0)
+            bc_weights = bc_weights * model_scale
+
+        selected_weights = bc_weights[elite_env_ids]
+        selected_returns = returns[elite_env_ids]
+        added_trajectories = self.sirl_trajectory_replay.add_segments(
+            self.buffer["obses"],
+            self.buffer["actions"],
+            self.buffer["rewards"],
+            self.buffer["dones"],
+            time_outs=time_outs,
+            next_obses=self.buffer["next_obses"],
+            commands=getattr(self, "rollout_command_buffer", None),
+            metrics=self.sirl_metric_buffers,
+            env_ids=elite_env_ids,
+            returns=returns,
+            scores=score,
+            bc_weights=bc_weights,
+            model_errors=model_error,
+            model_done_probs=model_done_prob,
+        )
+        added_samples = added_trajectories * self.cfg["runner"]["horizon_length"]
+        self.sirl_replay_count = self.sirl_trajectory_replay.transition_count
+
+        stats.update(
+            {
+                "sirl/elite_score_mean": float(elite_scores.mean().item()),
+                "sirl/elite_score_min": float(elite_scores.min().item()),
+                "sirl/selected_envs": float(elite_env_ids.numel()),
+                "sirl/selected_trajectories": float(elite_env_ids.numel()),
+                "sirl/added_samples": float(added_samples),
+                "sirl/trajectory_return_mean": float(selected_returns.mean().item()),
+                "sirl/bc_weight_mean": float(selected_weights.mean().item()),
+                "sirl/bc_weight_max": float(selected_weights.max().item()),
+            }
+        )
+        stats.update(self.sirl_trajectory_replay.stats())
+        return stats
+
     def _compute_sirl_bc_loss(self, iteration):
+        self.sirl_last_bc_stats = {}
         coef = self._sirl_bc_coef(iteration)
         min_replay_size = int(self.sirl_cfg.get("min_replay_size", 4096))
         if coef <= 0.0 or self.sirl_replay_count < min_replay_size:
             return None, 0.0
+
+        if self.sirl_trajectory_mode:
+            if self.sirl_trajectory_replay is None or len(self.sirl_trajectory_replay) < min_replay_size:
+                return None, 0.0
+            batch_size = min(int(self.sirl_cfg.get("bc_batch_size", 4096)), len(self.sirl_trajectory_replay))
+            batch = self.sirl_trajectory_replay.sample_transitions(batch_size, self.device)
+            bc_obs = batch["obs"]
+            bc_actions = batch["action"]
+            replay_weights = batch["bc_weight"].float()
+            sample_weights = torch.clamp(coef * replay_weights, min=0.0, max=float(self.sirl_cfg.get("max_bc_weight", 1.0)) * coef)
+            bc_dist = self.model.act(bc_obs)
+            if str(self.sirl_cfg.get("loss", "mse")).lower() == "nll":
+                per_sample_loss = -bc_dist.log_prob(bc_actions).sum(dim=-1)
+            else:
+                per_sample_loss = torch.mean(torch.square(bc_dist.loc - bc_actions), dim=-1)
+            bc_loss = torch.mean(sample_weights * per_sample_loss)
+            self.sirl_last_bc_stats = {
+                "sirl/bc_weight_mean": float(sample_weights.detach().mean().item()),
+                "sirl/bc_weight_max": float(sample_weights.detach().max().item()),
+            }
+            return bc_loss, coef
 
         batch_size = min(int(self.sirl_cfg.get("bc_batch_size", 4096)), self.sirl_replay_count)
         indices = torch.randint(0, self.sirl_replay_count, (batch_size,), device=self.device)
@@ -533,7 +894,105 @@ class Runner:
             bc_loss = -bc_dist.log_prob(bc_actions).sum(dim=-1).mean()
         else:
             bc_loss = F.mse_loss(bc_dist.loc, bc_actions)
+        self.sirl_last_bc_stats = {
+            "sirl/bc_weight_mean": float(coef),
+            "sirl/bc_weight_max": float(coef),
+        }
         return bc_loss, coef
+
+    def _update_world_model_replay(self):
+        stats = {}
+        if not self.world_model_enabled or self.world_model_replay is None:
+            return stats
+        command = None
+        if self.world_model_command_dim > 0 and getattr(self, "rollout_command_buffer", None) is not None:
+            command = self.rollout_command_buffer[:, :, : self.world_model_command_dim]
+        self.world_model_replay.add(
+            self.buffer["obses"],
+            self.buffer["actions"],
+            self.buffer["rewards"],
+            self.buffer["dones"],
+            self.buffer["next_obses"],
+            commands=command,
+        )
+        stats["world_model/buffer_count"] = float(len(self.world_model_replay))
+        return stats
+
+    def _train_world_model(self, iteration):
+        if not self.world_model_enabled or self.world_model is None or self.world_model_replay is None:
+            return {}
+        stats = {
+            "world_model/loss": 0.0,
+            "world_model/obs_delta_loss": 0.0,
+            "world_model/reward_loss": 0.0,
+            "world_model/done_loss": 0.0,
+            "world_model/buffer_count": float(len(self.world_model_replay)),
+        }
+        train_every = max(1, int(self.world_model_cfg.get("train_every", 1)))
+        if (iteration + 1) % train_every != 0:
+            return stats
+        batch_size = int(self.world_model_cfg.get("batch_size", 1024))
+        min_train_size = int(self.world_model_cfg.get("min_train_size", batch_size))
+        if len(self.world_model_replay) < min_train_size:
+            return stats
+
+        gradient_steps = max(1, int(self.world_model_cfg.get("gradient_steps", 1)))
+        obs_coef = float(self.world_model_cfg.get("obs_delta_coef", 1.0))
+        reward_coef = float(self.world_model_cfg.get("reward_coef", 0.5))
+        done_coef = float(self.world_model_cfg.get("done_coef", 0.2))
+        mask_done_obs_delta = bool(self.world_model_cfg.get("mask_done_obs_delta", True))
+        max_grad_norm = float(self.world_model_cfg.get("max_grad_norm", 1.0))
+        totals = {
+            "loss": 0.0,
+            "obs_delta_loss": 0.0,
+            "reward_loss": 0.0,
+            "done_loss": 0.0,
+        }
+
+        self.world_model.train()
+        for _ in range(gradient_steps):
+            batch = self.world_model_replay.sample(batch_size, self.device)
+            command = batch.get("command")
+            with torch.cuda.amp.autocast(enabled=self.world_model_use_amp):
+                pred = self.world_model(batch["obs"], batch["action"], command)
+                target_delta = batch["next_obs"] - batch["obs"]
+                obs_delta_loss_per_sample = torch.mean(torch.square(pred["delta_obs"] - target_delta), dim=-1)
+                if mask_done_obs_delta:
+                    valid = 1.0 - batch["done"].float()
+                    obs_delta_loss = (obs_delta_loss_per_sample * valid).sum() / torch.clamp(valid.sum(), min=1.0)
+                else:
+                    obs_delta_loss = obs_delta_loss_per_sample.mean()
+                reward_loss = F.mse_loss(pred["reward"], batch["reward"])
+                done_loss = F.binary_cross_entropy_with_logits(pred["done_logit"], batch["done"].float())
+                loss = obs_coef * obs_delta_loss + reward_coef * reward_loss + done_coef * done_loss
+
+            self.world_model_optimizer.zero_grad()
+            if self.world_model_use_amp:
+                self.world_model_scaler.scale(loss).backward()
+                self.world_model_scaler.unscale_(self.world_model_optimizer)
+                torch.nn.utils.clip_grad_norm_(self.world_model.parameters(), max_grad_norm)
+                self.world_model_scaler.step(self.world_model_optimizer)
+                self.world_model_scaler.update()
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.world_model.parameters(), max_grad_norm)
+                self.world_model_optimizer.step()
+
+            totals["loss"] += float(loss.detach().item())
+            totals["obs_delta_loss"] += float(obs_delta_loss.detach().item())
+            totals["reward_loss"] += float(reward_loss.detach().item())
+            totals["done_loss"] += float(done_loss.detach().item())
+
+        stats.update(
+            {
+                "world_model/loss": totals["loss"] / gradient_steps,
+                "world_model/obs_delta_loss": totals["obs_delta_loss"] / gradient_steps,
+                "world_model/reward_loss": totals["reward_loss"] / gradient_steps,
+                "world_model/done_loss": totals["done_loss"] / gradient_steps,
+                "world_model/buffer_count": float(len(self.world_model_replay)),
+            }
+        )
+        return stats
 
     @staticmethod
     def _format_duration(seconds):
@@ -597,6 +1056,27 @@ class Runner:
             self.optimizer.load_state_dict(model_dict["optimizer"])
         except Exception as e:
             print(f"Failed to load optimizer: {e}")
+        if self.world_model_enabled and self.world_model is not None:
+            try:
+                if "world_model" in model_dict:
+                    self.world_model.load_state_dict(model_dict["world_model"], strict=False)
+                if "world_model_optimizer" in model_dict and self.world_model_optimizer is not None:
+                    self.world_model_optimizer.load_state_dict(model_dict["world_model_optimizer"])
+            except Exception as e:
+                print(f"Failed to load world model: {e}")
+
+    def _checkpoint_state(self):
+        state = {
+            "model": self.model.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "curriculum": self.env.curriculum_prob,
+            "ball_curriculum_level": getattr(self.env, 'ball_curriculum_global_level', 0),
+        }
+        if self.world_model_enabled and self.world_model is not None:
+            state["world_model"] = self.world_model.state_dict()
+            if self.world_model_optimizer is not None:
+                state["world_model_optimizer"] = self.world_model_optimizer.state_dict()
+        return state
 
     def train(self):
         self.recorder = Recorder(self.cfg)
@@ -645,29 +1125,13 @@ class Runner:
             if (it + 1) % self.cfg["runner"]["save_interval"] == 0:
                 should_save = True
                 checkpoint_path = os.path.join(self.recorder.model_dir, f"model_{it + 1}.pth")
-                self.recorder.save(
-                    {
-                        "model": self.model.state_dict(),
-                        "optimizer": self.optimizer.state_dict(),
-                        "curriculum": self.env.curriculum_prob,
-                        "ball_curriculum_level": getattr(self.env, 'ball_curriculum_global_level', 0),
-                    },
-                    it + 1,
-                )
+                self.recorder.save(self._checkpoint_state(), it + 1)
             
             if should_log_video:
                 # If we didn't save yet, save checkpoint now for video recording
                 if not should_save:
                     checkpoint_path = os.path.join(self.recorder.model_dir, f"model_{it + 1}.pth")
-                    self.recorder.save(
-                        {
-                            "model": self.model.state_dict(),
-                            "optimizer": self.optimizer.state_dict(),
-                            "curriculum": self.env.curriculum_prob,
-                            "ball_curriculum_level": getattr(self.env, 'ball_curriculum_global_level', 0),
-                        },
-                        it + 1,
-                    )
+                    self.recorder.save(self._checkpoint_state(), it + 1)
                 # Spawn separate process to record video (will wait for completion)
                 # Note: Video will be uploaded at step it+1 (after training loop logs at step it)
                 self._spawn_video_recording_process(checkpoint_path, it, log_video_duration)
@@ -675,6 +1139,7 @@ class Runner:
             for n in range(self.cfg["runner"]["horizon_length"]):
                 self.buffer.update_data("obses", n, obs)
                 self.buffer.update_data("privileged_obses", n, privileged_obs)
+                self._store_rollout_command(n, obs)
                 with torch.no_grad():
                     dist = self.model.act(obs)
                     act = dist.sample()
@@ -686,6 +1151,7 @@ class Runner:
                 self.buffer.update_data("actions", n, act)
                 self.buffer.update_data("rewards", n, rew)
                 self.buffer.update_data("dones", n, done)
+                self.buffer.update_data("next_obses", n, obs)
                 self.buffer.update_data("time_outs", n, infos["time_outs"].to(self.device))
                 self._store_sirl_infos(n, infos)
                 ep_info = {"reward": rew}
@@ -696,6 +1162,7 @@ class Runner:
                 self.recorder.record_episode_statistics(done, ep_info, it, n == (self.cfg["runner"]["horizon_length"] - 1))
 
             sirl_rollout_stats = self._update_sirl_replay(it)
+            world_model_replay_stats = self._update_world_model_replay()
 
             with torch.no_grad():
                 old_dist = self.model.act(self.buffer["obses"])
@@ -725,6 +1192,9 @@ class Runner:
             mean_entropy = 0
             mean_sirl_bc_loss = 0.0
             mean_sirl_bc_coef = 0.0
+            mean_sirl_bc_weight_mean = 0.0
+            mean_sirl_bc_weight_max = 0.0
+            sirl_bc_update_count = 0
             for n in range(self.cfg["runner"]["mini_epochs"]):
                 values = self.model.est_value(self.buffer["obses"], self.buffer["privileged_obses"])
 
@@ -766,7 +1236,10 @@ class Runner:
                     #+ self.cfg["algorithm"]["symmetry_coef"] * sym_loss
                 )
                 if sirl_bc_loss is not None:
-                    loss = loss + sirl_bc_coef * sirl_bc_loss
+                    if self.sirl_trajectory_mode:
+                        loss = loss + sirl_bc_loss
+                    else:
+                        loss = loss + sirl_bc_coef * sirl_bc_loss
 
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -780,6 +1253,14 @@ class Runner:
                 if sirl_bc_loss is not None:
                     mean_sirl_bc_loss += sirl_bc_loss.item()
                     mean_sirl_bc_coef += sirl_bc_coef
+                    mean_sirl_bc_weight_mean += float(self.sirl_last_bc_stats.get("sirl/bc_weight_mean", 0.0))
+                    mean_sirl_bc_weight_max = max(
+                        mean_sirl_bc_weight_max,
+                        float(self.sirl_last_bc_stats.get("sirl/bc_weight_max", 0.0)),
+                    )
+                    sirl_bc_update_count += 1
+
+            world_model_stats = self._train_world_model(it)
 
             # Calculate KL divergence after all mini epochs (between old and final policy)
             with torch.no_grad():
@@ -809,6 +1290,8 @@ class Runner:
             mean_entropy /= self.cfg["runner"]["mini_epochs"]
             mean_sirl_bc_loss /= self.cfg["runner"]["mini_epochs"]
             mean_sirl_bc_coef /= self.cfg["runner"]["mini_epochs"]
+            if sirl_bc_update_count > 0:
+                mean_sirl_bc_weight_mean /= sirl_bc_update_count
             statistics = {
                 "value_loss": mean_value_loss,
                 "actor_loss": mean_actor_loss,
@@ -832,7 +1315,12 @@ class Runner:
                 statistics.update(sirl_rollout_stats)
                 statistics["sirl/bc_loss"] = mean_sirl_bc_loss
                 statistics["sirl/bc_coef"] = mean_sirl_bc_coef
+                statistics["sirl/bc_weight_mean"] = mean_sirl_bc_weight_mean
+                statistics["sirl/bc_weight_max"] = mean_sirl_bc_weight_max
                 statistics["sirl/buffer_count"] = float(self.sirl_replay_count)
+            if self.world_model_enabled:
+                statistics.update(world_model_replay_stats)
+                statistics.update(world_model_stats)
             self.recorder.record_statistics(statistics, it)
 
             should_report_progress = (

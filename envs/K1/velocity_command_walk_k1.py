@@ -274,6 +274,8 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         )
         self.extras["privileged_obs"] = self.privileged_obs_buf
         self.extras["sirl"] = self._compute_sirl_info()
+        self.extras["sirl_commands"] = self.commands[:, :3].detach()
+        self.extras["sirl_internal_commands"] = self.commands[:, :10].detach()
 
     def _swing_masks(self):
         left_swing = (torch.abs(self.gait_process - 0.25) < 0.5 * self.cfg["rewards"]["swing_period"]) & (

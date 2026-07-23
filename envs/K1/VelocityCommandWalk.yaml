@@ -23,6 +23,7 @@ algorithm:
   max_entropy: -5.0
   sirl:
     enabled: true
+    mode: "trajectory_return"
     start_iteration: 200
     buffer_size: 131072
     min_replay_size: 4096
@@ -30,9 +31,31 @@ algorithm:
     bc_coef: 0.035
     coef_warmup_iterations: 1200
     top_fraction: 0.14
+    min_return_percentile: 60
+    dynamic_bc_weight: true
+    return_weight_alpha: 1.0
+    max_bc_weight: 1.0
+    discounted_return: false
     max_dones_per_horizon: 0
     terminal_penalty: 2.0
+    fall_penalty: 2.0
     loss: "mse"
+    normalize_metric_penalties: true
+    metric_penalties:
+      velocity_error: 0.5
+      feet_slip: 0.2
+      swing_clearance_deficit: 0.5
+      base_tilt: 0.5
+      low_height: 0.5
+      stand_drift: 1.0
+    world_model_filter:
+      enabled: true
+      min_replay_size: 4096
+      error_penalty: 0.15
+      done_prob_penalty: 0.5
+      max_done_prob: 0.85
+      bc_weight_error_decay: 0.25
+      bc_weight_done_decay: 0.5
     score_metric_reduction: "mean"
     score_weights:
       velocity_error: -2.0
@@ -41,6 +64,82 @@ algorithm:
       base_tilt: -1.0
       low_height: -2.0
       stand_drift: -3.0
+  world_model:
+    enabled: false
+    buffer_size: 1000000
+    batch_size: 1024
+    min_train_size: 1024
+    train_every: 1
+    gradient_steps: 1
+    hidden_dims: [512, 512]
+    obs_delta_coef: 1.0
+    reward_coef: 0.5
+    done_coef: 0.2
+    lr: 1.0e-4
+    use_amp: false
+    use_command: false
+    command_dim: 3
+    eval_batch_size: 16384
+    mask_done_obs_delta: true
+    max_grad_norm: 1.0
+  sirl_worldmodel:
+    collect_steps_per_iter: 16
+    start_random_steps: 8192
+    learning_starts: 16384
+    updates_per_iter: 64
+    batch_size: 1024
+    gamma: 0.99
+    target_tau: 0.005
+    actor_lr: 3.0e-4
+    critic_lr: 3.0e-4
+    alpha_lr: 3.0e-4
+    alpha: 0.05
+    auto_alpha: true
+    target_entropy: -12.0
+    actor_bound_coef: 1.0
+    max_grad_norm: 10.0
+    action_clip: 1.0
+    use_privileged_q: false
+    q_hidden_dims: [512, 512]
+    real_buffer_size: 1000000
+    model_buffer_size: 250000
+    model_batch_ratio: 0.25
+    model_rollout_starts: 32768
+    model_rollout_every: 1
+    model_rollout_batch_size: 4096
+    model_rollout_horizon: 1
+    model_done_threshold: 0.8
+    world_model_ensemble_size: 5
+    world_model_hidden_dims: [512, 512]
+    world_model_lr: 1.0e-4
+    world_model_batch_size: 1024
+    world_model_learning_starts: 16384
+    world_model_train_every: 1
+    world_model_gradient_steps: 4
+    world_model_obs_delta_coef: 1.0
+    world_model_reward_coef: 0.5
+    world_model_done_coef: 0.2
+    world_model_max_grad_norm: 10.0
+    world_model_use_command: true
+    world_model_command_dim: 3
+    sirl_buffer_size: 250000
+    sirl_top_fraction: 0.15
+    sirl_min_return_percentile: 60
+    sirl_return_alpha: 1.0
+    sirl_max_weight: 1.0
+    sirl_actor_coef: 0.1
+    sirl_q_coef: 0.25
+    sirl_batch_size: 512
+    sirl_loss: "nll"
+    sirl_adv_weight_clip: 5.0
+    sirl_fall_penalty: 2.0
+    sirl_metric_penalties:
+      velocity_error: 0.5
+      feet_slip: 0.2
+      swing_clearance_deficit: 0.5
+      base_tilt: 0.5
+      low_height: 0.5
+      stand_drift: 1.0
 
 commands:
   num_commands: 10
