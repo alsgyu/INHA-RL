@@ -86,51 +86,63 @@ algorithm:
     collect_steps_per_iter: 16
     start_random_steps: 0
     learning_starts: 16384
-    updates_per_iter: 64
-    batch_size: 1024
+    updates_per_iter: 16
+    batch_size: 512
     gamma: 0.99
     target_tau: 0.005
-    actor_lr: 3.0e-4
-    critic_lr: 3.0e-4
-    alpha_lr: 3.0e-4
+    actor_lr: 1.0e-4
+    critic_lr: 1.0e-4
+    alpha_lr: 1.0e-4
     alpha: 0.05
     auto_alpha: true
+    alpha_min: 0.001
+    alpha_max: 0.5
     target_entropy: -12.0
     zero_init_actor: true
     initial_logstd: -4.0
     collect_deterministic: true
-    collect_noise_std: 0.03
-    collect_action_clip: 0.35
-    actor_bound_coef: 10.0
-    actor_bound_limit: 0.50
+    collect_noise_std: 0.02
+    collect_action_clip: 0.25
+    actor_bound_coef: 50.0
+    actor_bound_limit: 0.35
+    actor_mean_clip: 1.0
     actor_mean_l2_coef: 0.01
     actor_action_l2_coef: 0.005
     logstd_l2_coef: 0.001
     log_std_min: -5.0
-    log_std_max: -2.5
-    max_grad_norm: 10.0
-    action_clip: 1.0
+    log_std_max: -3.0
+    max_grad_norm: 1.0
+    action_clip: 0.50
+    parameter_abs_clip: 20.0
+    reward_clip: 5.0
+    target_q_clip: 100.0
+    q_value_clip: 100.0
+    critic_loss: "huber"
     use_privileged_q: false
     q_hidden_dims: [512, 512]
     real_buffer_size: 1000000
     model_buffer_size: 250000
-    model_batch_ratio: 0.25
-    model_rollout_starts: 32768
+    model_batch_ratio: 0.05
+    model_rollout_starts: 262144
     model_rollout_every: 1
-    model_rollout_batch_size: 4096
+    model_rollout_batch_size: 1024
     model_rollout_horizon: 1
     model_done_threshold: 0.8
+    model_rollout_min_wm_updates: 2000
+    model_rollout_max_wm_loss: 50.0
+    model_delta_clip: 1.0
+    model_reward_clip: 5.0
     world_model_ensemble_size: 5
     world_model_hidden_dims: [512, 512]
     world_model_lr: 1.0e-4
     world_model_batch_size: 1024
     world_model_learning_starts: 16384
     world_model_train_every: 1
-    world_model_gradient_steps: 4
+    world_model_gradient_steps: 1
     world_model_obs_delta_coef: 1.0
     world_model_reward_coef: 0.5
     world_model_done_coef: 0.2
-    world_model_max_grad_norm: 10.0
+    world_model_max_grad_norm: 1.0
     world_model_use_command: true
     world_model_command_dim: 3
     sirl_buffer_size: 250000
@@ -138,8 +150,8 @@ algorithm:
     sirl_min_return_percentile: 60
     sirl_return_alpha: 1.0
     sirl_max_weight: 1.0
-    sirl_actor_coef: 0.1
-    sirl_q_coef: 0.25
+    sirl_actor_coef: 0.05
+    sirl_q_coef: 0.05
     sirl_batch_size: 512
     sirl_loss: "nll"
     sirl_adv_weight_clip: 5.0
