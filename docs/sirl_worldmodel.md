@@ -13,6 +13,10 @@ python train_sirl_worldmodel.py \
   --num_envs=2048
 ```
 
+Do not validate an early unstable checkpoint with `--checkpoint -1` after a
+failed run. Pass a known stable checkpoint explicitly, or move the failed log
+directory out of `logs/` before using `-1`.
+
 Use `--num_envs=1024` when tuning a new reward/config and `--num_envs=4096`
 when the policy is stable enough to keep replay collection dense.
 

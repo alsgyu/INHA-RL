@@ -84,7 +84,7 @@ algorithm:
     max_grad_norm: 1.0
   sirl_worldmodel:
     collect_steps_per_iter: 16
-    start_random_steps: 8192
+    start_random_steps: 0
     learning_starts: 16384
     updates_per_iter: 64
     batch_size: 1024
@@ -96,7 +96,12 @@ algorithm:
     alpha: 0.05
     auto_alpha: true
     target_entropy: -12.0
-    actor_bound_coef: 1.0
+    actor_bound_coef: 10.0
+    actor_mean_l2_coef: 0.01
+    actor_action_l2_coef: 0.005
+    logstd_l2_coef: 0.001
+    log_std_min: -5.0
+    log_std_max: -1.0
     max_grad_norm: 10.0
     action_clip: 1.0
     use_privileged_q: false

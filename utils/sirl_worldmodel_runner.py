@@ -42,6 +42,8 @@ class SIRLWorldModelRunner:
         self.gamma = float(self.wm_cfg.get("gamma", self.cfg["algorithm"].get("gamma", 0.99)))
         self.tau = float(self.wm_cfg.get("target_tau", 0.005))
         self.action_clip = self.wm_cfg.get("action_clip", None)
+        self.log_std_min = float(self.wm_cfg.get("log_std_min", -5.0))
+        self.log_std_max = float(self.wm_cfg.get("log_std_max", -1.0))
         self.use_privileged_q = bool(self.wm_cfg.get("use_privileged_q", False))
         self.q_privileged_dim = self.env.num_privileged_obs if self.use_privileged_q else 0
 
@@ -164,8 +166,13 @@ class SIRLWorldModelRunner:
     def alpha(self):
         return self.log_alpha.exp().detach()
 
+    def _policy_dist(self, obs):
+        action_mean = self.model.actor(obs)
+        log_std = torch.clamp(self.model.logstd, min=self.log_std_min, max=self.log_std_max).expand_as(action_mean)
+        return torch.distributions.Normal(action_mean, torch.exp(log_std))
+
     def _policy_action(self, obs, deterministic=False):
-        dist = self.model.act(obs)
+        dist = self._policy_dist(obs)
         action = dist.loc if deterministic else dist.rsample()
         log_prob = dist.log_prob(action).sum(dim=-1)
         if self.action_clip is not None:
@@ -392,6 +399,9 @@ class SIRLWorldModelRunner:
         actor_loss = (alpha * log_prob - q_pi).mean()
         bound_loss = torch.clip(dist.loc - 1.0, min=0.0).square().mean() + torch.clip(dist.loc + 1.0, max=0.0).square().mean()
         actor_loss = actor_loss + float(self.wm_cfg.get("actor_bound_coef", 1.0)) * bound_loss
+        actor_loss = actor_loss + float(self.wm_cfg.get("actor_mean_l2_coef", 0.0)) * dist.loc.square().mean()
+        actor_loss = actor_loss + float(self.wm_cfg.get("actor_action_l2_coef", 0.0)) * policy_action.square().mean()
+        actor_loss = actor_loss + float(self.wm_cfg.get("logstd_l2_coef", 0.0)) * self.model.logstd.square().mean()
 
         sirl_actor_loss = torch.tensor(0.0, dtype=torch.float, device=self.device)
         sirl_batch_size = min(int(self.wm_cfg.get("sirl_batch_size", 512)), len(self.sirl_replay))
@@ -418,6 +428,8 @@ class SIRLWorldModelRunner:
         actor_loss.backward()
         torch.nn.utils.clip_grad_norm_(list(self.model.actor.parameters()) + [self.model.logstd], float(self.wm_cfg.get("max_grad_norm", 10.0)))
         self.actor_optimizer.step()
+        with torch.no_grad():
+            self.model.logstd.clamp_(min=self.log_std_min, max=self.log_std_max)
 
         alpha_loss = torch.tensor(0.0, dtype=torch.float, device=self.device)
         if self.auto_alpha:
