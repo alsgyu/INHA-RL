@@ -227,44 +227,44 @@ commands:
   training_phases:
     - start_iteration: 0
       disturbance_scale: 0.0
-      still_proportion: 0.35
-      straight_proportion: 0.85
-      resampling_time_s: [4.0, 6.0]
-      lin_vel_x: [0.10, 0.35]
+      still_proportion: 0.45
+      straight_proportion: 0.95
+      resampling_time_s: [5.0, 8.0]
+      lin_vel_x: [0.05, 0.16]
       lin_vel_y: [0.0, 0.0]
       ang_vel_yaw: [0.0, 0.0]
       adapter:
-        gait_frequency_max: 1.45
-    - start_iteration: 3000
-      disturbance_scale: 0.08
-      still_proportion: 0.30
-      straight_proportion: 0.75
-      resampling_time_s: [4.0, 7.0]
-      lin_vel_x: [-0.10, 0.55]
+        gait_frequency_max: 1.35
+    - start_iteration: 6000
+      disturbance_scale: 0.03
+      still_proportion: 0.38
+      straight_proportion: 0.90
+      resampling_time_s: [5.0, 8.0]
+      lin_vel_x: [0.04, 0.24]
+      lin_vel_y: [-0.03, 0.03]
+      ang_vel_yaw: [-0.12, 0.12]
+      adapter:
+        gait_frequency_max: 1.48
+    - start_iteration: 14000
+      disturbance_scale: 0.10
+      still_proportion: 0.32
+      straight_proportion: 0.80
+      resampling_time_s: [5.0, 8.0]
+      lin_vel_x: [-0.05, 0.38]
       lin_vel_y: [-0.06, 0.06]
       ang_vel_yaw: [-0.25, 0.25]
       adapter:
-        gait_frequency_max: 1.60
-    - start_iteration: 8000
-      disturbance_scale: 0.20
-      still_proportion: 0.25
-      straight_proportion: 0.65
+        gait_frequency_max: 1.62
+    - start_iteration: 24000
+      disturbance_scale: 0.18
+      still_proportion: 0.28
+      straight_proportion: 0.70
       resampling_time_s: [5.0, 8.0]
-      lin_vel_x: [-0.25, 0.80]
-      lin_vel_y: [-0.14, 0.14]
-      ang_vel_yaw: [-0.55, 0.55]
+      lin_vel_x: [-0.12, 0.55]
+      lin_vel_y: [-0.10, 0.10]
+      ang_vel_yaw: [-0.40, 0.40]
       adapter:
-        gait_frequency_max: 1.78
-    - start_iteration: 16000
-      disturbance_scale: 0.35
-      still_proportion: 0.22
-      straight_proportion: 0.55
-      resampling_time_s: [5.0, 8.0]
-      lin_vel_x: [-0.45, 1.05]
-      lin_vel_y: [-0.25, 0.25]
-      ang_vel_yaw: [-0.90, 0.90]
-      adapter:
-        gait_frequency_max: 1.95
+        gait_frequency_max: 1.75
 
 rewards:
   scales:
