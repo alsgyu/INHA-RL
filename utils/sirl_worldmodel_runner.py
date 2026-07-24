@@ -42,14 +42,19 @@ class SIRLWorldModelRunner:
         self.gamma = float(self.wm_cfg.get("gamma", self.cfg["algorithm"].get("gamma", 0.99)))
         self.tau = float(self.wm_cfg.get("target_tau", 0.005))
         self.action_clip = self.wm_cfg.get("action_clip", None)
+        self.actor_bound_limit = float(self.wm_cfg.get("actor_bound_limit", 1.0))
         self.log_std_min = float(self.wm_cfg.get("log_std_min", -5.0))
         self.log_std_max = float(self.wm_cfg.get("log_std_max", -1.0))
+        self.collect_deterministic = bool(self.wm_cfg.get("collect_deterministic", True))
+        self.collect_noise_std = float(self.wm_cfg.get("collect_noise_std", 0.05))
+        self.collect_action_clip = self.wm_cfg.get("collect_action_clip", self.action_clip)
         self.use_privileged_q = bool(self.wm_cfg.get("use_privileged_q", False))
         self.q_privileged_dim = self.env.num_privileged_obs if self.use_privileged_q else 0
 
         model_name = self.cfg["basic"].get("model", "BaseActorCritic")
         model_class = get_model_class(model_name)
         self.model = model_class(self.env.num_actions, self.env.num_obs, self.env.num_privileged_obs).to(self.device)
+        self._init_actor_for_safe_start()
         q_hidden_dims = self.wm_cfg.get("q_hidden_dims", [512, 512])
         self.q1 = QNetwork(self.env.num_obs, self.env.num_actions, self.q_privileged_dim, q_hidden_dims).to(self.device)
         self.q2 = QNetwork(self.env.num_obs, self.env.num_actions, self.q_privileged_dim, q_hidden_dims).to(self.device)
@@ -166,6 +171,20 @@ class SIRLWorldModelRunner:
     def alpha(self):
         return self.log_alpha.exp().detach()
 
+    def _init_actor_for_safe_start(self):
+        if not bool(self.wm_cfg.get("zero_init_actor", True)):
+            return
+        final_layer = None
+        for module in reversed(self.model.actor):
+            if isinstance(module, torch.nn.Linear):
+                final_layer = module
+                break
+        if final_layer is not None:
+            torch.nn.init.zeros_(final_layer.weight)
+            torch.nn.init.zeros_(final_layer.bias)
+        with torch.no_grad():
+            self.model.logstd.fill_(float(self.wm_cfg.get("initial_logstd", -4.0)))
+
     def _policy_dist(self, obs):
         action_mean = self.model.actor(obs)
         log_std = torch.clamp(self.model.logstd, min=self.log_std_min, max=self.log_std_max).expand_as(action_mean)
@@ -178,6 +197,18 @@ class SIRLWorldModelRunner:
         if self.action_clip is not None:
             action = torch.clamp(action, -float(self.action_clip), float(self.action_clip))
         return action, log_prob, dist
+
+    def _collect_action(self, obs):
+        if not self.collect_deterministic:
+            action, _, _ = self._policy_action(obs, deterministic=False)
+        else:
+            dist = self._policy_dist(obs)
+            action = dist.loc
+            if self.collect_noise_std > 0.0:
+                action = action + self.collect_noise_std * torch.randn_like(action)
+        if self.collect_action_clip is not None:
+            action = torch.clamp(action, -float(self.collect_action_clip), float(self.collect_action_clip))
+        return action
 
     def _random_action(self, shape):
         scale = float(self.wm_cfg.get("random_action_scale", 1.0))
@@ -234,7 +265,7 @@ class SIRLWorldModelRunner:
                 if len(self.real_replay) < start_random_steps:
                     action = self._random_action((self.env.num_envs, self.env.num_actions))
                 else:
-                    action, _, _ = self._policy_action(obs, deterministic=False)
+                    action = self._collect_action(obs)
             next_obs, reward, done, infos = self.env.step(action)
             next_obs = next_obs.to(self.device)
             reward = reward.to(self.device)
@@ -397,7 +428,10 @@ class SIRLWorldModelRunner:
         policy_action, log_prob, dist = self._policy_action(batch["obs"])
         q_pi = torch.min(self.q1(batch["obs"], policy_action, priv), self.q2(batch["obs"], policy_action, priv))
         actor_loss = (alpha * log_prob - q_pi).mean()
-        bound_loss = torch.clip(dist.loc - 1.0, min=0.0).square().mean() + torch.clip(dist.loc + 1.0, max=0.0).square().mean()
+        bound_loss = (
+            torch.clip(dist.loc - self.actor_bound_limit, min=0.0).square().mean()
+            + torch.clip(dist.loc + self.actor_bound_limit, max=0.0).square().mean()
+        )
         actor_loss = actor_loss + float(self.wm_cfg.get("actor_bound_coef", 1.0)) * bound_loss
         actor_loss = actor_loss + float(self.wm_cfg.get("actor_mean_l2_coef", 0.0)) * dist.loc.square().mean()
         actor_loss = actor_loss + float(self.wm_cfg.get("actor_action_l2_coef", 0.0)) * policy_action.square().mean()

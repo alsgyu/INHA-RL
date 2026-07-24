@@ -96,12 +96,18 @@ algorithm:
     alpha: 0.05
     auto_alpha: true
     target_entropy: -12.0
+    zero_init_actor: true
+    initial_logstd: -4.0
+    collect_deterministic: true
+    collect_noise_std: 0.03
+    collect_action_clip: 0.35
     actor_bound_coef: 10.0
+    actor_bound_limit: 0.50
     actor_mean_l2_coef: 0.01
     actor_action_l2_coef: 0.005
     logstd_l2_coef: 0.001
     log_std_min: -5.0
-    log_std_max: -1.0
+    log_std_max: -2.5
     max_grad_norm: 10.0
     action_clip: 1.0
     use_privileged_q: false
