@@ -286,6 +286,17 @@ def leg_default_summary(qpos):
     )
 
 
+def resolve_default_base_height(cfg, args):
+    if args.default_base_height is not None:
+        return float(args.default_base_height)
+    return float(
+        cfg.get("common", {}).get(
+            "default_base_height",
+            cfg.get("walk_policy", {}).get("default_base_height", 0.58),
+        )
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="deploy/configs/Walk_GetUp_k1.yaml")
@@ -324,7 +335,7 @@ def main():
     parser.add_argument("--default_hip_pitch", type=float)
     parser.add_argument("--default_knee_pitch", type=float)
     parser.add_argument("--default_ankle_pitch", type=float)
-    parser.add_argument("--default_base_height", type=float, default=0.70)
+    parser.add_argument("--default_base_height", type=float, default=None)
     parser.add_argument("--ground_friction", type=float, default=1.0)
     parser.add_argument("--ground_torsional_friction", type=float, default=0.05)
     parser.add_argument("--ground_rolling_friction", type=float, default=0.001)
@@ -358,6 +369,7 @@ def main():
         cfg["walk_policy"]["normalization"]["clip_actions"] = float(args.walk_action_clip)
     if args.disable_velocity_adapter:
         cfg["walk_policy"].setdefault("velocity_command_adapter", {})["enabled"] = False
+    default_base_height = resolve_default_base_height(cfg, args)
 
     torch.set_num_threads(1)
     enable_getup = (not args.walk_only) and (args.enable_getup or args.start_fallen or args.force_fall_after_s >= 0.0)
@@ -401,7 +413,7 @@ def main():
     if model.actuator_forcerange.shape[0] == len(torque_limit):
         torque_limit = np.minimum(torque_limit, np.abs(model.actuator_forcerange[:, 1]))
 
-    data.qpos[0:3] = np.array([args.robot_x, args.robot_y, args.default_base_height], dtype=np.float32)
+    data.qpos[0:3] = np.array([args.robot_x, args.robot_y, default_base_height], dtype=np.float32)
     data.qpos[3:7] = quat_from_euler(0.0, 0.0, args.robot_theta)
     data.qpos[7 : 7 + len(default_qpos)] = default_qpos
     data.qvel[:] = 0.0
@@ -467,7 +479,7 @@ def main():
         "[mujoco] default pose "
         f"L(hip={l_hip:.3f}, knee={l_knee:.3f}, ankle={l_ankle:.3f}) "
         f"R(hip={r_hip:.3f}, knee={r_knee:.3f}, ankle={r_ankle:.3f}) "
-        f"base_z={args.default_base_height:.3f}"
+        f"base_z={default_base_height:.3f}"
     )
 
     while data.time < args.duration_s:

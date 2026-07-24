@@ -1,6 +1,7 @@
 common:
   dt: 0.002
   joint_cnt: 22
+  default_base_height: 0.58
   stiffness: [
     2, 2,
     5, 5, 5, 5,
