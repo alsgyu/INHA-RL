@@ -329,6 +329,9 @@ def main():
     parser.add_argument("--ground_torsional_friction", type=float, default=0.05)
     parser.add_argument("--ground_rolling_friction", type=float, default=0.001)
     parser.add_argument("--ground_condim", type=int, default=6)
+    parser.add_argument("--command_slew_rate", type=float, default=None)
+    parser.add_argument("--walk_action_clip", type=float, default=None)
+    parser.add_argument("--disable_velocity_adapter", action="store_true")
     parser.add_argument("--metrics_window_s", type=float, default=3.0)
     parser.add_argument("--metrics_warmup_s", type=float, default=1.0)
     parser.add_argument("--metrics_csv", default=None)
@@ -349,6 +352,12 @@ def main():
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = yaml.load(f.read(), Loader=yaml.FullLoader)
     apply_default_pose_overrides(cfg, args)
+    if args.command_slew_rate is not None:
+        cfg["walk_policy"]["command_slew_rate"] = float(args.command_slew_rate)
+    if args.walk_action_clip is not None:
+        cfg["walk_policy"]["normalization"]["clip_actions"] = float(args.walk_action_clip)
+    if args.disable_velocity_adapter:
+        cfg["walk_policy"].setdefault("velocity_command_adapter", {})["enabled"] = False
 
     torch.set_num_threads(1)
     enable_getup = (not args.walk_only) and (args.enable_getup or args.start_fallen or args.force_fall_after_s >= 0.0)
@@ -442,6 +451,11 @@ def main():
     print(f"[mujoco] walk policy source={policy.walk_policy_path}")
     if checkpoint_actor is not None and checkpoint_action_clip is not None:
         print(f"[mujoco] checkpoint action clip={float(checkpoint_action_clip):.3f}")
+    print(
+        f"[mujoco] walk action_clip={cfg['walk_policy']['normalization']['clip_actions']:.3f} "
+        f"command_slew_rate={float(cfg['walk_policy'].get('command_slew_rate', 1.0)):.3f} "
+        f"velocity_adapter={bool(cfg['walk_policy'].get('velocity_command_adapter', {}).get('enabled', False))}"
+    )
     print(
         f"[mujoco] model nq={model.nq} nv={model.nv} nu={model.nu} "
         f"actuated_dof={model.nu} ground_configured={ground_configured} "

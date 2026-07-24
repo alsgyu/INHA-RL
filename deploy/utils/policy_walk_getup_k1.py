@@ -189,7 +189,9 @@ class Policy:
         leg_end = leg_start + walk_cfg["num_actions"]
 
         self.commands[:] = [vx, vy, vyaw]
-        clip_range = (-self.policy_interval, self.policy_interval)
+        command_slew_rate = float(walk_cfg.get("command_slew_rate", 1.0))
+        clip_delta = self.policy_interval * command_slew_rate
+        clip_range = (-clip_delta, clip_delta)
         self.smoothed_commands += np.clip(self.commands - self.smoothed_commands, *clip_range)
 
         moving = np.linalg.norm(self.smoothed_commands) > float(walk_cfg.get("stand_command_threshold", 1.0e-5))
