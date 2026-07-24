@@ -342,6 +342,10 @@ def main():
     parser.add_argument("--ground_condim", type=int, default=6)
     parser.add_argument("--command_slew_rate", type=float, default=None)
     parser.add_argument("--walk_action_clip", type=float, default=None)
+    parser.add_argument("--walk_action_scale", type=float, default=None)
+    parser.add_argument("--kp_scale", type=float, default=1.0)
+    parser.add_argument("--kd_scale", type=float, default=1.0)
+    parser.add_argument("--torque_scale", type=float, default=1.0)
     parser.add_argument("--disable_velocity_adapter", action="store_true")
     parser.add_argument("--metrics_window_s", type=float, default=3.0)
     parser.add_argument("--metrics_warmup_s", type=float, default=1.0)
@@ -367,6 +371,8 @@ def main():
         cfg["walk_policy"]["command_slew_rate"] = float(args.command_slew_rate)
     if args.walk_action_clip is not None:
         cfg["walk_policy"]["normalization"]["clip_actions"] = float(args.walk_action_clip)
+    if args.walk_action_scale is not None:
+        cfg["walk_policy"]["control"]["action_scale"] = float(args.walk_action_scale)
     if args.disable_velocity_adapter:
         cfg["walk_policy"].setdefault("velocity_command_adapter", {})["enabled"] = False
     default_base_height = resolve_default_base_height(cfg, args)
@@ -407,9 +413,9 @@ def main():
     data = mujoco.MjData(model)
 
     default_qpos = np.array(cfg["common"]["default_qpos"], dtype=np.float32)
-    stiffness = np.array(cfg["common"]["stiffness"], dtype=np.float32)
-    damping = np.array(cfg["common"]["damping"], dtype=np.float32)
-    torque_limit = np.array(cfg["common"]["torque_limit"], dtype=np.float32)
+    stiffness = np.array(cfg["common"]["stiffness"], dtype=np.float32) * float(args.kp_scale)
+    damping = np.array(cfg["common"]["damping"], dtype=np.float32) * float(args.kd_scale)
+    torque_limit = np.array(cfg["common"]["torque_limit"], dtype=np.float32) * float(args.torque_scale)
     if model.actuator_forcerange.shape[0] == len(torque_limit):
         torque_limit = np.minimum(torque_limit, np.abs(model.actuator_forcerange[:, 1]))
 
@@ -465,8 +471,13 @@ def main():
         print(f"[mujoco] checkpoint action clip={float(checkpoint_action_clip):.3f}")
     print(
         f"[mujoco] walk action_clip={cfg['walk_policy']['normalization']['clip_actions']:.3f} "
+        f"action_scale={float(cfg['walk_policy']['control']['action_scale']):.3f} "
         f"command_slew_rate={float(cfg['walk_policy'].get('command_slew_rate', 1.0)):.3f} "
         f"velocity_adapter={bool(cfg['walk_policy'].get('velocity_command_adapter', {}).get('enabled', False))}"
+    )
+    print(
+        f"[mujoco] pd_scale=(kp={float(args.kp_scale):.3f},kd={float(args.kd_scale):.3f}) "
+        f"torque_scale={float(args.torque_scale):.3f}"
     )
     print(
         f"[mujoco] model nq={model.nq} nv={model.nv} nu={model.nu} "
