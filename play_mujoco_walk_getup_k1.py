@@ -15,6 +15,19 @@ from deploy.utils.policy_walk_getup_k1 import Policy
 LEG_START_INDEX = 10
 
 
+class ClampedActor(torch.nn.Module):
+    def __init__(self, actor, action_clip):
+        super().__init__()
+        self.actor = actor
+        self.action_clip = None if action_clip is None else float(action_clip)
+
+    def forward(self, obs):
+        action = self.actor(obs)
+        if self.action_clip is not None:
+            action = torch.clamp(action, -self.action_clip, self.action_clip)
+        return action
+
+
 def quat_to_mat(q):
     w, x, y, z = q
     return np.array(
@@ -82,10 +95,10 @@ def resolve_checkpoint(task, checkpoint):
     return None
 
 
-def load_checkpoint_actor(task, checkpoint):
+def load_checkpoint_actor(task, checkpoint, action_clip_override=None):
     checkpoint_path = resolve_checkpoint(task, checkpoint)
     if checkpoint_path is None:
-        return None, None
+        return None, None, None
 
     task_cfg = load_task_config(os.path.join("envs", f"{task}.yaml"))
     model = BaseActorCritic(
@@ -99,7 +112,16 @@ def load_checkpoint_actor(task, checkpoint):
         model_dict = torch.load(checkpoint_path, map_location="cpu")
     model.load_state_dict(model_dict["model"], strict=False)
     model.actor.eval()
-    return model.actor, checkpoint_path
+    action_clip = action_clip_override
+    learner = str(model_dict.get("learner", ""))
+    if action_clip is None and learner.startswith("sirl_worldmodel"):
+        action_clip = model_dict.get("deploy_action_clip")
+        if action_clip is None:
+            wm_cfg = task_cfg.get("algorithm", {}).get("sirl_worldmodel", {})
+            action_clip = wm_cfg.get("deploy_action_clip", wm_cfg.get("collect_action_clip", wm_cfg.get("action_clip")))
+    actor = ClampedActor(model.actor, action_clip) if action_clip is not None else model.actor
+    actor.eval()
+    return actor, checkpoint_path, action_clip
 
 
 def quat_to_euler(q):
@@ -270,6 +292,7 @@ def main():
     parser.add_argument("--xml", default="resources/K1/K1_22dof.xml")
     parser.add_argument("--task", default="K1/ParameterWalk")
     parser.add_argument("--checkpoint", default="-1", help="Walk .pth checkpoint. Use -1 for latest, or deploy to use deploy/models .pt.")
+    parser.add_argument("--checkpoint_action_clip", type=float, default=None, help="Optional action clamp for .pth walk checkpoints.")
     parser.add_argument("--walk_policy", default=None, help="Explicit TorchScript .pt walk policy path. Overrides --checkpoint.")
     parser.add_argument("--duration_s", type=float, default=30.0)
     parser.add_argument("--headless", action="store_true")
@@ -330,12 +353,17 @@ def main():
     torch.set_num_threads(1)
     enable_getup = (not args.walk_only) and (args.enable_getup or args.start_fallen or args.force_fall_after_s >= 0.0)
     checkpoint_actor = None
+    checkpoint_action_clip = None
     policy_source = args.walk_policy or cfg["walk_policy"]["policy_path"]
     checkpoint_warning = None
     if args.walk_policy:
         cfg["walk_policy"]["policy_path"] = args.walk_policy
     else:
-        checkpoint_actor, checkpoint_path = load_checkpoint_actor(args.task, args.checkpoint)
+        checkpoint_actor, checkpoint_path, checkpoint_action_clip = load_checkpoint_actor(
+            args.task,
+            args.checkpoint,
+            action_clip_override=args.checkpoint_action_clip,
+        )
         if checkpoint_actor is not None:
             policy_source = checkpoint_path
         elif args.checkpoint not in (None, "", "deploy"):
@@ -412,6 +440,8 @@ def main():
     if checkpoint_warning:
         print(f"[mujoco] warning: {checkpoint_warning}")
     print(f"[mujoco] walk policy source={policy.walk_policy_path}")
+    if checkpoint_actor is not None and checkpoint_action_clip is not None:
+        print(f"[mujoco] checkpoint action clip={float(checkpoint_action_clip):.3f}")
     print(
         f"[mujoco] model nq={model.nq} nv={model.nv} nu={model.nu} "
         f"actuated_dof={model.nu} ground_configured={ground_configured} "

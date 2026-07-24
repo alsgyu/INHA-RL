@@ -53,13 +53,18 @@ class SIRLWorldModelRunner:
         self.collect_deterministic = bool(self.wm_cfg.get("collect_deterministic", True))
         self.collect_noise_std = float(self.wm_cfg.get("collect_noise_std", 0.05))
         self.collect_action_clip = self.wm_cfg.get("collect_action_clip", self.action_clip)
+        self.deploy_action_clip = self.wm_cfg.get("deploy_action_clip", self.collect_action_clip)
         self.use_privileged_q = bool(self.wm_cfg.get("use_privileged_q", False))
         self.q_privileged_dim = self.env.num_privileged_obs if self.use_privileged_q else 0
+        self.current_iteration = 0
 
         model_name = self.cfg["basic"].get("model", "BaseActorCritic")
         model_class = get_model_class(model_name)
         self.model = model_class(self.env.num_actions, self.env.num_obs, self.env.num_privileged_obs).to(self.device)
         self._init_actor_for_safe_start()
+        self.teacher_policy = None
+        self.teacher_enabled = bool(self.wm_cfg.get("teacher_enabled", False))
+        self._load_teacher_policy()
         q_hidden_dims = self.wm_cfg.get("q_hidden_dims", [512, 512])
         self.q1 = QNetwork(self.env.num_obs, self.env.num_actions, self.q_privileged_dim, q_hidden_dims).to(self.device)
         self.q2 = QNetwork(self.env.num_obs, self.env.num_actions, self.q_privileged_dim, q_hidden_dims).to(self.device)
@@ -201,6 +206,77 @@ class SIRLWorldModelRunner:
             clip = float(self.parameter_abs_clip)
         param.data = self._finite_tensor(param.data, clip)
 
+    def _resolve_path(self, path):
+        if not path:
+            return None
+        if os.path.isabs(path):
+            return path if os.path.exists(path) else None
+        candidates = [
+            path,
+            os.path.join(os.getcwd(), path),
+            os.path.join(os.path.dirname(__file__), "..", path),
+            os.path.join(os.path.dirname(__file__), "..", "..", path),
+        ]
+        for candidate in candidates:
+            candidate = os.path.normpath(candidate)
+            if os.path.exists(candidate):
+                return candidate
+        return None
+
+    def _load_teacher_policy(self):
+        if not self.teacher_enabled:
+            return
+        teacher_path = self._resolve_path(self.wm_cfg.get("teacher_policy_path", "deploy/models/parameter_walk_k1.pt"))
+        if teacher_path is None:
+            print("[sirl-wm] teacher policy requested but path was not found; continuing without teacher.")
+            self.teacher_enabled = False
+            return
+        try:
+            self.teacher_policy = torch.jit.load(teacher_path, map_location=self.device)
+            self.teacher_policy.eval()
+            print(f"[sirl-wm] teacher policy loaded: {teacher_path}")
+        except Exception as exc:
+            print(f"[sirl-wm] failed to load teacher policy '{teacher_path}': {exc}")
+            self.teacher_policy = None
+            self.teacher_enabled = False
+
+    def _teacher_action(self, obs):
+        if self.teacher_policy is None:
+            return None
+        with torch.no_grad():
+            action = self.teacher_policy(obs)
+            clip = self.wm_cfg.get("teacher_action_clip", self.action_clip)
+            if clip is not None:
+                action = torch.clamp(action, -float(clip), float(clip))
+            return action.detach()
+
+    def _teacher_collect_blend(self, iteration):
+        if self.teacher_policy is None:
+            return 0.0
+        until = int(self.wm_cfg.get("teacher_collect_iterations", 0))
+        if until <= 0:
+            return 0.0
+        if iteration >= until:
+            return 0.0
+        start = float(self.wm_cfg.get("teacher_collect_start_blend", 1.0))
+        end = float(self.wm_cfg.get("teacher_collect_end_blend", 0.15))
+        decay = max(1, int(self.wm_cfg.get("teacher_collect_decay_iterations", until)))
+        mix = min(max(iteration / decay, 0.0), 1.0)
+        return max(end, start + mix * (end - start))
+
+    def _teacher_bc_coef(self):
+        if self.teacher_policy is None:
+            return 0.0
+        coef = float(self.wm_cfg.get("teacher_bc_coef", 0.0))
+        if coef <= 0.0:
+            return 0.0
+        decay = int(self.wm_cfg.get("teacher_bc_decay_iterations", 0))
+        min_coef = float(self.wm_cfg.get("teacher_bc_min_coef", 0.0))
+        if decay <= 0:
+            return coef
+        mix = min(max(self.current_iteration / max(decay, 1), 0.0), 1.0)
+        return max(min_coef, coef * (1.0 - mix))
+
     def _init_actor_for_safe_start(self):
         if not bool(self.wm_cfg.get("zero_init_actor", True)):
             return
@@ -230,7 +306,7 @@ class SIRLWorldModelRunner:
             action = torch.clamp(action, -float(self.action_clip), float(self.action_clip))
         return action, log_prob, dist
 
-    def _collect_action(self, obs):
+    def _collect_action(self, obs, iteration=0):
         if not self.collect_deterministic:
             action, _, _ = self._policy_action(obs, deterministic=False)
         else:
@@ -238,6 +314,10 @@ class SIRLWorldModelRunner:
             action = dist.loc
             if self.collect_noise_std > 0.0:
                 action = action + self.collect_noise_std * torch.randn_like(action)
+        teacher_action = self._teacher_action(obs)
+        teacher_blend = self._teacher_collect_blend(iteration)
+        if teacher_action is not None and teacher_blend > 0.0:
+            action = teacher_blend * teacher_action + (1.0 - teacher_blend) * action
         if self.collect_action_clip is not None:
             action = torch.clamp(action, -float(self.collect_action_clip), float(self.collect_action_clip))
         return action
@@ -297,7 +377,7 @@ class SIRLWorldModelRunner:
                 if len(self.real_replay) < start_random_steps:
                     action = self._random_action((self.env.num_envs, self.env.num_actions))
                 else:
-                    action = self._collect_action(obs)
+                    action = self._collect_action(obs, iteration)
             next_obs, reward, done, infos = self.env.step(action)
             next_obs = next_obs.to(self.device)
             reward = reward.to(self.device)
@@ -500,6 +580,7 @@ class SIRLWorldModelRunner:
         actor_loss = actor_loss + float(self.wm_cfg.get("logstd_l2_coef", 0.0)) * self.model.logstd.square().mean()
 
         sirl_actor_loss = torch.tensor(0.0, dtype=torch.float, device=self.device)
+        teacher_bc_loss = torch.tensor(0.0, dtype=torch.float, device=self.device)
         sirl_batch_size = min(int(self.wm_cfg.get("sirl_batch_size", 512)), len(self.sirl_replay))
         if sirl_batch_size > 0 and float(self.wm_cfg.get("sirl_actor_coef", 0.0)) > 0.0:
             sirl_batch = self.sirl_replay.sample(sirl_batch_size, self.device)
@@ -520,6 +601,13 @@ class SIRLWorldModelRunner:
                 per_sample_loss = -sirl_dist.log_prob(sirl_batch["action"]).sum(dim=-1)
             sirl_actor_loss = torch.mean(sample_weight * per_sample_loss)
             actor_loss = actor_loss + float(self.wm_cfg.get("sirl_actor_coef", 0.1)) * sirl_actor_loss
+        teacher_coef = self._teacher_bc_coef()
+        if teacher_coef > 0.0:
+            teacher_action = self._teacher_action(batch["obs"])
+            if teacher_action is not None:
+                student_action = self._policy_dist(batch["obs"]).loc
+                teacher_bc_loss = F.mse_loss(student_action, teacher_action)
+                actor_loss = actor_loss + teacher_coef * teacher_bc_loss
         if not torch.isfinite(actor_loss):
             return {"sac/skipped_nonfinite": 1.0}
 
@@ -551,6 +639,8 @@ class SIRLWorldModelRunner:
             "sac/lower_bound_loss": float(lower_bound_loss.detach().item()),
             "sac/actor_loss": float(actor_loss.detach().item()),
             "sac/sirl_actor_loss": float(sirl_actor_loss.detach().item()),
+            "sac/teacher_bc_loss": float(teacher_bc_loss.detach().item()),
+            "sac/teacher_bc_coef": float(teacher_coef),
             "sac/alpha": float(self.alpha.item()),
             "sac/alpha_loss": float(alpha_loss.detach().item()),
             "sac/q_mean": float(0.5 * (q1_loss_value.detach().mean().item() + q2_loss_value.detach().mean().item())),
@@ -673,6 +763,7 @@ class SIRLWorldModelRunner:
             "world_model_optimizers": [optimizer.state_dict() for optimizer in self.world_model_optimizers],
             "alpha_optimizer": self.alpha_optimizer.state_dict(),
             "log_alpha": self.log_alpha.detach().cpu(),
+            "deploy_action_clip": None if self.deploy_action_clip is None else float(self.deploy_action_clip),
             "curriculum": getattr(self.env, "curriculum_prob", None),
             "ball_curriculum_level": getattr(self.env, "ball_curriculum_global_level", 0),
             "learner": "sirl_worldmodel_sac_mbpo",
@@ -754,6 +845,7 @@ class SIRLWorldModelRunner:
         )
 
         for iteration in range(max_iterations):
+            self.current_iteration = iteration
             if hasattr(self.env, "update_training_curriculum"):
                 self.env.update_training_curriculum(iteration)
             obs, privileged_obs, rollout, rollout_stats = self._collect_rollout(obs, privileged_obs, iteration)

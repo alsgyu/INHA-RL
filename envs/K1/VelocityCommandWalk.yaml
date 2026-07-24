@@ -102,9 +102,20 @@ algorithm:
     initial_logstd: -4.0
     collect_deterministic: true
     collect_noise_std: 0.02
-    collect_action_clip: 0.25
-    actor_bound_coef: 50.0
-    actor_bound_limit: 0.35
+    collect_action_clip: 0.75
+    deploy_action_clip: 0.75
+    teacher_enabled: true
+    teacher_policy_path: "deploy/models/parameter_walk_k1.pt"
+    teacher_action_clip: 1.0
+    teacher_collect_iterations: 12000
+    teacher_collect_decay_iterations: 12000
+    teacher_collect_start_blend: 1.0
+    teacher_collect_end_blend: 0.20
+    teacher_bc_coef: 2.0
+    teacher_bc_decay_iterations: 24000
+    teacher_bc_min_coef: 0.25
+    actor_bound_coef: 25.0
+    actor_bound_limit: 0.75
     actor_mean_clip: 1.0
     actor_mean_l2_coef: 0.01
     actor_action_l2_coef: 0.005
@@ -112,7 +123,7 @@ algorithm:
     log_std_min: -5.0
     log_std_max: -3.0
     max_grad_norm: 1.0
-    action_clip: 0.50
+    action_clip: 0.75
     parameter_abs_clip: 20.0
     reward_clip: 5.0
     target_q_clip: 100.0

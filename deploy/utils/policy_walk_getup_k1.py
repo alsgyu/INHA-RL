@@ -195,7 +195,8 @@ class Policy:
         moving = np.linalg.norm(self.smoothed_commands) > float(walk_cfg.get("stand_command_threshold", 1.0e-5))
         if not moving:
             self.walk_actions *= float(walk_cfg.get("stand_action_decay", 0.0))
-        gait_frequency = self._resolve_walk_gait_frequency(walk_cfg) if moving else 0.0
+        internal_command = self._resolve_walk_internal_command(walk_cfg, moving)
+        gait_frequency = internal_command["gait_frequency"]
         self.walk_gait_process = np.fmod(self.walk_gait_process + self.policy_interval * gait_frequency, 1.0)
 
         command_block = np.array(
@@ -204,12 +205,12 @@ class Policy:
                 self.smoothed_commands[1],
                 self.smoothed_commands[2],
                 gait_frequency,
-                float(walk_cfg.get("foot_yaw_L", 0.0)),
-                float(walk_cfg.get("foot_yaw_R", 0.0)),
-                float(walk_cfg.get("body_pitch_target", 0.0)),
-                float(walk_cfg.get("body_roll_target", 0.0)),
-                float(walk_cfg.get("feet_offset_x_target", 0.0)),
-                float(walk_cfg.get("feet_offset_y_target", 0.0)),
+                internal_command["foot_yaw_L"],
+                internal_command["foot_yaw_R"],
+                internal_command["body_pitch_target"],
+                internal_command["body_roll_target"],
+                internal_command["feet_offset_x_target"],
+                internal_command["feet_offset_y_target"],
             ],
             dtype=np.float32,
         )
@@ -248,6 +249,70 @@ class Policy:
             + float(walk_cfg["control"]["action_scale"]) * self.walk_actions
         )
         return self.dof_targets
+
+    def _resolve_walk_internal_command(self, walk_cfg, moving):
+        if not moving:
+            return {
+                "gait_frequency": 0.0,
+                "foot_yaw_L": 0.0,
+                "foot_yaw_R": 0.0,
+                "body_pitch_target": 0.0,
+                "body_roll_target": 0.0,
+                "feet_offset_x_target": 0.0,
+                "feet_offset_y_target": 0.0,
+            }
+
+        adapter = walk_cfg.get("velocity_command_adapter", {})
+        if not bool(adapter.get("enabled", False)):
+            return {
+                "gait_frequency": self._resolve_walk_gait_frequency(walk_cfg),
+                "foot_yaw_L": float(walk_cfg.get("foot_yaw_L", 0.0)),
+                "foot_yaw_R": float(walk_cfg.get("foot_yaw_R", 0.0)),
+                "body_pitch_target": float(walk_cfg.get("body_pitch_target", 0.0)),
+                "body_roll_target": float(walk_cfg.get("body_roll_target", 0.0)),
+                "feet_offset_x_target": float(walk_cfg.get("feet_offset_x_target", 0.0)),
+                "feet_offset_y_target": float(walk_cfg.get("feet_offset_y_target", 0.0)),
+            }
+
+        vx, vy, vyaw = [float(value) for value in self.smoothed_commands]
+        linear_speed = np.hypot(vx, vy)
+        speed_min = float(adapter.get("gait_frequency_speed_min", 0.08))
+        speed_max = max(float(adapter.get("gait_frequency_speed_max", 1.05)), speed_min + 1.0e-6)
+        max_yaw = max(float(adapter.get("max_yaw_speed_for_drive", 0.90)), 1.0e-6)
+        linear_drive = np.clip((linear_speed - speed_min) / (speed_max - speed_min), 0.0, 1.0)
+        yaw_drive = np.clip(abs(vyaw) / max_yaw, 0.0, 1.0)
+        drive = max(linear_drive, yaw_drive)
+
+        gait_frequency = float(adapter.get("gait_frequency_min", 1.15)) + drive * (
+            float(adapter.get("gait_frequency_max", 1.95)) - float(adapter.get("gait_frequency_min", 1.15))
+        )
+        foot_yaw_clip = adapter.get("foot_yaw_target_clip", [-0.22, 0.22])
+        foot_yaw = np.clip(
+            vyaw * float(adapter.get("foot_yaw_from_yaw_gain", 0.12)),
+            float(foot_yaw_clip[0]),
+            float(foot_yaw_clip[1]),
+        )
+        pitch_clip = adapter.get("body_pitch_target_clip", [-0.04, 0.12])
+        body_pitch = np.clip(
+            vx * float(adapter.get("body_pitch_gain", 0.08)),
+            float(pitch_clip[0]),
+            float(pitch_clip[1]),
+        )
+        roll_clip = adapter.get("body_roll_target_clip", [-0.08, 0.08])
+        body_roll = np.clip(
+            vy * float(adapter.get("body_roll_gain", -0.08)),
+            float(roll_clip[0]),
+            float(roll_clip[1]),
+        )
+        return {
+            "gait_frequency": float(gait_frequency),
+            "foot_yaw_L": float(foot_yaw),
+            "foot_yaw_R": float(foot_yaw),
+            "body_pitch_target": float(body_pitch),
+            "body_roll_target": float(body_roll),
+            "feet_offset_x_target": 0.0,
+            "feet_offset_y_target": 0.0,
+        }
 
     def _resolve_walk_gait_frequency(self, walk_cfg):
         profile = walk_cfg.get("gait_frequency_by_lin_vel_x")
