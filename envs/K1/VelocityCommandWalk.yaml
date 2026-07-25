@@ -119,6 +119,11 @@ algorithm:
     actor_mean_clip: 1.0
     actor_mean_l2_coef: 0.01
     actor_action_l2_coef: 0.005
+    actor_symmetry_coef: 1.0
+    actor_symmetry_min_abs_vx: 0.03
+    actor_symmetry_max_abs_vy: 0.04
+    actor_symmetry_max_abs_yaw: 0.08
+    actor_symmetry_include_stand: true
     logstd_l2_coef: 0.001
     log_std_min: -5.0
     log_std_max: -3.0
@@ -133,7 +138,8 @@ algorithm:
     q_hidden_dims: [512, 512]
     real_buffer_size: 1000000
     model_buffer_size: 250000
-    model_batch_ratio: 0.05
+    model_batch_ratio: 0.0
+    model_rollout_enabled: false
     model_rollout_starts: 262144
     model_rollout_every: 1
     model_rollout_batch_size: 1024
@@ -161,17 +167,17 @@ algorithm:
     sirl_min_return_percentile: 60
     sirl_return_alpha: 1.0
     sirl_max_weight: 1.0
-    sirl_actor_coef: 0.05
+    sirl_actor_coef: 0.03
     sirl_q_coef: 0.05
     sirl_batch_size: 512
-    sirl_loss: "nll"
+    sirl_loss: "mse"
     sirl_adv_weight_clip: 5.0
     sirl_fall_penalty: 2.0
     sirl_metric_penalties:
-      velocity_error: 0.5
-      feet_slip: 0.2
+      velocity_error: 1.2
+      feet_slip: 0.4
       swing_clearance_deficit: 0.5
-      base_tilt: 0.5
+      base_tilt: 0.8
       low_height: 0.5
       stand_drift: 1.0
 
@@ -207,7 +213,7 @@ commands:
     fixed_yaw: true
     no_disturbance: true
   straight:
-    lin_vel_x: [0.12, 0.85]
+    lin_vel_x: [0.05, 0.24]
     lin_vel_y: 0.0
     ang_vel_yaw: 0.0
   adapter:
@@ -227,42 +233,42 @@ commands:
   training_phases:
     - start_iteration: 0
       disturbance_scale: 0.0
-      still_proportion: 0.45
-      straight_proportion: 0.95
+      still_proportion: 0.50
+      straight_proportion: 1.00
       resampling_time_s: [5.0, 8.0]
-      lin_vel_x: [0.05, 0.16]
+      lin_vel_x: [0.04, 0.12]
       lin_vel_y: [0.0, 0.0]
       ang_vel_yaw: [0.0, 0.0]
       adapter:
         gait_frequency_max: 1.35
-    - start_iteration: 6000
-      disturbance_scale: 0.03
-      still_proportion: 0.38
-      straight_proportion: 0.90
+    - start_iteration: 8000
+      disturbance_scale: 0.02
+      still_proportion: 0.45
+      straight_proportion: 0.98
       resampling_time_s: [5.0, 8.0]
-      lin_vel_x: [0.04, 0.24]
-      lin_vel_y: [-0.03, 0.03]
-      ang_vel_yaw: [-0.12, 0.12]
+      lin_vel_x: [0.04, 0.18]
+      lin_vel_y: [0.0, 0.0]
+      ang_vel_yaw: [0.0, 0.0]
       adapter:
         gait_frequency_max: 1.48
-    - start_iteration: 14000
-      disturbance_scale: 0.10
-      still_proportion: 0.32
-      straight_proportion: 0.80
+    - start_iteration: 18000
+      disturbance_scale: 0.06
+      still_proportion: 0.40
+      straight_proportion: 0.95
       resampling_time_s: [5.0, 8.0]
-      lin_vel_x: [-0.05, 0.38]
-      lin_vel_y: [-0.06, 0.06]
-      ang_vel_yaw: [-0.25, 0.25]
+      lin_vel_x: [0.04, 0.24]
+      lin_vel_y: [-0.02, 0.02]
+      ang_vel_yaw: [-0.08, 0.08]
       adapter:
         gait_frequency_max: 1.62
-    - start_iteration: 24000
-      disturbance_scale: 0.18
-      still_proportion: 0.28
-      straight_proportion: 0.70
+    - start_iteration: 30000
+      disturbance_scale: 0.12
+      still_proportion: 0.35
+      straight_proportion: 0.90
       resampling_time_s: [5.0, 8.0]
-      lin_vel_x: [-0.12, 0.55]
-      lin_vel_y: [-0.10, 0.10]
-      ang_vel_yaw: [-0.40, 0.40]
+      lin_vel_x: [0.04, 0.35]
+      lin_vel_y: [-0.05, 0.05]
+      ang_vel_yaw: [-0.18, 0.18]
       adapter:
         gait_frequency_max: 1.75
 
@@ -273,12 +279,14 @@ rewards:
     tracking_lin_vel_y: 2.2
     tracking_ang_vel: 2.4
     lin_vel_x_error: -0.9
-    lin_vel_y_error: -0.45
-    ang_vel_yaw_error: -0.50
+    lin_vel_y_error: -1.2
+    ang_vel_yaw_error: -1.2
     heading_tracking: 0.0
     path_lateral: 0.0
-    straight_lateral_vel: -3.0
-    straight_yaw_vel: -3.0
+    straight_path_lateral: -2.0
+    straight_heading: -1.5
+    straight_lateral_vel: -8.0
+    straight_yaw_vel: -8.0
     base_height: -20.0
     foot_yaw_L: 0.0
     foot_yaw_R: 0.0
@@ -329,6 +337,9 @@ rewards:
   swing_clearance_target: 0.105
   swing_clearance_sigma: 0.012
   scuff_clearance_threshold: 0.050
+  straight_min_speed: 0.035
+  straight_max_abs_y_command: 0.035
+  straight_max_abs_yaw_command: 0.06
   feet_distance_ref: 0.18
 
 metadata:

@@ -86,6 +86,16 @@ class VelocityCommandWalkK1(ParameterWalkK1):
     def _moving_mask(self):
         return 1.0 - self._stand_mask()
 
+    def _straight_walk_mask(self):
+        min_speed = float(self.cfg["rewards"].get("straight_min_speed", 0.035))
+        max_lateral_command = float(self.cfg["rewards"].get("straight_max_abs_y_command", 0.035))
+        max_yaw_command = float(self.cfg["rewards"].get("straight_max_abs_yaw_command", 0.06))
+        return (
+            (torch.abs(self.commands[:, 0]) > min_speed)
+            & (torch.abs(self.commands[:, 1]) < max_lateral_command)
+            & (torch.abs(self.commands[:, 2]) < max_yaw_command)
+        ).float()
+
     def _resolve_internal_commands(self, env_ids=None):
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self.device)
@@ -292,10 +302,13 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         return self.feet_pos[:, :, 2] - ground_height
 
     def _compute_sirl_info(self):
+        straight_mask = self._straight_walk_mask()
+        lateral_weight = 0.75 + 1.25 * straight_mask
+        yaw_weight = 0.50 + 1.00 * straight_mask
         velocity_error = (
             torch.abs(self.commands[:, 0] - self.filtered_lin_vel[:, 0])
-            + 0.75 * torch.abs(self.commands[:, 1] - self.filtered_lin_vel[:, 1])
-            + 0.50 * torch.abs(self.commands[:, 2] - self.filtered_ang_vel[:, 2])
+            + lateral_weight * torch.abs(self.commands[:, 1] - self.filtered_lin_vel[:, 1])
+            + yaw_weight * torch.abs(self.commands[:, 2] - self.filtered_ang_vel[:, 2])
         )
         feet_vel_xy = torch.norm((self.last_feet_pos[:, :, :2] - self.feet_pos[:, :, :2]) / self.dt, dim=-1)
         stance_count = torch.clamp(self.feet_contact.float().sum(dim=-1), min=1.0)
@@ -328,12 +341,12 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         }
 
     def _reward_lin_vel_y_error(self):
-        moving = (torch.abs(self.commands[:, 1]) > 0.03).float()
-        return torch.square(self.commands[:, 1] - self.filtered_lin_vel[:, 1]) * moving
+        active = ((torch.abs(self.commands[:, 1]) > 0.03) | (self._straight_walk_mask() > 0.0)).float()
+        return torch.square(self.commands[:, 1] - self.filtered_lin_vel[:, 1]) * active
 
     def _reward_ang_vel_yaw_error(self):
-        moving = (torch.abs(self.commands[:, 2]) > 0.05).float()
-        return torch.square(self.commands[:, 2] - self.filtered_ang_vel[:, 2]) * moving
+        active = ((torch.abs(self.commands[:, 2]) > 0.05) | (self._straight_walk_mask() > 0.0)).float()
+        return torch.square(self.commands[:, 2] - self.filtered_ang_vel[:, 2]) * active
 
     def _reward_swing_clearance(self):
         left_swing, right_swing = self._swing_masks()

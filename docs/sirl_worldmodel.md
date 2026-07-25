@@ -40,24 +40,40 @@ Command-following checks:
 ```bash
 python play_mujoco_walk_getup_k1.py \
   --task K1/VelocityCommandWalk \
-  --checkpoint -1 \
+  --checkpoint logs/K1/K1/VelocityCommandWalkSIRL/<run>/nn/model_500.pth \
   --walk_only \
-  --vx 0.3 \
+  --vx 0.1 \
   --vy 0 \
   --vyaw 0 \
   --play_velocity_metrics
 ```
 
+For this branch, check low-speed straight walking first. Validate `vx=0`,
+then `vx=0.1`, then `vx=0.2`; do not use `vx=0.5` as the first pass/fail
+test while the straight gait is still being tuned.
+
 ## 4090 Starting Point
 
 - `num_envs`: 1024 for debugging, 2048 for default training, 4096 after stability.
-- `batch_size`: 1024.
-- `updates_per_iter`: 64 with `collect_steps_per_iter=16`.
+- `batch_size`: 512.
+- `updates_per_iter`: 16 with `collect_steps_per_iter=16`.
 - Real replay: CPU, 1M transitions.
 - Model replay: CPU, 250k transitions.
 - World model ensemble: 5 MLPs, hidden dims `[512, 512]`.
-- Model rollout horizon: 1 at first, then 2-3 after prediction error stabilizes.
-- Model batch ratio: 0.25 at first, up to 0.5 only if MuJoCo validation remains stable.
+- Model rollout horizon: 1.
+- Model batch ratio: `0.0` until MuJoCo straight walking is stable; then try
+  `0.02`, `0.05`, set `model_rollout_enabled: true`, and only increase if
+  lateral drift does not grow.
+- Keep `sirl_loss: mse` while logstd is clamped tightly; NLL can dominate the
+  actor update when off-policy action targets are imperfect.
+
+## Stability Notes
+
+The current safe path is real replay + teacher bootstrap + return-filtered
+trajectory SIRL + mirror symmetry. The world model still trains as an auxiliary
+model, but generated transitions are not mixed into SAC updates by default.
+Turn model-generated updates back on only after `vx=0.1` and `vx=0.2` hold a
+straight path in MuJoCo.
 
 ## Extension Path
 

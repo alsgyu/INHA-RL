@@ -54,6 +54,17 @@ class SIRLWorldModelRunner:
         self.collect_noise_std = float(self.wm_cfg.get("collect_noise_std", 0.05))
         self.collect_action_clip = self.wm_cfg.get("collect_action_clip", self.action_clip)
         self.deploy_action_clip = self.wm_cfg.get("deploy_action_clip", self.collect_action_clip)
+        self._mirror_action_indices = torch.tensor([6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5], dtype=torch.long, device=self.device)
+        self._mirror_action_signs = torch.tensor([1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0], dtype=torch.float, device=self.device)
+        self._obs_public_command_scales = torch.tensor(
+            [
+                float(self.cfg["normalization"].get("lin_vel", 1.0)),
+                float(self.cfg["normalization"].get("lin_vel", 1.0)),
+                float(self.cfg["normalization"].get("ang_vel", 1.0)),
+            ],
+            dtype=torch.float,
+            device=self.device,
+        )
         self.use_privileged_q = bool(self.wm_cfg.get("use_privileged_q", False))
         self.q_privileged_dim = self.env.num_privileged_obs if self.use_privileged_q else 0
         self.current_iteration = 0
@@ -277,6 +288,68 @@ class SIRLWorldModelRunner:
         mix = min(max(self.current_iteration / max(decay, 1), 0.0), 1.0)
         return max(min_coef, coef * (1.0 - mix))
 
+    def _mirror_action(self, action):
+        if action.shape[-1] != 12:
+            return action
+        indices = self._mirror_action_indices.to(action.device)
+        signs = self._mirror_action_signs.to(action.device, dtype=action.dtype)
+        return action.index_select(action.dim() - 1, indices) * signs
+
+    def _mirror_obs(self, obs):
+        if obs.shape[-1] < 54 or self.env.num_actions != 12:
+            return obs
+        mirrored = obs.clone()
+        mirrored[..., 0] = obs[..., 0]
+        mirrored[..., 1] = -obs[..., 1]
+        mirrored[..., 2] = obs[..., 2]
+        mirrored[..., 3] = -obs[..., 3]
+        mirrored[..., 4] = obs[..., 4]
+        mirrored[..., 5] = -obs[..., 5]
+        mirrored[..., 6] = obs[..., 6]
+        mirrored[..., 7] = -obs[..., 7]
+        mirrored[..., 8] = -obs[..., 8]
+        mirrored[..., 9] = obs[..., 9]
+        mirrored[..., 10] = -obs[..., 11]
+        mirrored[..., 11] = -obs[..., 10]
+        mirrored[..., 12] = obs[..., 12]
+        mirrored[..., 13] = -obs[..., 13]
+        mirrored[..., 14] = obs[..., 14]
+        mirrored[..., 15] = -obs[..., 15]
+        mirrored[..., 16] = -obs[..., 16]
+        mirrored[..., 17] = -obs[..., 17]
+        mirrored[..., 18:30] = self._mirror_action(obs[..., 18:30])
+        mirrored[..., 30:42] = self._mirror_action(obs[..., 30:42])
+        mirrored[..., 42:54] = self._mirror_action(obs[..., 42:54])
+        return mirrored
+
+    def _batch_public_command(self, batch):
+        command = batch.get("command")
+        if command is not None and command.shape[-1] >= 3:
+            return command[:, :3]
+        obs = batch.get("obs")
+        if obs is None or obs.shape[-1] < 9:
+            return None
+        scales = self._obs_public_command_scales.to(obs.device, dtype=obs.dtype)
+        return obs[:, 6:9] / torch.clamp(scales, min=1.0e-6)
+
+    def _straight_symmetry_mask(self, batch):
+        command = self._batch_public_command(batch)
+        if command is None:
+            return None
+        min_vx = float(self.wm_cfg.get("actor_symmetry_min_abs_vx", 0.03))
+        max_vy = float(self.wm_cfg.get("actor_symmetry_max_abs_vy", 0.04))
+        max_yaw = float(self.wm_cfg.get("actor_symmetry_max_abs_yaw", 0.08))
+        straight = (
+            (torch.abs(command[:, 0]) >= min_vx)
+            & (torch.abs(command[:, 1]) <= max_vy)
+            & (torch.abs(command[:, 2]) <= max_yaw)
+        )
+        if bool(self.wm_cfg.get("actor_symmetry_include_stand", True)):
+            stand_threshold = float(self.cfg["commands"].get("adapter", {}).get("stand_command_threshold", 0.04))
+            command_norm = torch.sqrt(torch.sum(torch.square(command[:, 0:2]), dim=-1) + torch.square(command[:, 2]))
+            straight = straight | (command_norm <= stand_threshold)
+        return straight.float()
+
     def _init_actor_for_safe_start(self):
         if not bool(self.wm_cfg.get("zero_init_actor", True)):
             return
@@ -494,9 +567,11 @@ class SIRLWorldModelRunner:
     def _sample_update_batch(self):
         batch_size = int(self.wm_cfg.get("batch_size", 1024))
         model_ratio = float(self.wm_cfg.get("model_batch_ratio", 0.25))
-        if len(self.model_replay) <= 0:
+        if model_ratio <= 0.0 or len(self.model_replay) <= 0:
             return self.real_replay.sample(batch_size, self.device)
         model_batch_size = min(int(batch_size * model_ratio), len(self.model_replay))
+        if model_batch_size <= 0:
+            return self.real_replay.sample(batch_size, self.device)
         real_batch_size = max(1, batch_size - model_batch_size)
         real_batch = self.real_replay.sample(real_batch_size, self.device)
         model_batch = self.model_replay.sample(model_batch_size, self.device)
@@ -581,6 +656,8 @@ class SIRLWorldModelRunner:
 
         sirl_actor_loss = torch.tensor(0.0, dtype=torch.float, device=self.device)
         teacher_bc_loss = torch.tensor(0.0, dtype=torch.float, device=self.device)
+        actor_symmetry_loss = torch.tensor(0.0, dtype=torch.float, device=self.device)
+        actor_symmetry_mask_frac = 0.0
         sirl_batch_size = min(int(self.wm_cfg.get("sirl_batch_size", 512)), len(self.sirl_replay))
         if sirl_batch_size > 0 and float(self.wm_cfg.get("sirl_actor_coef", 0.0)) > 0.0:
             sirl_batch = self.sirl_replay.sample(sirl_batch_size, self.device)
@@ -608,6 +685,17 @@ class SIRLWorldModelRunner:
                 student_action = self._policy_dist(batch["obs"]).loc
                 teacher_bc_loss = F.mse_loss(student_action, teacher_action)
                 actor_loss = actor_loss + teacher_coef * teacher_bc_loss
+        symmetry_coef = float(self.wm_cfg.get("actor_symmetry_coef", 0.0))
+        if symmetry_coef > 0.0 and self.env.num_actions == 12 and self.env.num_obs >= 54:
+            symmetry_mask = self._straight_symmetry_mask(batch)
+            if symmetry_mask is not None and float(symmetry_mask.sum().item()) > 0.0:
+                student_mean = self._policy_dist(batch["obs"]).loc
+                mirrored_mean = self._policy_dist(self._mirror_obs(batch["obs"])).loc
+                mirrored_target = self._mirror_action(student_mean).detach()
+                per_sample_symmetry = torch.mean(torch.square(mirrored_mean - mirrored_target), dim=-1)
+                actor_symmetry_loss = torch.sum(per_sample_symmetry * symmetry_mask) / (torch.sum(symmetry_mask) + 1.0e-6)
+                actor_loss = actor_loss + symmetry_coef * actor_symmetry_loss
+                actor_symmetry_mask_frac = float(symmetry_mask.mean().detach().item())
         if not torch.isfinite(actor_loss):
             return {"sac/skipped_nonfinite": 1.0}
 
@@ -641,6 +729,8 @@ class SIRLWorldModelRunner:
             "sac/sirl_actor_loss": float(sirl_actor_loss.detach().item()),
             "sac/teacher_bc_loss": float(teacher_bc_loss.detach().item()),
             "sac/teacher_bc_coef": float(teacher_coef),
+            "sac/actor_symmetry_loss": float(actor_symmetry_loss.detach().item()),
+            "sac/actor_symmetry_mask_frac": actor_symmetry_mask_frac,
             "sac/alpha": float(self.alpha.item()),
             "sac/alpha_loss": float(alpha_loss.detach().item()),
             "sac/q_mean": float(0.5 * (q1_loss_value.detach().mean().item() + q2_loss_value.detach().mean().item())),
@@ -836,6 +926,9 @@ class SIRLWorldModelRunner:
         updates_per_iter = int(self.wm_cfg.get("updates_per_iter", 64))
         world_model_train_every = max(1, int(self.wm_cfg.get("world_model_train_every", 1)))
         model_rollout_every = max(1, int(self.wm_cfg.get("model_rollout_every", 1)))
+        model_rollout_enabled = bool(
+            self.wm_cfg.get("model_rollout_enabled", float(self.wm_cfg.get("model_batch_ratio", 0.0)) > 0.0)
+        )
         train_start_time = time.time()
 
         print(f"SIRL world-model logs: {self.recorder.dir}")
@@ -855,7 +948,7 @@ class SIRLWorldModelRunner:
             if iteration % world_model_train_every == 0:
                 wm_stats = self._train_world_model()
             model_rollout_stats = {}
-            if iteration % model_rollout_every == 0:
+            if model_rollout_enabled and iteration % model_rollout_every == 0:
                 model_rollout_stats = self._rollout_world_model()
 
             sac_totals = {}
@@ -897,6 +990,7 @@ class SIRLWorldModelRunner:
                     f"done {100.0 * stats.get('rollout/done_rate', 0.0):.2f}% | "
                     f"real {len(self.real_replay)} | model {len(self.model_replay)} | sirl {len(self.sirl_replay)} | "
                     f"q {stats.get('sac/q_loss', 0.0):.4f} | actor {stats.get('sac/actor_loss', 0.0):.4f} | "
+                    f"sym {stats.get('sac/actor_symmetry_loss', 0.0):.4f} | "
                     f"wm {stats.get('world_model/loss', 0.0):.4f}"
                 )
 
