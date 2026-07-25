@@ -40,7 +40,7 @@ Command-following checks:
 ```bash
 python play_mujoco_walk_getup_k1.py \
   --task K1/VelocityCommandWalk \
-  --checkpoint logs/K1/K1/VelocityCommandWalkSIRL/<run>/nn/model_500.pth \
+  --checkpoint logs/K1/K1/VelocityCommandWalkSIRL/<run>/nn/model_2000.pth \
   --walk_only \
   --vx 0.1 \
   --vy 0 \
@@ -50,13 +50,18 @@ python play_mujoco_walk_getup_k1.py \
 
 For this branch, check low-speed straight walking first. Validate `vx=0`,
 then `vx=0.1`, then `vx=0.2`; do not use `vx=0.5` as the first pass/fail
-test while the straight gait is still being tuned.
+test while the straight gait is still being tuned. Early checkpoints are now
+teacher-distilled, but prefer `model_2000.pth` or later for MuJoCo checks.
 
 ## 4090 Starting Point
 
 - `num_envs`: 1024 for debugging, 2048 for default training, 4096 after stability.
 - `batch_size`: 512.
 - `updates_per_iter`: 16 with `collect_steps_per_iter=16`.
+- Teacher distillation: 4 batches of 4096 samples per iteration for the first
+  10k iterations, so the saved student actor is deployable before SAC takes over.
+- SAC actor updates: held off until 8k iterations, then linearly warmed in over
+  12k iterations.
 - Real replay: CPU, 1M transitions.
 - Model replay: CPU, 250k transitions.
 - World model ensemble: 5 MLPs, hidden dims `[512, 512]`.

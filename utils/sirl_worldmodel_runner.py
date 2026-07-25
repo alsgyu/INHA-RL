@@ -288,6 +288,81 @@ class SIRLWorldModelRunner:
         mix = min(max(self.current_iteration / max(decay, 1), 0.0), 1.0)
         return max(min_coef, coef * (1.0 - mix))
 
+    def _scheduled_coef(self, coef_key, default, start_key=None, warmup_key=None):
+        coef = float(self.wm_cfg.get(coef_key, default))
+        start = int(self.wm_cfg.get(start_key, 0)) if start_key is not None else 0
+        if self.current_iteration < start:
+            return 0.0
+        warmup = int(self.wm_cfg.get(warmup_key, 0)) if warmup_key is not None else 0
+        if warmup <= 0:
+            return coef
+        mix = min(max((self.current_iteration - start) / max(warmup, 1), 0.0), 1.0)
+        return coef * mix
+
+    def _teacher_distill_update(self, rollout=None):
+        if self.teacher_policy is None:
+            return {}
+        max_iteration = int(self.wm_cfg.get("teacher_distill_iterations", 0))
+        if max_iteration <= 0 or self.current_iteration >= max_iteration:
+            return {}
+        steps = int(self.wm_cfg.get("teacher_distill_steps_per_iter", 0))
+        if steps <= 0:
+            return {}
+
+        batch_size = int(self.wm_cfg.get("teacher_distill_batch_size", 2048))
+        replay_fraction = float(self.wm_cfg.get("teacher_distill_replay_fraction", 0.5))
+        rollout_obs = None
+        if rollout is not None:
+            rollout_obs = rollout["obs"].reshape(-1, self.env.num_obs).detach()
+        if rollout_obs is None and len(self.real_replay) <= 0:
+            return {}
+
+        total_loss = 0.0
+        valid_steps = 0
+        for _ in range(steps):
+            obs_parts = []
+            replay_count = 0
+            if len(self.real_replay) > 0 and replay_fraction > 0.0:
+                replay_count = min(int(batch_size * replay_fraction), batch_size)
+                if replay_count > 0:
+                    obs_parts.append(self.real_replay.sample(replay_count, self.device)["obs"])
+            rollout_count = max(0, batch_size - replay_count)
+            if rollout_obs is not None and rollout_count > 0:
+                indices = torch.randint(0, rollout_obs.shape[0], (rollout_count,), device=rollout_obs.device)
+                obs_parts.append(rollout_obs[indices].to(self.device))
+            if not obs_parts:
+                continue
+
+            obs = torch.cat(obs_parts, dim=0)
+            teacher_action = self._teacher_action(obs)
+            if teacher_action is None:
+                return {}
+            student_action = self._policy_dist(obs).loc
+            distill_loss = F.mse_loss(student_action, teacher_action)
+            if not torch.isfinite(distill_loss):
+                continue
+
+            self.actor_optimizer.zero_grad()
+            distill_loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                list(self.model.actor.parameters()) + [self.model.logstd],
+                float(self.wm_cfg.get("max_grad_norm", 10.0)),
+            )
+            self.actor_optimizer.step()
+            self._sanitize_module_(self.model.actor)
+            with torch.no_grad():
+                self._sanitize_parameter_(self.model.logstd, None)
+                self.model.logstd.clamp_(min=self.log_std_min, max=self.log_std_max)
+            total_loss += float(distill_loss.detach().item())
+            valid_steps += 1
+
+        if valid_steps == 0:
+            return {"teacher/distill_skipped_nonfinite": 1.0}
+        return {
+            "teacher/distill_loss": total_loss / valid_steps,
+            "teacher/distill_steps": float(valid_steps),
+        }
+
     def _mirror_action(self, action):
         if action.shape[-1] != 12:
             return action
@@ -640,7 +715,14 @@ class SIRLWorldModelRunner:
         q_pi = torch.min(self.q1(batch["obs"], policy_action, priv), self.q2(batch["obs"], policy_action, priv))
         q_pi = self._finite_tensor(q_pi, self.q_value_clip)
         log_prob = self._finite_tensor(log_prob, self.q_value_clip)
-        actor_loss = (alpha * log_prob - q_pi).mean()
+        actor_rl_loss = (alpha * log_prob - q_pi).mean()
+        actor_rl_coef = self._scheduled_coef(
+            "actor_rl_coef",
+            1.0,
+            "actor_rl_start_iteration",
+            "actor_rl_warmup_iterations",
+        )
+        actor_loss = actor_rl_coef * actor_rl_loss
         raw_actor_mean = self._finite_tensor(
             self.model.actor(batch["obs"]),
             self.wm_cfg.get("actor_bound_loss_clip", 5.0),
@@ -659,7 +741,13 @@ class SIRLWorldModelRunner:
         actor_symmetry_loss = torch.tensor(0.0, dtype=torch.float, device=self.device)
         actor_symmetry_mask_frac = 0.0
         sirl_batch_size = min(int(self.wm_cfg.get("sirl_batch_size", 512)), len(self.sirl_replay))
-        if sirl_batch_size > 0 and float(self.wm_cfg.get("sirl_actor_coef", 0.0)) > 0.0:
+        sirl_actor_coef = self._scheduled_coef(
+            "sirl_actor_coef",
+            0.0,
+            "sirl_actor_start_iteration",
+            "sirl_actor_warmup_iterations",
+        )
+        if sirl_batch_size > 0 and sirl_actor_coef > 0.0:
             sirl_batch = self.sirl_replay.sample(sirl_batch_size, self.device)
             sirl_priv = self._q_input_privileged(sirl_batch)
             with torch.no_grad():
@@ -677,7 +765,7 @@ class SIRLWorldModelRunner:
             else:
                 per_sample_loss = -sirl_dist.log_prob(sirl_batch["action"]).sum(dim=-1)
             sirl_actor_loss = torch.mean(sample_weight * per_sample_loss)
-            actor_loss = actor_loss + float(self.wm_cfg.get("sirl_actor_coef", 0.1)) * sirl_actor_loss
+            actor_loss = actor_loss + sirl_actor_coef * sirl_actor_loss
         teacher_coef = self._teacher_bc_coef()
         if teacher_coef > 0.0:
             teacher_action = self._teacher_action(batch["obs"])
@@ -685,7 +773,12 @@ class SIRLWorldModelRunner:
                 student_action = self._policy_dist(batch["obs"]).loc
                 teacher_bc_loss = F.mse_loss(student_action, teacher_action)
                 actor_loss = actor_loss + teacher_coef * teacher_bc_loss
-        symmetry_coef = float(self.wm_cfg.get("actor_symmetry_coef", 0.0))
+        symmetry_coef = self._scheduled_coef(
+            "actor_symmetry_coef",
+            0.0,
+            "actor_symmetry_start_iteration",
+            "actor_symmetry_warmup_iterations",
+        )
         if symmetry_coef > 0.0 and self.env.num_actions == 12 and self.env.num_obs >= 54:
             symmetry_mask = self._straight_symmetry_mask(batch)
             if symmetry_mask is not None and float(symmetry_mask.sum().item()) > 0.0:
@@ -709,7 +802,7 @@ class SIRLWorldModelRunner:
             self.model.logstd.clamp_(min=self.log_std_min, max=self.log_std_max)
 
         alpha_loss = torch.tensor(0.0, dtype=torch.float, device=self.device)
-        if self.auto_alpha:
+        if self.auto_alpha and actor_rl_coef > 0.0:
             alpha_loss = -(self.log_alpha * (log_prob.detach() + self.target_entropy)).mean()
             if torch.isfinite(alpha_loss):
                 self.alpha_optimizer.zero_grad()
@@ -726,10 +819,14 @@ class SIRLWorldModelRunner:
             "sac/critic_loss": float(critic_loss.detach().item()),
             "sac/lower_bound_loss": float(lower_bound_loss.detach().item()),
             "sac/actor_loss": float(actor_loss.detach().item()),
+            "sac/actor_rl_loss": float(actor_rl_loss.detach().item()),
+            "sac/actor_rl_coef": float(actor_rl_coef),
             "sac/sirl_actor_loss": float(sirl_actor_loss.detach().item()),
+            "sac/sirl_actor_coef": float(sirl_actor_coef),
             "sac/teacher_bc_loss": float(teacher_bc_loss.detach().item()),
             "sac/teacher_bc_coef": float(teacher_coef),
             "sac/actor_symmetry_loss": float(actor_symmetry_loss.detach().item()),
+            "sac/actor_symmetry_coef": float(symmetry_coef),
             "sac/actor_symmetry_mask_frac": actor_symmetry_mask_frac,
             "sac/alpha": float(self.alpha.item()),
             "sac/alpha_loss": float(alpha_loss.detach().item()),
@@ -943,6 +1040,7 @@ class SIRLWorldModelRunner:
                 self.env.update_training_curriculum(iteration)
             obs, privileged_obs, rollout, rollout_stats = self._collect_rollout(obs, privileged_obs, iteration)
             sirl_stats = self._score_and_store_rollout(rollout)
+            teacher_stats = self._teacher_distill_update(rollout)
 
             wm_stats = {}
             if iteration % world_model_train_every == 0:
@@ -967,6 +1065,7 @@ class SIRLWorldModelRunner:
             stats = {}
             stats.update(rollout_stats)
             stats.update(sirl_stats)
+            stats.update(teacher_stats)
             stats.update(wm_stats)
             stats.update(model_rollout_stats)
             stats.update(sac_totals)
@@ -990,6 +1089,7 @@ class SIRLWorldModelRunner:
                     f"done {100.0 * stats.get('rollout/done_rate', 0.0):.2f}% | "
                     f"real {len(self.real_replay)} | model {len(self.model_replay)} | sirl {len(self.sirl_replay)} | "
                     f"q {stats.get('sac/q_loss', 0.0):.4f} | actor {stats.get('sac/actor_loss', 0.0):.4f} | "
+                    f"bc {stats.get('teacher/distill_loss', stats.get('sac/teacher_bc_loss', 0.0)):.4f} | "
                     f"sym {stats.get('sac/actor_symmetry_loss', 0.0):.4f} | "
                     f"wm {stats.get('world_model/loss', 0.0):.4f}"
                 )
