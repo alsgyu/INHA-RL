@@ -1,0 +1,121 @@
+extends: VelocityCommandWalk.yaml
+
+basic:
+  task: "K1/Velocity_Command_Walk_K1"
+  log_task: "K1/VelocityCommandWalkSIRLCmdFineTune"
+  checkpoint: null
+  max_iterations: 5000
+  description: "Command-tracking fine-tune from a known-good VelocityCommandWalk checkpoint."
+
+runner:
+  save_interval: 250
+  progress_interval: 10
+
+algorithm:
+  sirl_worldmodel:
+    learning_starts: 4096
+    updates_per_iter: 2
+    batch_size: 512
+    actor_lr: 2.0e-5
+    critic_lr: 5.0e-5
+    collect_noise_std: 0.005
+    teacher_enabled: true
+    teacher_policy_path: "__checkpoint__"
+    teacher_action_clip: 1.0
+    teacher_collect_iterations: 5000
+    teacher_collect_decay_iterations: 5000
+    teacher_collect_start_blend: 0.85
+    teacher_collect_end_blend: 0.45
+    teacher_distill_iterations: 5000
+    teacher_distill_steps_per_iter: 2
+    teacher_distill_batch_size: 4096
+    teacher_distill_replay_fraction: 0.5
+    teacher_bc_coef: 3.0
+    teacher_bc_decay_iterations: 0
+    teacher_bc_min_coef: 3.0
+    actor_rl_coef: 0.02
+    actor_rl_start_iteration: 500
+    actor_rl_warmup_iterations: 1500
+    actor_mean_l2_coef: 0.02
+    actor_action_l2_coef: 0.01
+    actor_symmetry_coef: 0.0
+    actor_symmetry_start_iteration: 100000000
+    actor_symmetry_warmup_iterations: 0
+    sirl_actor_coef: 0.005
+    sirl_actor_start_iteration: 1000
+    sirl_actor_warmup_iterations: 1000
+    sirl_q_coef: 0.0
+    model_batch_ratio: 0.0
+    model_rollout_enabled: false
+    sirl_metric_penalties:
+      velocity_error: 1.5
+      feet_slip: 0.4
+      swing_clearance_deficit: 0.5
+      base_tilt: 0.8
+      low_height: 0.5
+      stand_drift: 1.0
+
+commands:
+  still_proportion: 0.15
+  straight_proportion: 0.90
+  lin_vel_x: [0.0, 1.60]
+  lin_vel_y: [-0.04, 0.04]
+  ang_vel_yaw: [-0.10, 0.10]
+  straight:
+    lin_vel_x: [0.10, 1.60]
+    lin_vel_y: 0.0
+    ang_vel_yaw: 0.0
+  adapter:
+    gait_frequency_max: 1.95
+    gait_frequency_speed_max: 1.20
+  training_phases:
+    - start_iteration: 0
+      disturbance_scale: 0.02
+      still_proportion: 0.20
+      straight_proportion: 0.98
+      resampling_time_s: [5.0, 8.0]
+      lin_vel_x: [0.10, 1.20]
+      lin_vel_y: [0.0, 0.0]
+      ang_vel_yaw: [0.0, 0.0]
+      adapter:
+        gait_frequency_max: 1.85
+        gait_frequency_speed_max: 1.10
+    - start_iteration: 1000
+      disturbance_scale: 0.04
+      still_proportion: 0.15
+      straight_proportion: 0.95
+      resampling_time_s: [5.0, 8.0]
+      lin_vel_x: [0.10, 1.60]
+      lin_vel_y: [0.0, 0.0]
+      ang_vel_yaw: [0.0, 0.0]
+      adapter:
+        gait_frequency_max: 1.95
+        gait_frequency_speed_max: 1.20
+    - start_iteration: 2500
+      disturbance_scale: 0.08
+      still_proportion: 0.15
+      straight_proportion: 0.85
+      resampling_time_s: [5.0, 8.0]
+      lin_vel_x: [0.05, 1.60]
+      lin_vel_y: [-0.04, 0.04]
+      ang_vel_yaw: [-0.10, 0.10]
+      adapter:
+        gait_frequency_max: 1.95
+        gait_frequency_speed_max: 1.20
+
+rewards:
+  scales:
+    tracking_lin_vel_x: 4.0
+    lin_vel_x_error: -1.2
+    lin_vel_y_error: -2.0
+    ang_vel_yaw_error: -2.0
+    straight_path_lateral: -8.0
+    straight_heading: -6.0
+    straight_lateral_vel: -12.0
+    straight_yaw_vel: -12.0
+    action_rate: -5.0
+    feet_slip: -4.0
+  straight_path_lateral_error_clip: 0.4
+  straight_min_speed: 0.035
+  straight_max_abs_y_command: 0.04
+  straight_max_abs_yaw_command: 0.08

@@ -71,6 +71,7 @@ class SIRLWorldModelRunner:
 
         model_name = self.cfg["basic"].get("model", "BaseActorCritic")
         model_class = get_model_class(model_name)
+        self.model_class = model_class
         self.model = model_class(self.env.num_actions, self.env.num_obs, self.env.num_privileged_obs).to(self.device)
         self._init_actor_for_safe_start()
         self.teacher_policy = None
@@ -234,10 +235,47 @@ class SIRLWorldModelRunner:
                 return candidate
         return None
 
+    def _resolve_checkpoint_arg(self, checkpoint):
+        if not checkpoint:
+            return None
+        if checkpoint not in ("-1", -1):
+            return self._resolve_path(str(checkpoint))
+        task_name = self.cfg["basic"].get("log_task", self.cfg["basic"]["task"])
+        patterns = [
+            os.path.join("logs", task_name.split("/", 1)[0], task_name, "**/*.pth"),
+            os.path.join("logs", "**/*.pth"),
+        ]
+        for pattern in patterns:
+            matches = sorted(glob.glob(pattern, recursive=True), key=os.path.getmtime)
+            if matches:
+                return matches[-1]
+        return None
+
+    def _load_actor_checkpoint_policy(self, checkpoint_path):
+        try:
+            try:
+                model_dict = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
+            except TypeError:
+                model_dict = torch.load(checkpoint_path, map_location=self.device)
+            state_dict = model_dict["model"] if isinstance(model_dict, dict) and "model" in model_dict else model_dict
+            teacher_model = self.model_class(self.env.num_actions, self.env.num_obs, self.env.num_privileged_obs).to(self.device)
+            teacher_model.load_state_dict(state_dict, strict=False)
+            teacher_model.actor.eval()
+            for param in teacher_model.actor.parameters():
+                param.requires_grad_(False)
+            return teacher_model.actor
+        except Exception as exc:
+            print(f"[sirl-wm] failed to load teacher actor checkpoint '{checkpoint_path}': {exc}")
+            return None
+
     def _load_teacher_policy(self):
         if not self.teacher_enabled:
             return
-        teacher_path = self._resolve_path(self.wm_cfg.get("teacher_policy_path", "deploy/models/parameter_walk_k1.pt"))
+        teacher_spec = self.wm_cfg.get("teacher_policy_path", "deploy/models/parameter_walk_k1.pt")
+        if str(teacher_spec).lower() in ("__checkpoint__", "$checkpoint", "checkpoint", "self"):
+            teacher_path = self._resolve_checkpoint_arg(self.cfg["basic"].get("checkpoint"))
+        else:
+            teacher_path = self._resolve_path(teacher_spec)
         if teacher_path is None:
             print("[sirl-wm] teacher policy requested but path was not found; continuing without teacher.")
             self.teacher_enabled = False
@@ -247,9 +285,14 @@ class SIRLWorldModelRunner:
             self.teacher_policy.eval()
             print(f"[sirl-wm] teacher policy loaded: {teacher_path}")
         except Exception as exc:
-            print(f"[sirl-wm] failed to load teacher policy '{teacher_path}': {exc}")
-            self.teacher_policy = None
-            self.teacher_enabled = False
+            checkpoint_policy = self._load_actor_checkpoint_policy(teacher_path)
+            if checkpoint_policy is None:
+                print(f"[sirl-wm] failed to load teacher policy '{teacher_path}': {exc}")
+                self.teacher_policy = None
+                self.teacher_enabled = False
+                return
+            self.teacher_policy = checkpoint_policy
+            print(f"[sirl-wm] teacher actor checkpoint loaded: {teacher_path}")
 
     def _teacher_action(self, obs):
         if self.teacher_policy is None:

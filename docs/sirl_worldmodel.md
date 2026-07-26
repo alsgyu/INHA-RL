@@ -67,6 +67,43 @@ python play_mujoco_walk_getup_k1.py \
   --straight_path_correction
 ```
 
+Do not use this correction as proof of deploy readiness. It changes the command
+sent into the policy at play time and is useful only as a diagnostic or as a
+high-level controller prototype.
+
+## Command Fine-Tune
+
+To improve the policy weights themselves, fine-tune from the known-good
+checkpoint with the command-tracking config. The checkpoint is also loaded as
+the teacher anchor, so the new actor is penalized if it drifts too far from the
+walking behavior that already works.
+
+```bash
+python train_sirl_worldmodel.py \
+  --task=K1/VelocityCommandWalkCmdFineTune \
+  --checkpoint logs/K1/K1/VelocityCommandWalkSIRL/2026-07-26-21-35-34/nn/model_30000.pth \
+  --headless=True \
+  --sim_device=cuda:0 \
+  --rl_device=cuda:0 \
+  --num_envs=2048 \
+  --max_iterations=5000
+```
+
+Validate the fine-tuned checkpoint without MuJoCo straight-path correction:
+
+```bash
+python play_mujoco_walk_getup_k1.py \
+  --task K1/VelocityCommandWalk \
+  --checkpoint logs/K1/K1/VelocityCommandWalkSIRLCmdFineTune/<run>/nn/model_2500.pth \
+  --walk_only \
+  --vx 1.5 --vy 0 --vyaw 0 \
+  --duration_s 10
+```
+
+Keep `2026-07-26-21-35-34/nn/model_30000.pth` as the golden rollback
+checkpoint. Stop the fine-tune if `vx=0.1`, `vx=0.5`, or `vx=1.5` becomes less
+stable than that checkpoint.
+
 ## 4090 Starting Point
 
 - `num_envs`: 1024 for debugging, 2048 for default training, 4096 after stability.
