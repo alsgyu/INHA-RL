@@ -57,11 +57,13 @@ teacher-distilled, but prefer `model_2000.pth` or later for MuJoCo checks.
 
 - `num_envs`: 1024 for debugging, 2048 for default training, 4096 after stability.
 - `batch_size`: 512.
-- `updates_per_iter`: 16 with `collect_steps_per_iter=16`.
-- Teacher distillation: 4 batches of 4096 samples per iteration for the first
-  10k iterations, so the saved student actor is deployable before SAC takes over.
-- SAC actor updates: held off until 8k iterations, then linearly warmed in over
-  12k iterations.
+- `updates_per_iter`: 2 with `collect_steps_per_iter=16`.
+- Teacher distillation: 6 batches of 4096 samples per iteration for the full
+  30k-iteration warmup so the saved student actor stays close to the deploy
+  teacher.
+- SAC actor updates: disabled by default. Keep Q/world-model training auxiliary
+  until MuJoCo validation is no worse than the teacher, then re-enable actor RL
+  with a tiny coefficient such as `actor_rl_coef: 0.02`.
 - Real replay: CPU, 1M transitions.
 - Model replay: CPU, 250k transitions.
 - World model ensemble: 5 MLPs, hidden dims `[512, 512]`.
@@ -74,11 +76,11 @@ teacher-distilled, but prefer `model_2000.pth` or later for MuJoCo checks.
 
 ## Stability Notes
 
-The current safe path is real replay + teacher bootstrap + return-filtered
-trajectory SIRL + mirror symmetry. The world model still trains as an auxiliary
-model, but generated transitions are not mixed into SAC updates by default.
-Turn model-generated updates back on only after `vx=0.1` and `vx=0.2` hold a
-straight path in MuJoCo.
+The current safe path is real replay + teacher bootstrap + supervised actor
+distillation. The world model, critic, and SIRL buffers still train as
+auxiliary components, but they do not directly move the deploy actor by default.
+Turn actor RL, SIRL actor loss, symmetry loss, or model-generated updates back
+on only after `vx=0.1` and `vx=0.2` hold a straight path in MuJoCo.
 
 ## Extension Path
 

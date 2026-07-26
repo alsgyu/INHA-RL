@@ -86,7 +86,7 @@ algorithm:
     collect_steps_per_iter: 16
     start_random_steps: 0
     learning_starts: 16384
-    updates_per_iter: 16
+    updates_per_iter: 2
     batch_size: 512
     gamma: 0.99
     target_tau: 0.005
@@ -107,28 +107,28 @@ algorithm:
     teacher_enabled: true
     teacher_policy_path: "deploy/models/parameter_walk_k1.pt"
     teacher_action_clip: 1.0
-    teacher_collect_iterations: 20000
-    teacher_collect_decay_iterations: 20000
+    teacher_collect_iterations: 30000
+    teacher_collect_decay_iterations: 30000
     teacher_collect_start_blend: 1.0
-    teacher_collect_end_blend: 0.50
-    teacher_distill_iterations: 10000
-    teacher_distill_steps_per_iter: 4
+    teacher_collect_end_blend: 1.0
+    teacher_distill_iterations: 30000
+    teacher_distill_steps_per_iter: 6
     teacher_distill_batch_size: 4096
     teacher_distill_replay_fraction: 0.5
-    teacher_bc_coef: 6.0
-    teacher_bc_decay_iterations: 30000
-    teacher_bc_min_coef: 1.0
-    actor_rl_coef: 1.0
-    actor_rl_start_iteration: 8000
-    actor_rl_warmup_iterations: 12000
+    teacher_bc_coef: 20.0
+    teacher_bc_decay_iterations: 0
+    teacher_bc_min_coef: 20.0
+    actor_rl_coef: 0.0
+    actor_rl_start_iteration: 100000000
+    actor_rl_warmup_iterations: 0
     actor_bound_coef: 25.0
     actor_bound_limit: 1.0
     actor_mean_clip: 1.0
     actor_mean_l2_coef: 0.01
     actor_action_l2_coef: 0.005
-    actor_symmetry_coef: 0.25
-    actor_symmetry_start_iteration: 6000
-    actor_symmetry_warmup_iterations: 6000
+    actor_symmetry_coef: 0.0
+    actor_symmetry_start_iteration: 100000000
+    actor_symmetry_warmup_iterations: 0
     actor_symmetry_min_abs_vx: 0.03
     actor_symmetry_max_abs_vy: 0.04
     actor_symmetry_max_abs_yaw: 0.08
@@ -176,10 +176,10 @@ algorithm:
     sirl_min_return_percentile: 60
     sirl_return_alpha: 1.0
     sirl_max_weight: 1.0
-    sirl_actor_coef: 0.03
-    sirl_actor_start_iteration: 6000
-    sirl_actor_warmup_iterations: 6000
-    sirl_q_coef: 0.05
+    sirl_actor_coef: 0.0
+    sirl_actor_start_iteration: 100000000
+    sirl_actor_warmup_iterations: 0
+    sirl_q_coef: 0.0
     sirl_batch_size: 512
     sirl_loss: "mse"
     sirl_adv_weight_clip: 5.0
