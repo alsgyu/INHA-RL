@@ -53,6 +53,20 @@ then `vx=0.1`, then `vx=0.2`; do not use `vx=0.5` as the first pass/fail
 test while the straight gait is still being tuned. Early checkpoints are now
 teacher-distilled, but prefer `model_2000.pth` or later for MuJoCo checks.
 
+For a checkpoint that already walks well but drifts slightly during straight
+commands, keep the policy weights unchanged and enable the MuJoCo-only straight
+path correction:
+
+```bash
+python play_mujoco_walk_getup_k1.py \
+  --task K1/VelocityCommandWalk \
+  --checkpoint logs/K1/K1/VelocityCommandWalkSIRL/<run>/nn/model_30000.pth \
+  --walk_only \
+  --vx 1.5 --vy 0 --vyaw 0 \
+  --duration_s 10 \
+  --straight_path_correction
+```
+
 ## 4090 Starting Point
 
 - `num_envs`: 1024 for debugging, 2048 for default training, 4096 after stability.

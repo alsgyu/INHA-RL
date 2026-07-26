@@ -187,6 +187,32 @@ def command_path_error(start_xy, start_yaw, time_s, current_xy, current_yaw, vx,
     return along_error, lateral_error, yaw_error
 
 
+def corrected_straight_command(args, start_xy, start_yaw, path_time, current_xy, current_yaw):
+    if not args.straight_path_correction:
+        return args.vx, args.vy, args.vyaw, None
+    if abs(args.vx) < args.straight_path_min_vx or abs(args.vy) > 1.0e-6 or abs(args.vyaw) > 1.0e-6:
+        return args.vx, args.vy, args.vyaw, None
+
+    _, lateral_error, yaw_error = command_path_error(
+        start_xy,
+        start_yaw,
+        path_time,
+        current_xy,
+        current_yaw,
+        args.vx,
+        0.0,
+        0.0,
+    )
+    corrected_vy = -float(args.straight_path_vy_gain) * lateral_error
+    corrected_vyaw = (
+        -float(args.straight_path_yaw_gain) * yaw_error
+        - float(args.straight_path_lateral_yaw_gain) * lateral_error
+    )
+    corrected_vy = float(np.clip(corrected_vy, -args.straight_path_max_vy, args.straight_path_max_vy))
+    corrected_vyaw = float(np.clip(corrected_vyaw, -args.straight_path_max_vyaw, args.straight_path_max_vyaw))
+    return args.vx, corrected_vy, corrected_vyaw, (float(lateral_error), float(yaw_error))
+
+
 def fallen_rpy(pose):
     if pose == "front":
         return 0.0, 1.45, 0.0
@@ -347,6 +373,13 @@ def main():
     parser.add_argument("--kd_scale", type=float, default=1.0)
     parser.add_argument("--torque_scale", type=float, default=1.0)
     parser.add_argument("--disable_velocity_adapter", action="store_true")
+    parser.add_argument("--straight_path_correction", action="store_true")
+    parser.add_argument("--straight_path_min_vx", type=float, default=0.05)
+    parser.add_argument("--straight_path_yaw_gain", type=float, default=0.35)
+    parser.add_argument("--straight_path_lateral_yaw_gain", type=float, default=0.15)
+    parser.add_argument("--straight_path_vy_gain", type=float, default=0.08)
+    parser.add_argument("--straight_path_max_vy", type=float, default=0.06)
+    parser.add_argument("--straight_path_max_vyaw", type=float, default=0.25)
     parser.add_argument("--metrics_window_s", type=float, default=3.0)
     parser.add_argument("--metrics_warmup_s", type=float, default=1.0)
     parser.add_argument("--metrics_csv", default=None)
@@ -475,6 +508,15 @@ def main():
         f"command_slew_rate={float(cfg['walk_policy'].get('command_slew_rate', 1.0)):.3f} "
         f"velocity_adapter={bool(cfg['walk_policy'].get('velocity_command_adapter', {}).get('enabled', False))}"
     )
+    if args.straight_path_correction:
+        print(
+            "[mujoco] straight path correction "
+            f"yaw_gain={args.straight_path_yaw_gain:.3f} "
+            f"lat_yaw_gain={args.straight_path_lateral_yaw_gain:.3f} "
+            f"vy_gain={args.straight_path_vy_gain:.3f} "
+            f"max_vy={args.straight_path_max_vy:.3f} "
+            f"max_vyaw={args.straight_path_max_vyaw:.3f}"
+        )
     print(
         f"[mujoco] pd_scale=(kp={float(args.kp_scale):.3f},kd={float(args.kd_scale):.3f}) "
         f"torque_scale={float(args.torque_scale):.3f}"
@@ -525,6 +567,15 @@ def main():
             next_policy_t += policy_dt
             previous_mode = policy.mode
             if target_pose is None:
+                path_time = max(float(data.time) - path_start_time, 0.0)
+                cmd_vx, cmd_vy, cmd_vyaw, _ = corrected_straight_command(
+                    args,
+                    start_xy,
+                    start_yaw,
+                    path_time,
+                    data.qpos[0:2],
+                    metric_yaw,
+                )
                 target_qpos[:] = policy.inference(
                     time_now=float(data.time),
                     dof_pos=np.array(data.qpos[7 : 7 + len(default_qpos)], dtype=np.float32),
@@ -532,9 +583,9 @@ def main():
                     base_ang_vel=base_ang_vel,
                     projected_gravity=projected_gravity,
                     base_rpy=base_rpy,
-                    vx=args.vx,
-                    vy=args.vy,
-                    vyaw=args.vyaw,
+                    vx=cmd_vx,
+                    vy=cmd_vy,
+                    vyaw=cmd_vyaw,
                 )
             else:
                 target_qpos[:] = policy.target_pose_inference(
@@ -592,7 +643,21 @@ def main():
                     args.vy,
                     args.vyaw,
                 )
-                path_text = f"path_err=({path_along_error:+.3f},{path_lateral_error:+.3f}) yaw_err={path_yaw_error:+.3f} "
+                _, corrected_vy, corrected_vyaw, correction_error = corrected_straight_command(
+                    args,
+                    start_xy,
+                    start_yaw,
+                    path_time,
+                    data.qpos[0:2],
+                    metric_yaw,
+                )
+                correction_text = ""
+                if correction_error is not None:
+                    correction_text = f"corr=(vy={corrected_vy:+.3f},vyaw={corrected_vyaw:+.3f}) "
+                path_text = (
+                    f"path_err=({path_along_error:+.3f},{path_lateral_error:+.3f}) "
+                    f"yaw_err={path_yaw_error:+.3f} {correction_text}"
+                )
             else:
                 target_dist = np.linalg.norm(target_pose[0:2] - data.qpos[0:2])
                 target_heading_err = wrap_to_pi(target_pose[2] - metric_yaw)
