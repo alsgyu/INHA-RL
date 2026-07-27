@@ -30,6 +30,10 @@ class Policy:
         self.command_adapter = self.cfg["policy"].get("command_adapter")
         self.gait_frequency = float(self.cfg["policy"]["gait_frequency"])
         self.gait_process = 0.0
+        self.estimated_yaw = 0.0
+        self.desired_yaw = 0.0
+        self.heading_initialized = False
+        self.heading_correction_yaw = 0.0
         self.dof_targets = np.copy(self.default_dof_pos)
         self.obs = np.zeros(self.cfg["policy"]["num_observations"], dtype=np.float32)
         self.actions = np.zeros(self.cfg["policy"]["num_actions"], dtype=np.float32)
@@ -43,6 +47,47 @@ class Policy:
         if self.command_adapter is None:
             return default
         return self.command_adapter.get(key, default)
+
+    @staticmethod
+    def _wrap_to_pi(angle):
+        return (angle + np.pi) % (2.0 * np.pi) - np.pi
+
+    def _heading_correction(self, moving):
+        adapter = self.command_adapter
+        if adapter is None or not bool(adapter.get("heading_correction_enabled", False)):
+            return 0.0
+
+        if not moving:
+            self.desired_yaw = self.estimated_yaw
+            self.heading_initialized = False
+            self.heading_correction_yaw = 0.0
+            return 0.0
+
+        if not self.heading_initialized:
+            self.desired_yaw = self.estimated_yaw
+            self.heading_initialized = True
+        else:
+            self.desired_yaw = self._wrap_to_pi(self.desired_yaw + float(self.smoothed_commands[2]) * self.policy_interval)
+
+        min_vx = float(adapter.get("heading_correction_min_abs_vx", 0.08))
+        max_abs_vy = float(adapter.get("heading_correction_max_abs_vy_command", 0.04))
+        max_abs_yaw = float(adapter.get("heading_correction_max_abs_yaw_command", 0.08))
+        straight = (
+            abs(float(self.smoothed_commands[0])) > min_vx
+            and abs(float(self.smoothed_commands[1])) < max_abs_vy
+            and abs(float(self.smoothed_commands[2])) < max_abs_yaw
+        )
+        if not straight:
+            self.heading_correction_yaw = 0.0
+            return 0.0
+
+        yaw_error = self._wrap_to_pi(self.estimated_yaw - self.desired_yaw)
+        deadband = float(adapter.get("heading_correction_deadband", 0.015))
+        yaw_error = np.sign(yaw_error) * max(abs(yaw_error) - deadband, 0.0)
+        correction = -float(adapter.get("heading_correction_gain", 1.0)) * yaw_error
+        max_correction = float(adapter.get("heading_correction_max_yaw_rate", 0.35))
+        self.heading_correction_yaw = float(np.clip(correction, -max_correction, max_correction))
+        return self.heading_correction_yaw
 
     def _resolve_command_block(self):
         adapter = self.command_adapter
@@ -68,13 +113,14 @@ class Policy:
         vx, vy, yaw = self.smoothed_commands
         stand_threshold = float(adapter.get("stand_command_threshold", 0.04))
         moving = np.sqrt(vx * vx + vy * vy + yaw * yaw) > stand_threshold
+        internal_yaw = yaw + self._heading_correction(moving)
 
         linear_speed = np.sqrt(vx * vx + vy * vy)
         speed_min = float(adapter.get("gait_frequency_speed_min", 0.08))
         speed_max = max(float(adapter.get("gait_frequency_speed_max", 1.0)), speed_min + 1.0e-6)
         max_yaw = max(float(adapter.get("max_yaw_speed_for_drive", 1.0)), 1.0e-6)
         linear_drive = np.clip((linear_speed - speed_min) / (speed_max - speed_min), 0.0, 1.0)
-        yaw_drive = np.clip(abs(yaw) / max_yaw, 0.0, 1.0)
+        yaw_drive = np.clip(abs(internal_yaw) / max_yaw, 0.0, 1.0)
         drive = max(linear_drive, yaw_drive)
 
         if moving:
@@ -86,7 +132,7 @@ class Policy:
 
         foot_clip = adapter.get("foot_yaw_target_clip", [-0.25, 0.25])
         foot_yaw = np.clip(
-            yaw * float(adapter.get("foot_yaw_from_yaw_gain", 0.12)),
+            internal_yaw * float(adapter.get("foot_yaw_from_yaw_gain", 0.12)),
             float(foot_clip[0]),
             float(foot_clip[1]),
         )
@@ -124,6 +170,7 @@ class Policy:
         )
 
     def inference(self, time_now, dof_pos, dof_vel, base_ang_vel, projected_gravity, vx, vy, vyaw):
+        self.estimated_yaw = self._wrap_to_pi(self.estimated_yaw + float(base_ang_vel[2]) * self.policy_interval)
         try:
             self.commands[0] = self.obs_controller.get_vx_cmd()
             self.commands[1] = self.obs_controller.get_vy_cmd()

@@ -106,8 +106,9 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         vx = self.commands[env_ids, 0]
         vy = self.commands[env_ids, 1]
         yaw = self.commands[env_ids, 2]
+        internal_yaw = self._heading_corrected_yaw_command(env_ids, vx, vy, yaw, adapter)
         linear_speed = torch.sqrt(torch.square(vx) + torch.square(vy))
-        yaw_speed = torch.abs(yaw)
+        yaw_speed = torch.abs(internal_yaw)
 
         speed_min = float(adapter.get("gait_frequency_speed_min", 0.08))
         speed_max = max(float(adapter.get("gait_frequency_speed_max", 1.0)), speed_min + 1.0e-6)
@@ -128,7 +129,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         foot_yaw_gain = float(adapter.get("foot_yaw_from_yaw_gain", 0.12))
         foot_yaw_clip = adapter.get("foot_yaw_target_clip", [-0.25, 0.25])
         foot_yaw = torch.clamp(
-            yaw * foot_yaw_gain,
+            internal_yaw * foot_yaw_gain,
             min=float(foot_yaw_clip[0]),
             max=float(foot_yaw_clip[1]),
         )
@@ -162,6 +163,30 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             self.gait_process[env_ids],
             torch.zeros_like(self.gait_process[env_ids]),
         )
+
+    def _heading_corrected_yaw_command(self, env_ids, vx, vy, yaw, adapter):
+        if not bool(adapter.get("heading_correction_enabled", False)):
+            return yaw
+
+        min_vx = float(adapter.get("heading_correction_min_abs_vx", 0.08))
+        max_abs_vy = float(adapter.get("heading_correction_max_abs_vy_command", 0.04))
+        max_abs_yaw = float(adapter.get("heading_correction_max_abs_yaw_command", 0.08))
+        straight = (
+            (torch.abs(vx) > min_vx)
+            & (torch.abs(vy) < max_abs_vy)
+            & (torch.abs(yaw) < max_abs_yaw)
+        ).float()
+        if float(straight.sum().item()) <= 0.0:
+            return yaw
+
+        base_yaw = self._get_base_yaw()[env_ids]
+        yaw_error = self._wrap_to_pi(base_yaw - self.desired_yaw[env_ids])
+        deadband = float(adapter.get("heading_correction_deadband", 0.015))
+        yaw_error = torch.sign(yaw_error) * torch.clamp(torch.abs(yaw_error) - deadband, min=0.0)
+        gain = float(adapter.get("heading_correction_gain", 1.0))
+        max_correction = float(adapter.get("heading_correction_max_yaw_rate", 0.35))
+        correction = torch.clamp(-gain * yaw_error, min=-max_correction, max=max_correction)
+        return yaw + correction * straight
 
     def _apply_fixed_command(self, command_cfg, env_ids=None):
         if env_ids is None:

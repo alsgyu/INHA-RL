@@ -68,6 +68,9 @@ class Policy:
         self.commands = np.zeros(3, dtype=np.float32)
         self.smoothed_commands = np.zeros(3, dtype=np.float32)
         self.walk_gait_process = 0.0
+        self.walk_desired_yaw = 0.0
+        self.walk_heading_initialized = False
+        self.walk_heading_correction_yaw = 0.0
         self.policy_interval = self.cfg["common"]["dt"] * self.cfg["walk_policy"]["control"]["decimation"]
 
     def get_policy_interval(self):
@@ -100,6 +103,8 @@ class Policy:
             self.recovered_time = 0.0
             self.getup_actions[:] = 0.0
             self.smoothed_commands[:] = 0.0
+            self.walk_heading_initialized = False
+            self.walk_heading_correction_yaw = 0.0
             return
 
         if self.mode == "getup":
@@ -112,13 +117,14 @@ class Policy:
                 self.mode = "walk"
                 self.walk_actions[:] = 0.0
                 self.walk_gait_process = 0.0
+                self.walk_heading_initialized = False
                 self.recovered_time = 0.0
 
     def inference(self, time_now, dof_pos, dof_vel, base_ang_vel, projected_gravity, base_rpy, vx, vy, vyaw):
         self._update_mode(base_rpy, projected_gravity, base_ang_vel)
         if self.mode == "getup":
             return self._getup_inference(dof_pos, dof_vel, base_ang_vel, projected_gravity)
-        return self._walk_inference(dof_pos, dof_vel, base_ang_vel, projected_gravity, vx, vy, vyaw)
+        return self._walk_inference(dof_pos, dof_vel, base_ang_vel, projected_gravity, base_rpy, vx, vy, vyaw)
 
     def target_pose_inference(
         self,
@@ -137,7 +143,7 @@ class Policy:
         if self.mode == "getup":
             return self._getup_inference(dof_pos, dof_vel, base_ang_vel, projected_gravity)
         vx, vy, vyaw = self._target_pose_to_walk_command(base_pos, base_rpy, target_x, target_y, target_theta)
-        return self._walk_inference(dof_pos, dof_vel, base_ang_vel, projected_gravity, vx, vy, vyaw)
+        return self._walk_inference(dof_pos, dof_vel, base_ang_vel, projected_gravity, base_rpy, vx, vy, vyaw)
 
     def _target_pose_to_walk_command(self, base_pos, base_rpy, target_x, target_y, target_theta):
         walk_cfg = self.cfg["walk_policy"]
@@ -183,7 +189,7 @@ class Policy:
             vyaw = 0.0
         return float(vx), float(vy), float(vyaw)
 
-    def _walk_inference(self, dof_pos, dof_vel, base_ang_vel, projected_gravity, vx, vy, vyaw):
+    def _walk_inference(self, dof_pos, dof_vel, base_ang_vel, projected_gravity, base_rpy, vx, vy, vyaw):
         walk_cfg = self.cfg["walk_policy"]
         leg_start = int(walk_cfg.get("leg_start_index", self.cfg["common"]["joint_cnt"] - walk_cfg["num_actions"]))
         leg_end = leg_start + walk_cfg["num_actions"]
@@ -197,7 +203,8 @@ class Policy:
         moving = np.linalg.norm(self.smoothed_commands) > float(walk_cfg.get("stand_command_threshold", 1.0e-5))
         if not moving:
             self.walk_actions *= float(walk_cfg.get("stand_action_decay", 0.0))
-        internal_command = self._resolve_walk_internal_command(walk_cfg, moving)
+        heading_correction_yaw = self._walk_heading_correction(walk_cfg, moving, base_rpy)
+        internal_command = self._resolve_walk_internal_command(walk_cfg, moving, heading_correction_yaw)
         gait_frequency = internal_command["gait_frequency"]
         self.walk_gait_process = np.fmod(self.walk_gait_process + self.policy_interval * gait_frequency, 1.0)
 
@@ -252,7 +259,47 @@ class Policy:
         )
         return self.dof_targets
 
-    def _resolve_walk_internal_command(self, walk_cfg, moving):
+    def _walk_heading_correction(self, walk_cfg, moving, base_rpy):
+        adapter = walk_cfg.get("velocity_command_adapter", {})
+        if not bool(adapter.get("heading_correction_enabled", False)):
+            return 0.0
+
+        current_yaw = float(base_rpy[2])
+        if not moving:
+            self.walk_desired_yaw = current_yaw
+            self.walk_heading_initialized = False
+            self.walk_heading_correction_yaw = 0.0
+            return 0.0
+
+        if not self.walk_heading_initialized:
+            self.walk_desired_yaw = current_yaw
+            self.walk_heading_initialized = True
+        else:
+            self.walk_desired_yaw = self._wrap_to_pi(
+                self.walk_desired_yaw + float(self.smoothed_commands[2]) * self.policy_interval
+            )
+
+        min_vx = float(adapter.get("heading_correction_min_abs_vx", 0.08))
+        max_abs_vy = float(adapter.get("heading_correction_max_abs_vy_command", 0.04))
+        max_abs_yaw = float(adapter.get("heading_correction_max_abs_yaw_command", 0.08))
+        straight = (
+            abs(float(self.smoothed_commands[0])) > min_vx
+            and abs(float(self.smoothed_commands[1])) < max_abs_vy
+            and abs(float(self.smoothed_commands[2])) < max_abs_yaw
+        )
+        if not straight:
+            self.walk_heading_correction_yaw = 0.0
+            return 0.0
+
+        yaw_error = self._wrap_to_pi(current_yaw - self.walk_desired_yaw)
+        deadband = float(adapter.get("heading_correction_deadband", 0.015))
+        yaw_error = np.sign(yaw_error) * max(abs(yaw_error) - deadband, 0.0)
+        correction = -float(adapter.get("heading_correction_gain", 1.0)) * yaw_error
+        max_correction = float(adapter.get("heading_correction_max_yaw_rate", 0.35))
+        self.walk_heading_correction_yaw = float(np.clip(correction, -max_correction, max_correction))
+        return self.walk_heading_correction_yaw
+
+    def _resolve_walk_internal_command(self, walk_cfg, moving, heading_correction_yaw=0.0):
         if not moving:
             return {
                 "gait_frequency": 0.0,
@@ -277,12 +324,13 @@ class Policy:
             }
 
         vx, vy, vyaw = [float(value) for value in self.smoothed_commands]
+        internal_vyaw = vyaw + float(heading_correction_yaw)
         linear_speed = np.hypot(vx, vy)
         speed_min = float(adapter.get("gait_frequency_speed_min", 0.08))
         speed_max = max(float(adapter.get("gait_frequency_speed_max", 1.05)), speed_min + 1.0e-6)
         max_yaw = max(float(adapter.get("max_yaw_speed_for_drive", 0.90)), 1.0e-6)
         linear_drive = np.clip((linear_speed - speed_min) / (speed_max - speed_min), 0.0, 1.0)
-        yaw_drive = np.clip(abs(vyaw) / max_yaw, 0.0, 1.0)
+        yaw_drive = np.clip(abs(internal_vyaw) / max_yaw, 0.0, 1.0)
         drive = max(linear_drive, yaw_drive)
 
         gait_frequency = float(adapter.get("gait_frequency_min", 1.15)) + drive * (
@@ -290,7 +338,7 @@ class Policy:
         )
         foot_yaw_clip = adapter.get("foot_yaw_target_clip", [-0.22, 0.22])
         foot_yaw = np.clip(
-            vyaw * float(adapter.get("foot_yaw_from_yaw_gain", 0.12)),
+            internal_vyaw * float(adapter.get("foot_yaw_from_yaw_gain", 0.12)),
             float(foot_yaw_clip[0]),
             float(foot_yaw_clip[1]),
         )

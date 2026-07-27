@@ -2,7 +2,7 @@ extends: VelocityCommandWalkCmdFineTune.yaml
 
 basic:
   log_task: "K1/VelocityCommandWalkSIRLCmdSpeedFineTune"
-  max_iterations: 2000
+  max_iterations: 3000
   description: "Speed-tracking fine-tune that keeps lateral/yaw actions close to the golden teacher."
 
 runner:
@@ -17,18 +17,18 @@ algorithm:
     teacher_collect_end_blend: 0.80
     teacher_distill_iterations: 2000
     teacher_distill_steps_per_iter: 2
-    teacher_bc_coef: 8.0
-    teacher_bc_min_coef: 8.0
+    teacher_bc_coef: 6.0
+    teacher_bc_min_coef: 6.0
     # Action order:
     # [L_Hip_Pitch, L_Hip_Roll, L_Hip_Yaw, L_Knee_Pitch, L_Ankle_Pitch, L_Ankle_Roll,
     #  R_Hip_Pitch, R_Hip_Roll, R_Hip_Yaw, R_Knee_Pitch, R_Ankle_Pitch, R_Ankle_Roll]
     # Pitch actions are allowed to adapt for speed; roll/yaw actions stay close to the teacher.
-    teacher_bc_action_weights: [0.15, 1.0, 1.0, 0.15, 0.15, 1.0, 0.15, 1.0, 1.0, 0.15, 0.15, 1.0]
-    teacher_distill_action_weights: [0.25, 1.0, 1.0, 0.25, 0.25, 1.0, 0.25, 1.0, 1.0, 0.25, 0.25, 1.0]
-    teacher_guard_action_weights: [0.10, 1.0, 1.0, 0.10, 0.10, 1.0, 0.10, 1.0, 1.0, 0.10, 0.10, 1.0]
+    teacher_bc_action_weights: [0.08, 1.0, 1.0, 0.08, 0.08, 1.0, 0.08, 1.0, 1.0, 0.08, 0.08, 1.0]
+    teacher_distill_action_weights: [0.18, 1.0, 1.0, 0.18, 0.18, 1.0, 0.18, 1.0, 1.0, 0.18, 0.18, 1.0]
+    teacher_guard_action_weights: [0.05, 1.0, 1.0, 0.05, 0.05, 1.0, 0.05, 1.0, 1.0, 0.05, 0.05, 1.0]
     teacher_guard_max_mse: 0.010
     teacher_guard_max_increase: 0.0015
-    actor_rl_coef: 0.008
+    actor_rl_coef: 0.012
     actor_rl_start_iteration: 250
     actor_rl_warmup_iterations: 750
     actor_mean_l2_coef: 0.01
@@ -46,10 +46,17 @@ commands:
     lin_vel_y: 0.0
     ang_vel_yaw: 0.0
   adapter:
-    gait_frequency_max: 2.05
+    gait_frequency_max: 2.15
     gait_frequency_speed_max: 1.45
-    body_pitch_gain: 0.10
+    body_pitch_gain: 0.11
     body_pitch_target_clip: [-0.04, 0.16]
+    heading_correction_enabled: true
+    heading_correction_min_abs_vx: 0.08
+    heading_correction_max_abs_vy_command: 0.04
+    heading_correction_max_abs_yaw_command: 0.08
+    heading_correction_gain: 1.2
+    heading_correction_deadband: 0.015
+    heading_correction_max_yaw_rate: 0.45
   training_phases:
     - start_iteration: 0
       disturbance_scale: 0.02
@@ -64,6 +71,9 @@ commands:
         gait_frequency_speed_max: 1.20
         body_pitch_gain: 0.09
         body_pitch_target_clip: [-0.04, 0.14]
+        heading_correction_enabled: true
+        heading_correction_gain: 1.0
+        heading_correction_max_yaw_rate: 0.35
     - start_iteration: 500
       disturbance_scale: 0.03
       still_proportion: 0.10
@@ -73,10 +83,13 @@ commands:
       lin_vel_y: [0.0, 0.0]
       ang_vel_yaw: [0.0, 0.0]
       adapter:
-        gait_frequency_max: 2.05
+        gait_frequency_max: 2.15
         gait_frequency_speed_max: 1.45
-        body_pitch_gain: 0.10
+        body_pitch_gain: 0.11
         body_pitch_target_clip: [-0.04, 0.16]
+        heading_correction_enabled: true
+        heading_correction_gain: 1.2
+        heading_correction_max_yaw_rate: 0.45
     - start_iteration: 1500
       disturbance_scale: 0.05
       still_proportion: 0.10
@@ -86,10 +99,13 @@ commands:
       lin_vel_y: [-0.02, 0.02]
       ang_vel_yaw: [-0.05, 0.05]
       adapter:
-        gait_frequency_max: 2.05
+        gait_frequency_max: 2.15
         gait_frequency_speed_max: 1.45
-        body_pitch_gain: 0.10
+        body_pitch_gain: 0.11
         body_pitch_target_clip: [-0.04, 0.16]
+        heading_correction_enabled: true
+        heading_correction_gain: 1.2
+        heading_correction_max_yaw_rate: 0.45
 
 rewards:
   scales:

@@ -654,6 +654,9 @@ def main():
                 correction_text = ""
                 if correction_error is not None:
                     correction_text = f"corr=(vy={corrected_vy:+.3f},vyaw={corrected_vyaw:+.3f}) "
+                adapter_yaw_correction = float(getattr(policy, "walk_heading_correction_yaw", 0.0))
+                if abs(adapter_yaw_correction) > 1.0e-5:
+                    correction_text += f"adapter_yaw={adapter_yaw_correction:+.3f} "
                 path_text = (
                     f"path_err=({path_along_error:+.3f},{path_lateral_error:+.3f}) "
                     f"yaw_err={path_yaw_error:+.3f} {correction_text}"
