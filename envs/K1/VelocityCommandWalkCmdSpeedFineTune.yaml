@@ -1,0 +1,111 @@
+extends: VelocityCommandWalkCmdFineTune.yaml
+
+basic:
+  log_task: "K1/VelocityCommandWalkSIRLCmdSpeedFineTune"
+  max_iterations: 2000
+  description: "Speed-tracking fine-tune that keeps lateral/yaw actions close to the golden teacher."
+
+runner:
+  save_interval: 250
+  progress_interval: 10
+
+algorithm:
+  sirl_worldmodel:
+    teacher_collect_iterations: 2000
+    teacher_collect_decay_iterations: 2000
+    teacher_collect_start_blend: 1.0
+    teacher_collect_end_blend: 0.80
+    teacher_distill_iterations: 2000
+    teacher_distill_steps_per_iter: 2
+    teacher_bc_coef: 8.0
+    teacher_bc_min_coef: 8.0
+    # Action order:
+    # [L_Hip_Pitch, L_Hip_Roll, L_Hip_Yaw, L_Knee_Pitch, L_Ankle_Pitch, L_Ankle_Roll,
+    #  R_Hip_Pitch, R_Hip_Roll, R_Hip_Yaw, R_Knee_Pitch, R_Ankle_Pitch, R_Ankle_Roll]
+    # Pitch actions are allowed to adapt for speed; roll/yaw actions stay close to the teacher.
+    teacher_bc_action_weights: [0.15, 1.0, 1.0, 0.15, 0.15, 1.0, 0.15, 1.0, 1.0, 0.15, 0.15, 1.0]
+    teacher_distill_action_weights: [0.25, 1.0, 1.0, 0.25, 0.25, 1.0, 0.25, 1.0, 1.0, 0.25, 0.25, 1.0]
+    teacher_guard_action_weights: [0.10, 1.0, 1.0, 0.10, 0.10, 1.0, 0.10, 1.0, 1.0, 0.10, 0.10, 1.0]
+    teacher_guard_max_mse: 0.010
+    teacher_guard_max_increase: 0.0015
+    actor_rl_coef: 0.008
+    actor_rl_start_iteration: 250
+    actor_rl_warmup_iterations: 750
+    actor_mean_l2_coef: 0.01
+    actor_action_l2_coef: 0.005
+    collect_noise_std: 0.003
+
+commands:
+  still_proportion: 0.10
+  straight_proportion: 0.98
+  lin_vel_x: [0.20, 1.60]
+  lin_vel_y: [0.0, 0.0]
+  ang_vel_yaw: [0.0, 0.0]
+  straight:
+    lin_vel_x: [0.20, 1.60]
+    lin_vel_y: 0.0
+    ang_vel_yaw: 0.0
+  adapter:
+    gait_frequency_max: 2.05
+    gait_frequency_speed_max: 1.45
+    body_pitch_gain: 0.10
+    body_pitch_target_clip: [-0.04, 0.16]
+  training_phases:
+    - start_iteration: 0
+      disturbance_scale: 0.02
+      still_proportion: 0.12
+      straight_proportion: 1.00
+      resampling_time_s: [5.0, 8.0]
+      lin_vel_x: [0.20, 1.20]
+      lin_vel_y: [0.0, 0.0]
+      ang_vel_yaw: [0.0, 0.0]
+      adapter:
+        gait_frequency_max: 1.95
+        gait_frequency_speed_max: 1.20
+        body_pitch_gain: 0.09
+        body_pitch_target_clip: [-0.04, 0.14]
+    - start_iteration: 500
+      disturbance_scale: 0.03
+      still_proportion: 0.10
+      straight_proportion: 1.00
+      resampling_time_s: [5.0, 8.0]
+      lin_vel_x: [0.50, 1.60]
+      lin_vel_y: [0.0, 0.0]
+      ang_vel_yaw: [0.0, 0.0]
+      adapter:
+        gait_frequency_max: 2.05
+        gait_frequency_speed_max: 1.45
+        body_pitch_gain: 0.10
+        body_pitch_target_clip: [-0.04, 0.16]
+    - start_iteration: 1500
+      disturbance_scale: 0.05
+      still_proportion: 0.10
+      straight_proportion: 0.95
+      resampling_time_s: [5.0, 8.0]
+      lin_vel_x: [0.20, 1.60]
+      lin_vel_y: [-0.02, 0.02]
+      ang_vel_yaw: [-0.05, 0.05]
+      adapter:
+        gait_frequency_max: 2.05
+        gait_frequency_speed_max: 1.45
+        body_pitch_gain: 0.10
+        body_pitch_target_clip: [-0.04, 0.16]
+
+rewards:
+  scales:
+    tracking_lin_vel_x: 6.0
+    lin_vel_x_error: -2.4
+    lin_vel_y_error: -2.4
+    ang_vel_yaw_error: -3.0
+    straight_path_lateral: -10.0
+    straight_heading: -8.0
+    straight_lateral_vel: -14.0
+    straight_yaw_vel: -14.0
+    straight_swing_foot_yaw: -3.0
+    straight_swing_lateral_vel: -1.5
+    straight_swing_roll_yaw_action: -0.35
+    action_rate: -4.0
+    feet_slip: -4.0
+  tracking_sigma: 0.18
+  straight_path_lateral_error_clip: 0.35
+  straight_swing_lateral_vel_clip: 0.7

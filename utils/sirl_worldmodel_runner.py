@@ -331,6 +331,30 @@ class SIRLWorldModelRunner:
         mix = min(max(self.current_iteration / max(decay, 1), 0.0), 1.0)
         return max(min_coef, coef * (1.0 - mix))
 
+    def _action_loss_weights(self, action, key, fallback_key=None):
+        weights = self.wm_cfg.get(key) if key else None
+        if weights is None and fallback_key is not None:
+            weights = self.wm_cfg.get(fallback_key)
+        if weights is None:
+            return None
+        weights = torch.as_tensor(weights, dtype=action.dtype, device=action.device).flatten()
+        if weights.numel() != action.shape[-1]:
+            raise ValueError(
+                f"{key} must have {action.shape[-1]} entries, got {weights.numel()}."
+            )
+        weights = torch.clamp(weights, min=0.0)
+        view_shape = [1] * action.dim()
+        view_shape[-1] = weights.numel()
+        return weights.view(*view_shape)
+
+    def _weighted_action_mse(self, student_action, teacher_action, key=None, fallback_key=None):
+        weights = self._action_loss_weights(student_action, key, fallback_key)
+        if weights is None:
+            return F.mse_loss(student_action, teacher_action)
+        denom = torch.clamp(weights.sum(), min=1.0e-6)
+        per_sample = torch.sum(torch.square(student_action - teacher_action) * weights, dim=-1) / denom
+        return per_sample.mean()
+
     def _scheduled_coef(self, coef_key, default, start_key=None, warmup_key=None):
         coef = float(self.wm_cfg.get(coef_key, default))
         start = int(self.wm_cfg.get(start_key, 0)) if start_key is not None else 0
@@ -381,7 +405,12 @@ class SIRLWorldModelRunner:
             if teacher_action is None:
                 return {}
             student_action = self._policy_dist(obs).loc
-            distill_loss = F.mse_loss(student_action, teacher_action)
+            distill_loss = self._weighted_action_mse(
+                student_action,
+                teacher_action,
+                "teacher_distill_action_weights",
+                "teacher_bc_action_weights",
+            )
             if not torch.isfinite(distill_loss):
                 continue
 
@@ -828,13 +857,22 @@ class SIRLWorldModelRunner:
         if guard_enabled:
             guard_teacher_action = self._teacher_action(batch["obs"])
             if guard_teacher_action is not None:
-                guard_before = F.mse_loss(self._policy_dist(batch["obs"]).loc, guard_teacher_action).detach()
+                guard_before = self._weighted_action_mse(
+                    self._policy_dist(batch["obs"]).loc,
+                    guard_teacher_action,
+                    "teacher_guard_action_weights",
+                    "teacher_bc_action_weights",
+                ).detach()
                 guard_snapshot = self._actor_state_snapshot()
         if teacher_coef > 0.0:
             teacher_action = guard_teacher_action if guard_teacher_action is not None else self._teacher_action(batch["obs"])
             if teacher_action is not None:
                 student_action = self._policy_dist(batch["obs"]).loc
-                teacher_bc_loss = F.mse_loss(student_action, teacher_action)
+                teacher_bc_loss = self._weighted_action_mse(
+                    student_action,
+                    teacher_action,
+                    "teacher_bc_action_weights",
+                )
                 actor_loss = actor_loss + teacher_coef * teacher_bc_loss
         symmetry_coef = self._scheduled_coef(
             "actor_symmetry_coef",
@@ -864,7 +902,12 @@ class SIRLWorldModelRunner:
             self._sanitize_parameter_(self.model.logstd, None)
             self.model.logstd.clamp_(min=self.log_std_min, max=self.log_std_max)
         if guard_snapshot is not None and guard_teacher_action is not None:
-            guard_after = F.mse_loss(self._policy_dist(batch["obs"]).loc, guard_teacher_action).detach()
+            guard_after = self._weighted_action_mse(
+                self._policy_dist(batch["obs"]).loc,
+                guard_teacher_action,
+                "teacher_guard_action_weights",
+                "teacher_bc_action_weights",
+            ).detach()
             max_mse = float(self.wm_cfg.get("teacher_guard_max_mse", 0.02))
             max_increase = float(self.wm_cfg.get("teacher_guard_max_increase", 0.005))
             if float(guard_after.item()) > max_mse or float((guard_after - guard_before).item()) > max_increase:
