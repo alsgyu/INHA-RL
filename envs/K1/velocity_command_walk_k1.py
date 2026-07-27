@@ -416,6 +416,12 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         active = ((torch.abs(self.commands[:, 2]) > 0.05) | (self._straight_walk_mask() > 0.0)).float()
         return torch.square(self.commands[:, 2] - self.filtered_ang_vel[:, 2]) * active
 
+    def _reward_lin_vel_x_overspeed(self):
+        moving_forward = (self.commands[:, 0] > 0.05).float()
+        margin = float(self.cfg["rewards"].get("lin_vel_x_overspeed_margin", 0.08))
+        overspeed = torch.clamp(self.filtered_lin_vel[:, 0] - self.commands[:, 0] - margin, min=0.0)
+        return torch.square(overspeed) * moving_forward
+
     def _straight_swing_mask(self):
         left_swing, right_swing = self._swing_masks()
         return torch.stack((left_swing, right_swing), dim=-1).float() * self._straight_walk_mask().unsqueeze(-1)

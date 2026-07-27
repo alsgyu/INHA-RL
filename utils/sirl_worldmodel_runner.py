@@ -347,13 +347,29 @@ class SIRLWorldModelRunner:
         view_shape[-1] = weights.numel()
         return weights.view(*view_shape)
 
-    def _weighted_action_mse(self, student_action, teacher_action, key=None, fallback_key=None):
+    def _weighted_action_mse(self, student_action, teacher_action, key=None, fallback_key=None, sample_weight=None):
         weights = self._action_loss_weights(student_action, key, fallback_key)
         if weights is None:
-            return F.mse_loss(student_action, teacher_action)
-        denom = torch.clamp(weights.sum(), min=1.0e-6)
-        per_sample = torch.sum(torch.square(student_action - teacher_action) * weights, dim=-1) / denom
-        return per_sample.mean()
+            per_sample = torch.mean(torch.square(student_action - teacher_action), dim=-1)
+        else:
+            denom = torch.clamp(weights.sum(), min=1.0e-6)
+            per_sample = torch.sum(torch.square(student_action - teacher_action) * weights, dim=-1) / denom
+        if sample_weight is None:
+            return per_sample.mean()
+        sample_weight = sample_weight.to(device=per_sample.device, dtype=per_sample.dtype).reshape_as(per_sample)
+        denom = torch.clamp(sample_weight.mean(), min=1.0e-6)
+        return torch.mean(per_sample * sample_weight) / denom
+
+    def _teacher_bc_sample_weight(self, obs):
+        low_weight = float(self.wm_cfg.get("teacher_bc_low_speed_weight", 1.0))
+        if low_weight <= 1.0 or obs is None or obs.shape[-1] < 9:
+            return None
+        scale = torch.clamp(self._obs_public_command_scales[0].to(obs.device, dtype=obs.dtype), min=1.0e-6)
+        abs_vx = torch.abs(obs[..., 6] / scale)
+        low_vx = float(self.wm_cfg.get("teacher_bc_low_speed_vx", 0.35))
+        high_vx = max(float(self.wm_cfg.get("teacher_bc_high_speed_vx", 0.80)), low_vx + 1.0e-6)
+        blend = torch.clamp((high_vx - abs_vx) / (high_vx - low_vx), min=0.0, max=1.0)
+        return 1.0 + (low_weight - 1.0) * blend
 
     def _scheduled_coef(self, coef_key, default, start_key=None, warmup_key=None):
         coef = float(self.wm_cfg.get(coef_key, default))
@@ -405,11 +421,13 @@ class SIRLWorldModelRunner:
             if teacher_action is None:
                 return {}
             student_action = self._policy_dist(obs).loc
+            teacher_sample_weight = self._teacher_bc_sample_weight(obs)
             distill_loss = self._weighted_action_mse(
                 student_action,
                 teacher_action,
                 "teacher_distill_action_weights",
                 "teacher_bc_action_weights",
+                teacher_sample_weight,
             )
             if not torch.isfinite(distill_loss):
                 continue
@@ -857,21 +875,26 @@ class SIRLWorldModelRunner:
         if guard_enabled:
             guard_teacher_action = self._teacher_action(batch["obs"])
             if guard_teacher_action is not None:
+                guard_sample_weight = self._teacher_bc_sample_weight(batch["obs"])
                 guard_before = self._weighted_action_mse(
                     self._policy_dist(batch["obs"]).loc,
                     guard_teacher_action,
                     "teacher_guard_action_weights",
                     "teacher_bc_action_weights",
+                    guard_sample_weight,
                 ).detach()
                 guard_snapshot = self._actor_state_snapshot()
         if teacher_coef > 0.0:
             teacher_action = guard_teacher_action if guard_teacher_action is not None else self._teacher_action(batch["obs"])
             if teacher_action is not None:
                 student_action = self._policy_dist(batch["obs"]).loc
+                teacher_sample_weight = self._teacher_bc_sample_weight(batch["obs"])
                 teacher_bc_loss = self._weighted_action_mse(
                     student_action,
                     teacher_action,
                     "teacher_bc_action_weights",
+                    None,
+                    teacher_sample_weight,
                 )
                 actor_loss = actor_loss + teacher_coef * teacher_bc_loss
         symmetry_coef = self._scheduled_coef(
@@ -902,11 +925,13 @@ class SIRLWorldModelRunner:
             self._sanitize_parameter_(self.model.logstd, None)
             self.model.logstd.clamp_(min=self.log_std_min, max=self.log_std_max)
         if guard_snapshot is not None and guard_teacher_action is not None:
+            guard_sample_weight = self._teacher_bc_sample_weight(batch["obs"])
             guard_after = self._weighted_action_mse(
                 self._policy_dist(batch["obs"]).loc,
                 guard_teacher_action,
                 "teacher_guard_action_weights",
                 "teacher_bc_action_weights",
+                guard_sample_weight,
             ).detach()
             max_mse = float(self.wm_cfg.get("teacher_guard_max_mse", 0.02))
             max_increase = float(self.wm_cfg.get("teacher_guard_max_increase", 0.005))
