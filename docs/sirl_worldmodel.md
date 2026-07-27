@@ -110,6 +110,12 @@ the checkpoint by default for this config. It keeps only the policy weights and
 uses the same checkpoint as a teacher anchor with a rollback guard, so a single
 bad actor update cannot move the deploy policy far from the known-good gait.
 
+If the policy walks stably but arcs to one side, look for swing-leg asymmetry:
+for example, one knee or foot yawing outward during swing. The command fine-tune
+config includes straight-only penalties for swing foot yaw, swing lateral foot
+velocity, and swing roll/yaw actions to reduce that kind of repeated side
+impulse without adding any MuJoCo-only command correction.
+
 ## 4090 Starting Point
 
 - `num_envs`: 1024 for debugging, 2048 for default training, 4096 after stability.

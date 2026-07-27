@@ -1,6 +1,6 @@
 import torch
 
-from isaacgym.torch_utils import torch_rand_float
+from isaacgym.torch_utils import get_euler_xyz, torch_rand_float
 
 from envs.K1.parameter_walk_k1 import ParameterWalkK1
 from utils.utils import apply_randomization
@@ -347,6 +347,31 @@ class VelocityCommandWalkK1(ParameterWalkK1):
     def _reward_ang_vel_yaw_error(self):
         active = ((torch.abs(self.commands[:, 2]) > 0.05) | (self._straight_walk_mask() > 0.0)).float()
         return torch.square(self.commands[:, 2] - self.filtered_ang_vel[:, 2]) * active
+
+    def _straight_swing_mask(self):
+        left_swing, right_swing = self._swing_masks()
+        return torch.stack((left_swing, right_swing), dim=-1).float() * self._straight_walk_mask().unsqueeze(-1)
+
+    def _reward_straight_swing_foot_yaw(self):
+        swing_mask = self._straight_swing_mask()
+        swing_count = torch.clamp(swing_mask.sum(dim=-1), min=1.0)
+        yaw_error = torch.square(self.feet_yaw_rel)
+        return torch.sum(yaw_error * swing_mask, dim=-1) / swing_count
+
+    def _reward_straight_swing_lateral_vel(self):
+        swing_mask = self._straight_swing_mask()
+        _, _, base_yaw = get_euler_xyz(self.base_quat)
+        feet_vel = (self.feet_pos - self.last_feet_pos) / self.dt
+        lateral_vel = -torch.sin(base_yaw).unsqueeze(-1) * feet_vel[:, :, 0] + torch.cos(base_yaw).unsqueeze(-1) * feet_vel[:, :, 1]
+        clip = float(self.cfg["rewards"].get("straight_swing_lateral_vel_clip", 1.0))
+        lateral_vel_sq = torch.clamp(torch.square(lateral_vel), max=clip * clip)
+        return torch.sum(lateral_vel_sq * swing_mask, dim=-1) * (self.episode_length_buf > 1).float()
+
+    def _reward_straight_swing_roll_yaw_action(self):
+        swing_mask = self._straight_swing_mask()
+        left_lateral = torch.sum(torch.square(self.actions[:, [1, 2, 5]]), dim=-1)
+        right_lateral = torch.sum(torch.square(self.actions[:, [7, 8, 11]]), dim=-1)
+        return left_lateral * swing_mask[:, 0] + right_lateral * swing_mask[:, 1]
 
     def _reward_swing_clearance(self):
         left_swing, right_swing = self._swing_masks()
