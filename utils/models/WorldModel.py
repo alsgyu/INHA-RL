@@ -4,15 +4,16 @@ import torch
 class WorldModel(torch.nn.Module):
     """Small one-step dynamics model for auxiliary and off-policy training."""
 
-    def __init__(self, obs_dim, action_dim, hidden_dims=None, command_dim=0):
+    def __init__(self, obs_dim, action_dim, hidden_dims=None, command_dim=0, velocity_dim=0):
         super().__init__()
         self.obs_dim = int(obs_dim)
         self.action_dim = int(action_dim)
         self.command_dim = int(command_dim)
+        self.velocity_dim = int(velocity_dim)
         hidden_dims = hidden_dims or [512, 512]
 
         input_dim = self.obs_dim + self.action_dim + self.command_dim
-        output_dim = self.obs_dim + 1 + 1
+        output_dim = self.obs_dim + 1 + 1 + self.velocity_dim
         layers = []
         last_dim = input_dim
         for hidden_dim in hidden_dims:
@@ -32,11 +33,15 @@ class WorldModel(torch.nn.Module):
         delta_obs = output[..., : self.obs_dim]
         reward = output[..., self.obs_dim]
         done_logit = output[..., self.obs_dim + 1]
-        return {
+        result = {
             "delta_obs": delta_obs,
             "reward": reward,
             "done_logit": done_logit,
         }
+        if self.velocity_dim > 0:
+            start = self.obs_dim + 2
+            result["velocity"] = output[..., start : start + self.velocity_dim]
+        return result
 
 
 class QNetwork(torch.nn.Module):

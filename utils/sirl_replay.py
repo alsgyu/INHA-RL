@@ -335,6 +335,7 @@ class OffPolicyReplayBuffer:
         self.ret = torch.zeros(self.capacity, dtype=torch.float)
         self.sirl_weight = torch.zeros(self.capacity, dtype=torch.float)
         self.is_model = torch.zeros(self.capacity, dtype=torch.float)
+        self.sample_weight = torch.ones(self.capacity, dtype=torch.float)
         self.privileged_obs = None
         self.next_privileged_obs = None
         self.command = None
@@ -370,6 +371,7 @@ class OffPolicyReplayBuffer:
         ret=None,
         sirl_weight=None,
         is_model=0.0,
+        sample_weight=None,
     ):
         obs = obs.reshape(-1, self.obs_dim).detach().float().cpu()
         action = action.reshape(-1, self.action_dim).detach().float().cpu()
@@ -389,8 +391,18 @@ class OffPolicyReplayBuffer:
             sirl_weight = sirl_weight.reshape(-1).detach().float().cpu()
         if torch.is_tensor(is_model):
             is_model = is_model.reshape(-1).detach().float().cpu()
+            if is_model.numel() == 1 and size > 1:
+                is_model = is_model.expand(size).clone()
         else:
             is_model = torch.full((size,), float(is_model), dtype=torch.float)
+        if sample_weight is None:
+            sample_weight = torch.ones(size, dtype=torch.float)
+        elif torch.is_tensor(sample_weight):
+            sample_weight = sample_weight.reshape(-1).detach().float().cpu()
+            if sample_weight.numel() == 1 and size > 1:
+                sample_weight = sample_weight.expand(size).clone()
+        else:
+            sample_weight = torch.full((size,), float(sample_weight), dtype=torch.float)
 
         privileged_obs_cpu = None
         next_privileged_obs_cpu = None
@@ -425,6 +437,7 @@ class OffPolicyReplayBuffer:
             ret = ret[-self.capacity :]
             sirl_weight = sirl_weight[-self.capacity :]
             is_model = is_model[-self.capacity :]
+            sample_weight = sample_weight[-self.capacity :]
             self.obs[:] = obs
             self.action[:] = action
             self.reward[:] = reward
@@ -433,6 +446,7 @@ class OffPolicyReplayBuffer:
             self.ret[:] = ret
             self.sirl_weight[:] = sirl_weight
             self.is_model[:] = is_model
+            self.sample_weight[:] = sample_weight
             if self.privileged_obs is not None:
                 self.privileged_obs[:] = privileged_obs_cpu[-self.capacity :]
                 self.next_privileged_obs[:] = next_privileged_obs_cpu[-self.capacity :]
@@ -450,6 +464,7 @@ class OffPolicyReplayBuffer:
         self._write_range(self.ret, ret)
         self._write_range(self.sirl_weight, sirl_weight)
         self._write_range(self.is_model, is_model)
+        self._write_range(self.sample_weight, sample_weight)
         if self.privileged_obs is not None:
             self._write_range(self.privileged_obs, privileged_obs_cpu)
             self._write_range(self.next_privileged_obs, next_privileged_obs_cpu)
@@ -473,6 +488,7 @@ class OffPolicyReplayBuffer:
             "return": self.ret[indices].to(device),
             "sirl_weight": self.sirl_weight[indices].to(device),
             "is_model": self.is_model[indices].to(device),
+            "sample_weight": self.sample_weight[indices].to(device),
         }
         if self.privileged_obs is not None:
             batch["privileged_obs"] = self.privileged_obs[indices].to(device)

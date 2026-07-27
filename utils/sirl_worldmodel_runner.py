@@ -67,7 +67,16 @@ class SIRLWorldModelRunner:
         )
         self.use_privileged_q = bool(self.wm_cfg.get("use_privileged_q", False))
         self.q_privileged_dim = self.env.num_privileged_obs if self.use_privileged_q else 0
+        self.replay_privileged_dim = (
+            self.env.num_privileged_obs
+            if bool(self.wm_cfg.get("store_privileged_replay", True))
+            else self.q_privileged_dim
+        )
         self.current_iteration = 0
+        self.last_model_rollout_accept_rate = 0.0
+        self.last_model_ratio_used = 0.0
+        self.last_update_model_count = 0
+        self.last_update_real_count = 0
 
         model_name = self.cfg["basic"].get("model", "BaseActorCritic")
         model_class = get_model_class(model_name)
@@ -104,6 +113,12 @@ class SIRLWorldModelRunner:
         self.world_models = torch.nn.ModuleList()
         self.world_model_optimizers = []
         self.world_model_command_dim = int(self.wm_cfg.get("world_model_command_dim", 3)) if bool(self.wm_cfg.get("world_model_use_command", False)) else 0
+        self.world_model_velocity_dim = (
+            int(self.wm_cfg.get("world_model_velocity_dim", 3))
+            if bool(self.wm_cfg.get("world_model_velocity_head_enabled", False))
+            else 0
+        )
+        self.world_model_velocity_privileged_start = int(self.wm_cfg.get("world_model_velocity_privileged_start", 4))
         self.world_model_updates = 0
         self.last_world_model_loss = None
         ensemble_size = max(1, int(self.wm_cfg.get("world_model_ensemble_size", 5)))
@@ -113,6 +128,7 @@ class SIRLWorldModelRunner:
                 self.env.num_actions,
                 hidden_dims=self.wm_cfg.get("world_model_hidden_dims", [512, 512]),
                 command_dim=self.world_model_command_dim,
+                velocity_dim=self.world_model_velocity_dim,
             ).to(self.device)
             self.world_models.append(model)
             self.world_model_optimizers.append(
@@ -127,14 +143,14 @@ class SIRLWorldModelRunner:
             self.env.num_obs,
             self.env.num_actions,
             real_capacity,
-            privileged_obs_dim=self.q_privileged_dim,
+            privileged_obs_dim=self.replay_privileged_dim,
             command_dim=self.replay_command_dim,
         )
         self.model_replay = OffPolicyReplayBuffer(
             self.env.num_obs,
             self.env.num_actions,
             model_capacity,
-            privileged_obs_dim=self.q_privileged_dim,
+            privileged_obs_dim=self.replay_privileged_dim,
             command_dim=self.replay_command_dim,
         )
         self.sirl_replay = OffPolicyReplayBuffer(
@@ -203,6 +219,95 @@ class SIRLWorldModelRunner:
         clip = float(clip)
         value = torch.nan_to_num(value, nan=0.0, posinf=clip, neginf=-clip)
         return torch.clamp(value, -clip, clip)
+
+    def _batch_sample_weight(self, batch):
+        obs = batch["obs"]
+        sample_weight = batch.get("sample_weight")
+        if sample_weight is None:
+            sample_weight = torch.ones(obs.shape[0], dtype=obs.dtype, device=obs.device)
+        else:
+            sample_weight = sample_weight.to(device=obs.device, dtype=obs.dtype).reshape(-1)
+        max_weight = self.wm_cfg.get("sample_weight_max", None)
+        sample_weight = torch.nan_to_num(sample_weight, nan=0.0, posinf=0.0, neginf=0.0)
+        if max_weight is not None:
+            sample_weight = torch.clamp(sample_weight, min=0.0, max=float(max_weight))
+        return torch.clamp(sample_weight, min=0.0)
+
+    def _weighted_sample_mean(self, values, sample_weight):
+        sample_weight = sample_weight.to(device=values.device, dtype=values.dtype).reshape_as(values)
+        return torch.mean(values * sample_weight)
+
+    def _combine_sample_weights(self, *weights):
+        combined = None
+        for weight in weights:
+            if weight is None:
+                continue
+            weight = weight.reshape(-1)
+            combined = weight if combined is None else combined.to(weight.device, weight.dtype) * weight
+        return combined
+
+    def _model_batch_ratio(self):
+        if "model_batch_ratio_start" in self.wm_cfg or "model_batch_ratio_final" in self.wm_cfg:
+            start = float(self.wm_cfg.get("model_batch_ratio_start", self.wm_cfg.get("model_batch_ratio", 0.0)))
+            final = float(self.wm_cfg.get("model_batch_ratio_final", self.wm_cfg.get("model_batch_ratio", start)))
+            warmup = max(1, int(self.wm_cfg.get("model_batch_ratio_warmup_iterations", 1)))
+            warmup_start = int(
+                self.wm_cfg.get(
+                    "model_batch_ratio_warmup_start_iteration",
+                    self.wm_cfg.get("model_rollout_min_wm_updates", 0),
+                )
+            )
+            mix = min(max((self.current_iteration - warmup_start) / warmup, 0.0), 1.0)
+            ratio = start + mix * (final - start)
+        else:
+            ratio = float(self.wm_cfg.get("model_batch_ratio", 0.0))
+
+        ratio = max(0.0, ratio)
+        if "model_batch_ratio_max" in self.wm_cfg:
+            ratio = min(ratio, float(self.wm_cfg.get("model_batch_ratio_max", ratio)))
+        if len(self.model_replay) <= 0:
+            return 0.0
+
+        min_updates = int(self.wm_cfg.get("model_rollout_min_wm_updates", 0))
+        if self.world_model_updates < min_updates:
+            return 0.0
+        max_wm_loss = self.wm_cfg.get("model_rollout_max_wm_loss", None)
+        if max_wm_loss is not None and (self.last_world_model_loss is None or self.last_world_model_loss > float(max_wm_loss)):
+            return 0.0
+        min_accept_rate = self.wm_cfg.get("model_batch_ratio_min_accept_rate", None)
+        if min_accept_rate is not None and self.last_model_rollout_accept_rate < float(min_accept_rate):
+            return 0.0
+        return ratio
+
+    def _world_model_velocity_target(self, batch, next_obs=True):
+        if self.world_model_velocity_dim <= 0:
+            return None
+        key = "next_privileged_obs" if next_obs else "privileged_obs"
+        privileged_obs = batch.get(key)
+        if privileged_obs is None:
+            return None
+        start = self.world_model_velocity_privileged_start
+        end = start + self.world_model_velocity_dim
+        if privileged_obs.shape[-1] < end:
+            return None
+        velocity = privileged_obs[:, start:end]
+        scales = torch.ones(self.world_model_velocity_dim, dtype=velocity.dtype, device=velocity.device)
+        if self.world_model_velocity_dim >= 1:
+            scales[0] = float(self.cfg["normalization"].get("lin_vel", 1.0))
+        if self.world_model_velocity_dim >= 2:
+            scales[1] = float(self.cfg["normalization"].get("lin_vel", 1.0))
+        if self.world_model_velocity_dim >= 3:
+            scales[2] = float(self.cfg["normalization"].get("lin_vel", 1.0))
+        return velocity / torch.clamp(scales, min=1.0e-6)
+
+    def _teacher_weight_for_batch(self, batch, sample_weight):
+        teacher_sample_weight = self._teacher_bc_sample_weight(batch["obs"])
+        model_guard_weight = None
+        multiplier = float(self.wm_cfg.get("model_teacher_guard_weight_multiplier", 1.0))
+        if multiplier != 1.0 and "is_model" in batch:
+            is_model = batch["is_model"].to(device=sample_weight.device, dtype=sample_weight.dtype).reshape_as(sample_weight)
+            model_guard_weight = 1.0 + (multiplier - 1.0) * is_model
+        return self._combine_sample_weights(teacher_sample_weight, sample_weight, model_guard_weight)
 
     def _sanitize_module_(self, module):
         if self.parameter_abs_clip is None:
@@ -694,12 +799,13 @@ class SIRLWorldModelRunner:
             rollout["reward"],
             rollout["done"],
             rollout["next_obs"],
-            privileged_obs=rollout["privileged_obs"] if self.use_privileged_q else None,
-            next_privileged_obs=rollout["next_privileged_obs"] if self.use_privileged_q else None,
+            privileged_obs=rollout["privileged_obs"] if self.replay_privileged_dim > 0 else None,
+            next_privileged_obs=rollout["next_privileged_obs"] if self.replay_privileged_dim > 0 else None,
             command=rollout["command"],
             ret=returns,
             sirl_weight=torch.zeros_like(returns),
             is_model=0.0,
+            sample_weight=1.0,
         )
 
         stats = {
@@ -728,6 +834,7 @@ class SIRLWorldModelRunner:
             ret=returns[:, elite_env_ids],
             sirl_weight=elite_weight,
             is_model=0.0,
+            sample_weight=1.0,
         )
         stats.update(
             {
@@ -740,7 +847,10 @@ class SIRLWorldModelRunner:
 
     def _sample_update_batch(self):
         batch_size = int(self.wm_cfg.get("batch_size", 1024))
-        model_ratio = float(self.wm_cfg.get("model_batch_ratio", 0.25))
+        model_ratio = self._model_batch_ratio()
+        self.last_model_ratio_used = 0.0
+        self.last_update_model_count = 0
+        self.last_update_real_count = batch_size
         if model_ratio <= 0.0 or len(self.model_replay) <= 0:
             return self.real_replay.sample(batch_size, self.device)
         model_batch_size = min(int(batch_size * model_ratio), len(self.model_replay))
@@ -749,6 +859,9 @@ class SIRLWorldModelRunner:
         real_batch_size = max(1, batch_size - model_batch_size)
         real_batch = self.real_replay.sample(real_batch_size, self.device)
         model_batch = self.model_replay.sample(model_batch_size, self.device)
+        self.last_update_real_count = real_batch_size
+        self.last_update_model_count = model_batch_size
+        self.last_model_ratio_used = model_batch_size / max(real_batch_size + model_batch_size, 1)
         batch = {}
         for key, value in real_batch.items():
             if key in model_batch:
@@ -770,6 +883,7 @@ class SIRLWorldModelRunner:
             self.model.logstd.clamp_(min=self.log_std_min, max=self.log_std_max)
             self.log_alpha.data = torch.clamp(torch.nan_to_num(self.log_alpha.data, nan=np.log(0.05)), self.min_log_alpha, self.max_log_alpha)
         batch = self._sample_update_batch()
+        sample_weight = self._batch_sample_weight(batch)
         alpha = self.alpha
         reward = batch["reward"]
         if self.reward_clip is not None:
@@ -792,13 +906,21 @@ class SIRLWorldModelRunner:
         q1_loss_value = self._finite_tensor(q1, self.q_value_clip)
         q2_loss_value = self._finite_tensor(q2, self.q_value_clip)
         if str(self.wm_cfg.get("critic_loss", "huber")).lower() == "mse":
-            critic_loss = F.mse_loss(q1_loss_value, target_q) + F.mse_loss(q2_loss_value, target_q)
+            q1_td_loss = torch.square(q1_loss_value - target_q)
+            q2_td_loss = torch.square(q2_loss_value - target_q)
         else:
-            critic_loss = F.smooth_l1_loss(q1_loss_value, target_q) + F.smooth_l1_loss(q2_loss_value, target_q)
+            q1_td_loss = F.smooth_l1_loss(q1_loss_value, target_q, reduction="none")
+            q2_td_loss = F.smooth_l1_loss(q2_loss_value, target_q, reduction="none")
+        critic_loss = (
+            self._weighted_sample_mean(q1_td_loss, sample_weight)
+            + self._weighted_sample_mean(q2_td_loss, sample_weight)
+        )
 
         sirl_adv1 = torch.clamp(batch["return"] - q1_loss_value, min=0.0)
         sirl_adv2 = torch.clamp(batch["return"] - q2_loss_value, min=0.0)
-        lower_bound_loss = 0.5 * torch.mean(batch["sirl_weight"] * (sirl_adv1.square() + sirl_adv2.square()))
+        lower_bound_loss = 0.5 * torch.mean(
+            sample_weight * batch["sirl_weight"] * (sirl_adv1.square() + sirl_adv2.square())
+        )
         q_loss = critic_loss + float(self.wm_cfg.get("sirl_q_coef", 0.25)) * lower_bound_loss
         if not torch.isfinite(q_loss):
             return {"sac/skipped_nonfinite": 1.0}
@@ -814,7 +936,7 @@ class SIRLWorldModelRunner:
         q_pi = torch.min(self.q1(batch["obs"], policy_action, priv), self.q2(batch["obs"], policy_action, priv))
         q_pi = self._finite_tensor(q_pi, self.q_value_clip)
         log_prob = self._finite_tensor(log_prob, self.q_value_clip)
-        actor_rl_loss = (alpha * log_prob - q_pi).mean()
+        actor_rl_loss = self._weighted_sample_mean(alpha * log_prob - q_pi, sample_weight)
         actor_rl_coef = self._scheduled_coef(
             "actor_rl_coef",
             1.0,
@@ -826,13 +948,18 @@ class SIRLWorldModelRunner:
             self.model.actor(batch["obs"]),
             self.wm_cfg.get("actor_bound_loss_clip", 5.0),
         )
+        bound_per_sample = (
+            torch.clip(raw_actor_mean - self.actor_bound_limit, min=0.0).square().mean(dim=-1)
+            + torch.clip(raw_actor_mean + self.actor_bound_limit, max=0.0).square().mean(dim=-1)
+        )
         bound_loss = (
-            torch.clip(raw_actor_mean - self.actor_bound_limit, min=0.0).square().mean()
-            + torch.clip(raw_actor_mean + self.actor_bound_limit, max=0.0).square().mean()
+            self._weighted_sample_mean(bound_per_sample, sample_weight)
         )
         actor_loss = actor_loss + float(self.wm_cfg.get("actor_bound_coef", 1.0)) * bound_loss
-        actor_loss = actor_loss + float(self.wm_cfg.get("actor_mean_l2_coef", 0.0)) * raw_actor_mean.square().mean()
-        actor_loss = actor_loss + float(self.wm_cfg.get("actor_action_l2_coef", 0.0)) * policy_action.square().mean()
+        actor_mean_l2 = self._weighted_sample_mean(raw_actor_mean.square().mean(dim=-1), sample_weight)
+        actor_action_l2 = self._weighted_sample_mean(policy_action.square().mean(dim=-1), sample_weight)
+        actor_loss = actor_loss + float(self.wm_cfg.get("actor_mean_l2_coef", 0.0)) * actor_mean_l2
+        actor_loss = actor_loss + float(self.wm_cfg.get("actor_action_l2_coef", 0.0)) * actor_action_l2
         actor_loss = actor_loss + float(self.wm_cfg.get("logstd_l2_coef", 0.0)) * self.model.logstd.square().mean()
 
         sirl_actor_loss = torch.tensor(0.0, dtype=torch.float, device=self.device)
@@ -875,7 +1002,7 @@ class SIRLWorldModelRunner:
         if guard_enabled:
             guard_teacher_action = self._teacher_action(batch["obs"])
             if guard_teacher_action is not None:
-                guard_sample_weight = self._teacher_bc_sample_weight(batch["obs"])
+                guard_sample_weight = self._teacher_weight_for_batch(batch, sample_weight)
                 guard_before = self._weighted_action_mse(
                     self._policy_dist(batch["obs"]).loc,
                     guard_teacher_action,
@@ -888,7 +1015,7 @@ class SIRLWorldModelRunner:
             teacher_action = guard_teacher_action if guard_teacher_action is not None else self._teacher_action(batch["obs"])
             if teacher_action is not None:
                 student_action = self._policy_dist(batch["obs"]).loc
-                teacher_sample_weight = self._teacher_bc_sample_weight(batch["obs"])
+                teacher_sample_weight = self._teacher_weight_for_batch(batch, sample_weight)
                 teacher_bc_loss = self._weighted_action_mse(
                     student_action,
                     teacher_action,
@@ -910,7 +1037,8 @@ class SIRLWorldModelRunner:
                 mirrored_mean = self._policy_dist(self._mirror_obs(batch["obs"])).loc
                 mirrored_target = self._mirror_action(student_mean).detach()
                 per_sample_symmetry = torch.mean(torch.square(mirrored_mean - mirrored_target), dim=-1)
-                actor_symmetry_loss = torch.sum(per_sample_symmetry * symmetry_mask) / (torch.sum(symmetry_mask) + 1.0e-6)
+                symmetry_weight = symmetry_mask * sample_weight
+                actor_symmetry_loss = torch.sum(per_sample_symmetry * symmetry_weight) / (torch.sum(symmetry_weight) + 1.0e-6)
                 actor_loss = actor_loss + symmetry_coef * actor_symmetry_loss
                 actor_symmetry_mask_frac = float(symmetry_mask.mean().detach().item())
         if not torch.isfinite(actor_loss):
@@ -925,7 +1053,7 @@ class SIRLWorldModelRunner:
             self._sanitize_parameter_(self.model.logstd, None)
             self.model.logstd.clamp_(min=self.log_std_min, max=self.log_std_max)
         if guard_snapshot is not None and guard_teacher_action is not None:
-            guard_sample_weight = self._teacher_bc_sample_weight(batch["obs"])
+            guard_sample_weight = self._teacher_weight_for_batch(batch, sample_weight)
             guard_after = self._weighted_action_mse(
                 self._policy_dist(batch["obs"]).loc,
                 guard_teacher_action,
@@ -942,7 +1070,7 @@ class SIRLWorldModelRunner:
 
         alpha_loss = torch.tensor(0.0, dtype=torch.float, device=self.device)
         if self.auto_alpha and actor_rl_coef > 0.0:
-            alpha_loss = -(self.log_alpha * (log_prob.detach() + self.target_entropy)).mean()
+            alpha_loss = -self._weighted_sample_mean(self.log_alpha * (log_prob.detach() + self.target_entropy), sample_weight)
             if torch.isfinite(alpha_loss):
                 self.alpha_optimizer.zero_grad()
                 alpha_loss.backward()
@@ -953,6 +1081,11 @@ class SIRLWorldModelRunner:
         self._soft_update_targets()
         self._sanitize_module_(self.q1_target)
         self._sanitize_module_(self.q2_target)
+        model_mask = batch.get("is_model", torch.zeros_like(sample_weight)).to(device=sample_weight.device, dtype=sample_weight.dtype) > 0.5
+        if int(model_mask.sum().item()) > 0:
+            model_sample_weight_mean = float(sample_weight[model_mask].detach().mean().item())
+        else:
+            model_sample_weight_mean = 0.0
         return {
             "sac/q_loss": float(q_loss.detach().item()),
             "sac/critic_loss": float(critic_loss.detach().item()),
@@ -973,6 +1106,11 @@ class SIRLWorldModelRunner:
             "sac/alpha": float(self.alpha.item()),
             "sac/alpha_loss": float(alpha_loss.detach().item()),
             "sac/q_mean": float(0.5 * (q1_loss_value.detach().mean().item() + q2_loss_value.detach().mean().item())),
+            "sac/sample_weight_mean": float(sample_weight.detach().mean().item()),
+            "sac/model_sample_weight_mean": model_sample_weight_mean,
+            "replay/model_ratio_used": float(self.last_model_ratio_used),
+            "replay/model_batch_count": float(self.last_update_model_count),
+            "replay/real_batch_count": float(self.last_update_real_count),
         }
 
     def _train_world_model(self):
@@ -983,7 +1121,8 @@ class SIRLWorldModelRunner:
         obs_coef = float(self.wm_cfg.get("world_model_obs_delta_coef", 1.0))
         reward_coef = float(self.wm_cfg.get("world_model_reward_coef", 0.5))
         done_coef = float(self.wm_cfg.get("world_model_done_coef", 0.2))
-        totals = {"loss": 0.0, "obs": 0.0, "reward": 0.0, "done": 0.0}
+        velocity_coef = float(self.wm_cfg.get("world_model_velocity_coef", 0.2))
+        totals = {"loss": 0.0, "obs": 0.0, "reward": 0.0, "done": 0.0, "velocity": 0.0}
         valid_steps = 0
         for _ in range(steps):
             batch = self.real_replay.sample(batch_size, self.device)
@@ -999,7 +1138,12 @@ class SIRLWorldModelRunner:
             obs_loss = F.mse_loss(pred["delta_obs"], target_delta)
             reward_loss = F.mse_loss(pred["reward"], batch["reward"])
             done_loss = F.binary_cross_entropy_with_logits(pred["done_logit"], batch["done"])
+            velocity_loss = torch.tensor(0.0, dtype=torch.float, device=self.device)
+            velocity_target = self._world_model_velocity_target(batch, next_obs=True)
+            if velocity_target is not None and "velocity" in pred:
+                velocity_loss = F.mse_loss(pred["velocity"], velocity_target)
             loss = obs_coef * obs_loss + reward_coef * reward_loss + done_coef * done_loss
+            loss = loss + velocity_coef * velocity_loss
             if not torch.isfinite(loss):
                 continue
             self.world_model_optimizers[model_idx].zero_grad()
@@ -1011,6 +1155,7 @@ class SIRLWorldModelRunner:
             totals["obs"] += float(obs_loss.detach().item())
             totals["reward"] += float(reward_loss.detach().item())
             totals["done"] += float(done_loss.detach().item())
+            totals["velocity"] += float(velocity_loss.detach().item())
             self.world_model_updates += 1
             valid_steps += 1
         if valid_steps == 0:
@@ -1021,63 +1166,240 @@ class SIRLWorldModelRunner:
             "world_model/obs_delta_loss": totals["obs"] / valid_steps,
             "world_model/reward_loss": totals["reward"] / valid_steps,
             "world_model/done_loss": totals["done"] / valid_steps,
+            "world_model/velocity_loss": totals["velocity"] / valid_steps,
         }
 
     def _rollout_world_model(self):
+        stats = {
+            "model_rollout/attempted": 0.0,
+            "model_rollout/added": 0.0,
+            "model_rollout/accept_rate": 0.0,
+            "model_rollout/rejected_done": 0.0,
+            "model_rollout/rejected_uncertainty": 0.0,
+            "model_rollout/rejected_delta_norm": 0.0,
+            "model_rollout/rejected_low_speed": 0.0,
+            "model_rollout/uncertainty_mean": 0.0,
+            "model_rollout/uncertainty_p70": 0.0,
+            "model_rollout/done_prob_mean": 0.0,
+            "replay/model_count": float(len(self.model_replay)),
+        }
         if len(self.real_replay) < int(self.wm_cfg.get("model_rollout_starts", 16384)):
-            return {"model_rollout/added": 0.0}
+            self.last_model_rollout_accept_rate = 0.0
+            return stats
         min_updates = int(self.wm_cfg.get("model_rollout_min_wm_updates", 1000))
         if self.world_model_updates < min_updates:
-            return {"model_rollout/added": 0.0, "model_rollout/skipped_not_ready": 1.0}
+            self.last_model_rollout_accept_rate = 0.0
+            stats["model_rollout/skipped_not_ready"] = 1.0
+            return stats
         max_wm_loss = self.wm_cfg.get("model_rollout_max_wm_loss", None)
         if max_wm_loss is not None and (self.last_world_model_loss is None or self.last_world_model_loss > float(max_wm_loss)):
-            return {"model_rollout/added": 0.0, "model_rollout/skipped_wm_loss": 1.0}
+            self.last_model_rollout_accept_rate = 0.0
+            stats["model_rollout/skipped_wm_loss"] = 1.0
+            return stats
         num_starts = int(self.wm_cfg.get("model_rollout_batch_size", 4096))
-        horizon = int(self.wm_cfg.get("model_rollout_horizon", 1))
+        requested_horizon = int(self.wm_cfg.get("model_rollout_horizon", 1))
+        horizon = requested_horizon
+        if horizon > 1 and not bool(self.wm_cfg.get("model_rollout_allow_multi_step", False)):
+            horizon = 1
+        horizon = max(1, horizon)
         done_threshold = float(self.wm_cfg.get("model_done_threshold", 0.8))
+        done_filter_threshold = float(self.wm_cfg.get("model_done_filter_threshold", done_threshold))
         delta_clip = self.wm_cfg.get("model_delta_clip", None)
+        delta_norm_max = self.wm_cfg.get("model_delta_norm_max", None)
         model_reward_clip = self.wm_cfg.get("model_reward_clip", self.reward_clip)
+        uncertainty_filter_enabled = bool(self.wm_cfg.get("model_uncertainty_filter_enabled", False))
+        uncertainty_quantile = float(self.wm_cfg.get("model_uncertainty_quantile", 0.70))
+        uncertainty_max = self.wm_cfg.get("model_uncertainty_max", None)
+        low_speed_guard_enabled = bool(self.wm_cfg.get("model_low_speed_guard_enabled", False))
+        low_speed_vx = float(self.wm_cfg.get("model_low_speed_vx", 0.35))
+        low_speed_max_pred_vx = float(self.wm_cfg.get("model_low_speed_max_pred_vx", 0.6))
+        model_loss_weight = float(self.wm_cfg.get("model_loss_weight", 0.25))
+        uncertainty_weight_enabled = bool(self.wm_cfg.get("model_uncertainty_weight_enabled", False))
+        uncertainty_weight_floor = float(self.wm_cfg.get("model_uncertainty_weight_floor", 0.5))
+        ensemble_sample_count = min(
+            len(self.world_models),
+            max(1, int(self.wm_cfg.get("model_rollout_ensemble_samples", len(self.world_models)))),
+        )
         batch = self.real_replay.sample(num_starts, self.device)
         obs = batch["obs"]
         command = batch.get("command")
         added = 0
+        attempted = 0
+        rejected_nonfinite = 0
+        rejected_done = 0
+        rejected_uncertainty = 0
+        rejected_delta_norm = 0
+        rejected_low_speed = 0
+        uncertainty_values = []
+        done_prob_values = []
         for _ in range(horizon):
+            if obs.shape[0] <= 0:
+                break
             with torch.no_grad():
                 action, _, _ = self._policy_action(obs)
-                model_idx = random.randrange(len(self.world_models))
-                model = self.world_models[model_idx]
                 model_command = command[:, : self.world_model_command_dim] if self.world_model_command_dim > 0 and command is not None else None
-                pred = model(obs, action, model_command)
-                delta_obs = self._finite_tensor(pred["delta_obs"], delta_clip)
+
+                models = list(self.world_models)
+                if ensemble_sample_count < len(models):
+                    models = random.sample(models, ensemble_sample_count)
+                delta_preds = []
+                reward_preds = []
+                done_logit_preds = []
+                velocity_preds = []
+                for model in models:
+                    pred = model(obs, action, model_command)
+                    delta_preds.append(pred["delta_obs"])
+                    reward_preds.append(pred["reward"])
+                    done_logit_preds.append(pred["done_logit"])
+                    if "velocity" in pred:
+                        velocity_preds.append(pred["velocity"])
+
+                delta_stack = torch.stack(delta_preds, dim=0)
+                reward_stack = torch.stack(reward_preds, dim=0)
+                done_logit_stack = torch.stack(done_logit_preds, dim=0)
+                delta_mean_raw = delta_stack.mean(dim=0)
+                delta_obs = self._finite_tensor(delta_mean_raw, delta_clip)
                 next_obs = self._finite_tensor(obs + delta_obs, None)
-                reward = self._finite_tensor(pred["reward"], model_reward_clip)
-                done_prob = torch.sigmoid(pred["done_logit"])
+                reward = self._finite_tensor(reward_stack.mean(dim=0), model_reward_clip)
+                done_prob = torch.sigmoid(done_logit_stack).mean(dim=0)
                 done = (done_prob > done_threshold).float()
+                if delta_stack.shape[0] > 1:
+                    uncertainty = torch.sqrt(
+                        torch.clamp(delta_stack.var(dim=0, unbiased=False).mean(dim=-1), min=0.0)
+                    )
+                else:
+                    uncertainty = torch.zeros(obs.shape[0], dtype=obs.dtype, device=obs.device)
+                velocity_mean = None
+                if len(velocity_preds) == len(models) and len(velocity_preds) > 0:
+                    velocity_stack = torch.stack(velocity_preds, dim=0)
+                    velocity_mean = velocity_stack.mean(dim=0)
+                    if bool(self.wm_cfg.get("model_uncertainty_include_velocity", True)) and velocity_stack.shape[0] > 1:
+                        velocity_uncertainty = torch.sqrt(
+                            torch.clamp(velocity_stack.var(dim=0, unbiased=False).mean(dim=-1), min=0.0)
+                        )
+                        uncertainty = uncertainty + velocity_uncertainty
+
                 finite_mask = (
                     torch.isfinite(obs).all(dim=-1)
                     & torch.isfinite(action).all(dim=-1)
+                    & torch.isfinite(delta_stack).all(dim=-1).all(dim=0)
+                    & torch.isfinite(reward_stack).all(dim=0)
+                    & torch.isfinite(done_logit_stack).all(dim=0)
                     & torch.isfinite(next_obs).all(dim=-1)
                     & torch.isfinite(reward)
                     & torch.isfinite(done)
+                    & torch.isfinite(done_prob)
+                    & torch.isfinite(uncertainty)
                 )
-            if int(finite_mask.sum().item()) == 0:
+                if velocity_mean is not None:
+                    finite_mask = finite_mask & torch.isfinite(velocity_mean).all(dim=-1)
+
+                attempted += int(obs.shape[0])
+                rejected_nonfinite += int((~finite_mask).sum().item())
+                candidate_mask = finite_mask.clone()
+
+                done_reject_mask = candidate_mask & (done_prob >= done_filter_threshold)
+                rejected_done += int(done_reject_mask.sum().item())
+                candidate_mask = candidate_mask & ~done_reject_mask
+
+                delta_norm = torch.linalg.norm(delta_mean_raw, dim=-1)
+                if delta_norm_max is not None:
+                    delta_reject_mask = candidate_mask & (delta_norm > float(delta_norm_max))
+                    rejected_delta_norm += int(delta_reject_mask.sum().item())
+                    candidate_mask = candidate_mask & ~delta_reject_mask
+
+                uncertainty_cutoff = None
+                if int(finite_mask.sum().item()) > 0:
+                    uncertainty_values.append(uncertainty[finite_mask].detach())
+                    done_prob_values.append(done_prob[finite_mask].detach())
+                if uncertainty_filter_enabled and int(candidate_mask.sum().item()) > 0:
+                    candidate_uncertainty = uncertainty[candidate_mask]
+                    if 0.0 <= uncertainty_quantile < 1.0:
+                        uncertainty_cutoff = torch.quantile(candidate_uncertainty, uncertainty_quantile)
+                    if uncertainty_max is not None:
+                        max_uncertainty_tensor = torch.as_tensor(
+                            float(uncertainty_max),
+                            dtype=uncertainty.dtype,
+                            device=uncertainty.device,
+                        )
+                        uncertainty_cutoff = (
+                            max_uncertainty_tensor
+                            if uncertainty_cutoff is None
+                            else torch.minimum(uncertainty_cutoff, max_uncertainty_tensor)
+                        )
+                    if uncertainty_cutoff is not None:
+                        uncertainty_reject_mask = candidate_mask & (uncertainty > uncertainty_cutoff)
+                        rejected_uncertainty += int(uncertainty_reject_mask.sum().item())
+                        candidate_mask = candidate_mask & ~uncertainty_reject_mask
+
+                if low_speed_guard_enabled and command is not None and int(candidate_mask.sum().item()) > 0:
+                    predicted_vx = None
+                    if velocity_mean is not None and velocity_mean.shape[-1] >= 1:
+                        predicted_vx = velocity_mean[:, 0]
+                    elif bool(self.wm_cfg.get("model_low_speed_guard_allow_obs_command_fallback", False)) and next_obs.shape[-1] >= 7:
+                        scale = torch.clamp(self._obs_public_command_scales[0].to(next_obs.device, dtype=next_obs.dtype), min=1.0e-6)
+                        predicted_vx = next_obs[:, 6] / scale
+                    if predicted_vx is not None:
+                        command_vx = command[:, 0]
+                        low_speed_mask = torch.abs(command_vx) <= low_speed_vx
+                        low_speed_reject_mask = candidate_mask & low_speed_mask & (torch.abs(predicted_vx) > low_speed_max_pred_vx)
+                        rejected_low_speed += int(low_speed_reject_mask.sum().item())
+                        candidate_mask = candidate_mask & ~low_speed_reject_mask
+
+                accepted_mask = candidate_mask
+                if int(accepted_mask.sum().item()) == 0:
+                    break
+
+                model_sample_weight = torch.full_like(reward, model_loss_weight)
+                if uncertainty_weight_enabled:
+                    if uncertainty_cutoff is not None:
+                        denom = torch.clamp(uncertainty_cutoff, min=1.0e-6)
+                        uncertainty_scale = 1.0 - torch.clamp(uncertainty / denom, min=0.0, max=1.0)
+                        uncertainty_scale = uncertainty_weight_floor + (1.0 - uncertainty_weight_floor) * uncertainty_scale
+                    else:
+                        uncertainty_scale = torch.ones_like(reward)
+                    model_sample_weight = model_sample_weight * uncertainty_scale
+                model_sample_weight = torch.clamp(model_sample_weight, min=0.0, max=1.0)
+
+            if int(accepted_mask.sum().item()) == 0:
                 break
-            self.model_replay.add(
-                obs[finite_mask],
-                action[finite_mask],
-                reward[finite_mask],
-                done[finite_mask],
-                next_obs[finite_mask],
-                command=command[finite_mask] if command is not None else None,
+            added += self.model_replay.add(
+                obs[accepted_mask],
+                action[accepted_mask],
+                reward[accepted_mask],
+                done[accepted_mask],
+                next_obs[accepted_mask],
+                command=command[accepted_mask] if command is not None else None,
                 is_model=1.0,
+                sample_weight=model_sample_weight[accepted_mask],
             )
-            added += int(finite_mask.sum().item())
-            obs = next_obs[finite_mask].detach()
-            command = command[finite_mask] if command is not None else None
-        return {
-            "model_rollout/added": float(added),
-            "replay/model_count": float(len(self.model_replay)),
-        }
+            obs = next_obs[accepted_mask].detach()
+            command = command[accepted_mask] if command is not None else None
+
+        accept_rate = added / max(attempted, 1)
+        self.last_model_rollout_accept_rate = accept_rate
+        stats.update(
+            {
+                "model_rollout/attempted": float(attempted),
+                "model_rollout/added": float(added),
+                "model_rollout/accept_rate": float(accept_rate),
+                "model_rollout/rejected_done": float(rejected_done),
+                "model_rollout/rejected_uncertainty": float(rejected_uncertainty),
+                "model_rollout/rejected_delta_norm": float(rejected_delta_norm),
+                "model_rollout/rejected_low_speed": float(rejected_low_speed),
+                "model_rollout/rejected_nonfinite": float(rejected_nonfinite),
+                "model_rollout/horizon_used": float(horizon),
+                "replay/model_count": float(len(self.model_replay)),
+            }
+        )
+        if uncertainty_values:
+            uncertainty_all = torch.cat(uncertainty_values)
+            stats["model_rollout/uncertainty_mean"] = float(uncertainty_all.mean().item())
+            stats["model_rollout/uncertainty_p70"] = float(torch.quantile(uncertainty_all, 0.70).item())
+        if done_prob_values:
+            done_prob_all = torch.cat(done_prob_values)
+            stats["model_rollout/done_prob_mean"] = float(done_prob_all.mean().item())
+        return stats
 
     def _checkpoint_state(self):
         return {
@@ -1087,6 +1409,8 @@ class SIRLWorldModelRunner:
             "q1_target": self.q1_target.state_dict(),
             "q2_target": self.q2_target.state_dict(),
             "world_models": [model.state_dict() for model in self.world_models],
+            "world_model_updates": int(self.world_model_updates),
+            "last_world_model_loss": self.last_world_model_loss,
             "actor_optimizer": self.actor_optimizer.state_dict(),
             "q_optimizer": self.q_optimizer.state_dict(),
             "world_model_optimizers": [optimizer.state_dict() for optimizer in self.world_model_optimizers],
@@ -1128,11 +1452,17 @@ class SIRLWorldModelRunner:
             for name in ("q1", "q2", "q1_target", "q2_target"):
                 if name in model_dict:
                     getattr(self, name).load_state_dict(model_dict[name], strict=False)
+        loaded_world_model_state = False
         if load_world_model_state and "world_models" in model_dict:
             for model, state in zip(self.world_models, model_dict["world_models"]):
                 model.load_state_dict(state, strict=False)
+            loaded_world_model_state = True
         if load_alpha_state and "log_alpha" in model_dict:
             self.log_alpha.data.copy_(model_dict["log_alpha"].to(self.device))
+        if loaded_world_model_state and "world_model_updates" in model_dict:
+            self.world_model_updates = int(model_dict["world_model_updates"])
+        if loaded_world_model_state and "last_world_model_loss" in model_dict:
+            self.last_world_model_loss = model_dict["last_world_model_loss"]
         if load_optimizer_state:
             try:
                 if "actor_optimizer" in model_dict:
@@ -1222,6 +1552,7 @@ class SIRLWorldModelRunner:
             stats["replay/real_count"] = float(len(self.real_replay))
             stats["replay/model_count"] = float(len(self.model_replay))
             stats["replay/sirl_count"] = float(len(self.sirl_replay))
+            stats["replay/model_ratio_used"] = float(self.last_model_ratio_used)
             stats["updates/valid_sac"] = float(valid_updates)
             self.recorder.record_statistics(stats, iteration)
 
