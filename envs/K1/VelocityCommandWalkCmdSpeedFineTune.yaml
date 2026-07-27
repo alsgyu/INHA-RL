@@ -36,6 +36,7 @@ algorithm:
     collect_noise_std: 0.003
 
 commands:
+  command_slew_rate: 2.0
   still_proportion: 0.10
   straight_proportion: 0.98
   lin_vel_x: [0.20, 1.60]

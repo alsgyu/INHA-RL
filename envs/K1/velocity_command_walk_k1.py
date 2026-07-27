@@ -20,6 +20,12 @@ class VelocityCommandWalkK1(ParameterWalkK1):
 
     def _init_buffers(self):
         super()._init_buffers()
+        self.public_command_targets = torch.zeros(
+            self.num_envs,
+            len(self.PUBLIC_COMMAND_KEYS),
+            dtype=torch.float,
+            device=self.device,
+        )
         self.current_public_command_ranges = {
             key: list(self.cfg["commands"][key])
             for key in self.PUBLIC_COMMAND_KEYS
@@ -27,6 +33,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         self.current_adapter_config = dict(self.cfg["commands"].get("adapter", {}))
         self.current_still_proportion = float(self.cfg["commands"].get("still_proportion", 0.0))
         self.current_straight_proportion = float(self.cfg["commands"].get("straight_proportion", 0.0))
+        self.current_command_slew_rate = float(self.cfg["commands"].get("command_slew_rate", 0.0))
 
     def update_training_curriculum(self, iteration):
         command_cfg = self.cfg["commands"]
@@ -37,6 +44,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         self.current_adapter_config = dict(command_cfg.get("adapter", {}))
         self.current_still_proportion = float(command_cfg.get("still_proportion", 0.0))
         self.current_straight_proportion = float(command_cfg.get("straight_proportion", 0.0))
+        self.current_command_slew_rate = float(command_cfg.get("command_slew_rate", self.current_command_slew_rate))
         self.current_resampling_time = list(command_cfg.get("resampling_time_s", [3.0, 8.0]))
         self.current_disturbance_scale = 1.0
         self.training_phase_index = 0
@@ -60,6 +68,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
                 self.current_public_command_ranges[key] = list(phase[key])
         if "adapter" in phase:
             self.current_adapter_config.update(phase["adapter"])
+        self.current_command_slew_rate = float(phase.get("command_slew_rate", self.current_command_slew_rate))
         self.current_still_proportion = float(phase.get("still_proportion", self.current_still_proportion))
         self.current_straight_proportion = float(phase.get("straight_proportion", self.current_straight_proportion))
         self.current_resampling_time = list(phase.get("resampling_time_s", self.current_resampling_time))
@@ -77,6 +86,37 @@ class VelocityCommandWalkK1(ParameterWalkK1):
 
     def _adapter_value(self, key, default):
         return float(self.current_adapter_config.get(key, default))
+
+    def _reset_idx(self, env_ids):
+        super()._reset_idx(env_ids)
+        if len(env_ids) == 0:
+            return
+        self.public_command_targets[env_ids, :] = 0.0
+        self.commands[env_ids, :10] = 0.0
+        self.gait_frequency[env_ids] = 0.0
+        self.gait_process[env_ids] = 0.0
+
+    def _set_public_command_targets(self, env_ids, values):
+        if env_ids is None:
+            self.public_command_targets[:, :] = values
+        else:
+            self.public_command_targets[env_ids, :] = values
+
+    def _apply_public_command_slew(self, env_ids=None):
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+        if len(env_ids) == 0:
+            return
+
+        targets = self.public_command_targets[env_ids]
+        current = self.commands[env_ids, : len(self.PUBLIC_COMMAND_KEYS)]
+        slew_rate = float(self.current_command_slew_rate)
+        if slew_rate <= 0.0:
+            next_command = targets
+        else:
+            max_delta = max(slew_rate * self.dt, 1.0e-8)
+            next_command = current + torch.clamp(targets - current, min=-max_delta, max=max_delta)
+        self.commands[env_ids, : len(self.PUBLIC_COMMAND_KEYS)] = next_command
 
     def _stand_mask(self):
         threshold = self._adapter_value("stand_command_threshold", 0.04)
@@ -195,15 +235,15 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             return
 
         defaults = {"lin_vel_x": 0.0, "lin_vel_y": 0.0, "ang_vel_yaw": 0.0}
+        values = torch.zeros(len(env_ids), len(self.PUBLIC_COMMAND_KEYS), dtype=torch.float, device=self.device)
         for command_idx, key in enumerate(self.PUBLIC_COMMAND_KEYS):
-            self.commands[env_ids, command_idx] = float(command_cfg.get(key, defaults[key]))
-        self.commands[env_ids, 3:10] = 0.0
-        self._resolve_internal_commands(env_ids)
+            values[:, command_idx] = float(command_cfg.get(key, defaults[key]))
+        self._set_public_command_targets(env_ids, values)
 
     def _sample_public_commands(self, env_ids):
         for command_idx, key in enumerate(self.PUBLIC_COMMAND_KEYS):
             low, high = self._public_command_range(key)
-            self.commands[env_ids, command_idx] = torch_rand_float(
+            self.public_command_targets[env_ids, command_idx] = torch_rand_float(
                 float(low),
                 float(high),
                 (len(env_ids), 1),
@@ -217,20 +257,22 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         for command_idx, key in enumerate(self.PUBLIC_COMMAND_KEYS):
             value = straight_cfg.get(key, self.cfg["commands"].get("fixed", {}).get(key, 0.0))
             if isinstance(value, (list, tuple)) and len(value) == 2:
-                self.commands[env_ids, command_idx] = torch_rand_float(
+                self.public_command_targets[env_ids, command_idx] = torch_rand_float(
                     float(value[0]),
                     float(value[1]),
                     (len(env_ids), 1),
                     device=self.device,
                 ).squeeze(1)
             else:
-                self.commands[env_ids, command_idx] = float(value)
+                self.public_command_targets[env_ids, command_idx] = float(value)
 
     def _resample_commands(self):
         if getattr(self, "is_play", False):
             self._apply_fixed_command(self.cfg["commands"].get("play", {}))
             return
         if getattr(self, "manual_control", False):
+            self.public_command_targets[:, :] = self.commands[:, : len(self.PUBLIC_COMMAND_KEYS)]
+            self._apply_public_command_slew()
             self._resolve_internal_commands()
             return
 
@@ -243,22 +285,22 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             self.cmd_resample_time[env_ids] += self._sample_resample_steps(len(env_ids))
             return
 
-        self.commands[env_ids, :10] = 0.0
+        self.public_command_targets[env_ids, :] = 0.0
         self._sample_public_commands(env_ids)
 
         perm = torch.randperm(len(env_ids), device=self.device)
         still_count = int(self.current_still_proportion * len(env_ids))
         still_envs = env_ids[perm[:still_count]]
-        self.commands[still_envs, :10] = 0.0
+        self.public_command_targets[still_envs, :] = 0.0
         remaining_envs = env_ids[perm[still_count:]]
         straight_count = int(self.current_straight_proportion * len(remaining_envs))
         straight_envs = remaining_envs[:straight_count]
         self._apply_straight_commands(straight_envs)
 
-        self._resolve_internal_commands(env_ids)
         self.cmd_resample_time[env_ids] += self._sample_resample_steps(len(env_ids))
 
     def _compute_observations(self):
+        self._apply_public_command_slew()
         self._resolve_internal_commands()
         commands_scale = torch.tensor(
             [
@@ -310,6 +352,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         self.extras["privileged_obs"] = self.privileged_obs_buf
         self.extras["sirl"] = self._compute_sirl_info()
         self.extras["sirl_commands"] = self.commands[:, :3].detach()
+        self.extras["sirl_command_targets"] = self.public_command_targets.detach()
         self.extras["sirl_internal_commands"] = self.commands[:, :10].detach()
 
     def _swing_masks(self):

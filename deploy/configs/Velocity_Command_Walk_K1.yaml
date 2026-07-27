@@ -35,7 +35,7 @@ policy:
   num_actions: 12
   num_observations: 54
   gait_frequency: 0.0
-  command_slew_rate: 1.50
+  command_slew_rate: 2.00
 
   command_adapter:
     stand_command_threshold: 0.035

@@ -199,6 +199,7 @@ commands:
   command_order: [lin_vel_x, lin_vel_y, ang_vel_yaw, gait_frequency,
                   foot_yaw_L, foot_yaw_R, body_pitch_target, body_roll_target,
                   feet_offset_x_target, feet_offset_y_target]
+  command_slew_rate: 2.0
   training_mode: sampled
   curriculum: false
   still_proportion: 0.25

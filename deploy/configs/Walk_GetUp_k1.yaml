@@ -61,7 +61,7 @@ walk_policy:
   feet_offset_y_target: 0.0
   stand_command_threshold: 0.04
   stand_action_decay: 0.0
-  command_slew_rate: 1.50
+  command_slew_rate: 2.00
   velocity_command_adapter:
     enabled: true
     stand_command_threshold: 0.035
