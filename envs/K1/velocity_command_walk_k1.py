@@ -34,6 +34,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         self.current_still_proportion = float(self.cfg["commands"].get("still_proportion", 0.0))
         self.current_straight_proportion = float(self.cfg["commands"].get("straight_proportion", 0.0))
         self.current_command_slew_rate = float(self.cfg["commands"].get("command_slew_rate", 0.0))
+        self.public_command_age = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
     def update_training_curriculum(self, iteration):
         command_cfg = self.cfg["commands"]
@@ -92,15 +93,30 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         if len(env_ids) == 0:
             return
         self.public_command_targets[env_ids, :] = 0.0
+        self.public_command_age[env_ids] = 0.0
         self.commands[env_ids, :10] = 0.0
         self.gait_frequency[env_ids] = 0.0
         self.gait_process[env_ids] = 0.0
 
     def _set_public_command_targets(self, env_ids, values):
+        if values.dim() == 1:
+            values = values.unsqueeze(0)
         if env_ids is None:
+            if values.shape[0] == 1:
+                values = values.expand(self.num_envs, -1)
+            changed = torch.norm(values - self.public_command_targets, dim=-1) > float(
+                self.cfg["commands"].get("command_change_threshold", 1.0e-4)
+            )
             self.public_command_targets[:, :] = values
+            self.public_command_age[changed] = 0.0
         else:
+            if values.shape[0] == 1:
+                values = values.expand(len(env_ids), -1)
+            changed = torch.norm(values - self.public_command_targets[env_ids], dim=-1) > float(
+                self.cfg["commands"].get("command_change_threshold", 1.0e-4)
+            )
             self.public_command_targets[env_ids, :] = values
+            self.public_command_age[env_ids[changed]] = 0.0
 
     def _apply_public_command_slew(self, env_ids=None):
         if env_ids is None:
@@ -302,6 +318,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
     def _compute_observations(self):
         self._apply_public_command_slew()
         self._resolve_internal_commands()
+        self.public_command_age += self.dt
         commands_scale = torch.tensor(
             [
                 self.cfg["normalization"]["lin_vel"],
@@ -421,6 +438,26 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         margin = float(self.cfg["rewards"].get("lin_vel_x_overspeed_margin", 0.08))
         overspeed = torch.clamp(self.filtered_lin_vel[:, 0] - self.commands[:, 0] - margin, min=0.0)
         return torch.square(overspeed) * moving_forward
+
+    def _command_response_weight(self):
+        window_s = float(self.cfg["rewards"].get("command_response_window_s", 1.0))
+        tau_s = max(float(self.cfg["rewards"].get("command_response_tau_s", 0.35)), 1.0e-6)
+        min_target = float(self.cfg["rewards"].get("command_response_min_abs_vx", 0.10))
+        active = (self.public_command_age <= window_s).float() * (torch.abs(self.public_command_targets[:, 0]) > min_target).float()
+        return active * torch.exp(-self.public_command_age / tau_s)
+
+    def _reward_reactive_lin_vel_x_error(self):
+        weight = self._command_response_weight()
+        target_vx = self.public_command_targets[:, 0]
+        return torch.square(target_vx - self.filtered_lin_vel[:, 0]) * weight
+
+    def _reward_reactive_lin_vel_x_underspeed(self):
+        weight = self._command_response_weight()
+        target_vx = self.public_command_targets[:, 0]
+        direction = torch.sign(target_vx)
+        aligned_speed = self.filtered_lin_vel[:, 0] * direction
+        lag = torch.clamp(torch.abs(target_vx) - aligned_speed, min=0.0)
+        return torch.square(lag) * weight
 
     def _straight_swing_mask(self):
         left_swing, right_swing = self._swing_masks()

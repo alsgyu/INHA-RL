@@ -1,0 +1,107 @@
+extends: VelocityCommandWalkCmdSpeedFineTune.yaml
+
+basic:
+  log_task: "K1/VelocityCommandWalkSIRLCmdReactiveFineTune"
+  max_iterations: 3500
+  description: "High-response command fine-tune with deploy-matched fast command slew and transient target tracking."
+
+algorithm:
+  sirl_worldmodel:
+    teacher_collect_iterations: 2500
+    teacher_collect_decay_iterations: 2500
+    teacher_collect_end_blend: 0.78
+    teacher_distill_iterations: 2500
+    teacher_bc_coef: 11.0
+    teacher_bc_min_coef: 11.0
+    teacher_bc_low_speed_vx: 0.35
+    teacher_bc_high_speed_vx: 0.80
+    teacher_bc_low_speed_weight: 4.0
+    actor_rl_coef: 0.006
+    actor_rl_start_iteration: 600
+    actor_rl_warmup_iterations: 1200
+    collect_noise_std: 0.002
+
+commands:
+  command_slew_rate: 3.0
+  still_proportion: 0.12
+  straight_proportion: 0.98
+  lin_vel_x: [0.05, 1.60]
+  lin_vel_y: [0.0, 0.0]
+  ang_vel_yaw: [0.0, 0.0]
+  straight:
+    lin_vel_x: [0.05, 1.60]
+    lin_vel_y: 0.0
+    ang_vel_yaw: 0.0
+  training_phases:
+    - start_iteration: 0
+      command_slew_rate: 2.0
+      disturbance_scale: 0.02
+      still_proportion: 0.16
+      straight_proportion: 1.00
+      resampling_time_s: [2.5, 4.5]
+      lin_vel_x: [0.05, 0.80]
+      lin_vel_y: [0.0, 0.0]
+      ang_vel_yaw: [0.0, 0.0]
+      adapter:
+        gait_frequency_max: 1.95
+        gait_frequency_speed_max: 1.20
+        body_pitch_gain: 0.09
+        body_pitch_target_clip: [-0.04, 0.14]
+        heading_correction_enabled: false
+        heading_correction_gain: 0.0
+        heading_correction_max_yaw_rate: 0.0
+    - start_iteration: 800
+      command_slew_rate: 3.0
+      disturbance_scale: 0.03
+      still_proportion: 0.12
+      straight_proportion: 1.00
+      resampling_time_s: [1.8, 3.5]
+      lin_vel_x: [0.05, 1.20]
+      lin_vel_y: [0.0, 0.0]
+      ang_vel_yaw: [0.0, 0.0]
+      adapter:
+        gait_frequency_max: 2.05
+        gait_frequency_speed_max: 1.45
+        body_pitch_gain: 0.10
+        body_pitch_target_clip: [-0.04, 0.16]
+        heading_correction_enabled: false
+        heading_correction_gain: 0.0
+        heading_correction_max_yaw_rate: 0.0
+    - start_iteration: 2000
+      command_slew_rate: 3.0
+      disturbance_scale: 0.04
+      still_proportion: 0.10
+      straight_proportion: 0.96
+      resampling_time_s: [1.6, 3.0]
+      lin_vel_x: [0.05, 1.60]
+      lin_vel_y: [-0.02, 0.02]
+      ang_vel_yaw: [-0.05, 0.05]
+      adapter:
+        gait_frequency_max: 2.05
+        gait_frequency_speed_max: 1.45
+        body_pitch_gain: 0.10
+        body_pitch_target_clip: [-0.04, 0.16]
+        heading_correction_enabled: true
+        heading_correction_gain: 0.35
+        heading_correction_max_yaw_rate: 0.14
+
+rewards:
+  scales:
+    tracking_lin_vel_x: 7.0
+    lin_vel_x_error: -2.8
+    lin_vel_x_overspeed: -10.0
+    reactive_lin_vel_x_error: -5.0
+    reactive_lin_vel_x_underspeed: -8.0
+    lin_vel_y_error: -2.8
+    ang_vel_yaw_error: -3.2
+    straight_path_lateral: -10.0
+    straight_heading: -8.0
+    straight_lateral_vel: -14.0
+    straight_yaw_vel: -14.0
+    action_rate: -4.5
+    feet_slip: -4.5
+  tracking_sigma: 0.16
+  lin_vel_x_overspeed_margin: 0.08
+  command_response_window_s: 1.0
+  command_response_tau_s: 0.35
+  command_response_min_abs_vx: 0.10
