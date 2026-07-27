@@ -406,6 +406,15 @@ class SIRLWorldModelRunner:
             "teacher/distill_steps": float(valid_steps),
         }
 
+    def _actor_state_snapshot(self):
+        return {key: value.detach().clone() for key, value in self.model.actor.state_dict().items()}, self.model.logstd.detach().clone()
+
+    def _restore_actor_state(self, snapshot):
+        actor_state, logstd = snapshot
+        self.model.actor.load_state_dict(actor_state)
+        with torch.no_grad():
+            self.model.logstd.data.copy_(logstd.to(self.device))
+
     def _mirror_action(self, action):
         if action.shape[-1] != 12:
             return action
@@ -810,8 +819,19 @@ class SIRLWorldModelRunner:
             sirl_actor_loss = torch.mean(sample_weight * per_sample_loss)
             actor_loss = actor_loss + sirl_actor_coef * sirl_actor_loss
         teacher_coef = self._teacher_bc_coef()
+        guard_enabled = bool(self.wm_cfg.get("teacher_guard_enabled", False)) and self.teacher_policy is not None
+        guard_snapshot = None
+        guard_teacher_action = None
+        guard_before = torch.tensor(0.0, dtype=torch.float, device=self.device)
+        guard_after = torch.tensor(0.0, dtype=torch.float, device=self.device)
+        guard_rollback = 0.0
+        if guard_enabled:
+            guard_teacher_action = self._teacher_action(batch["obs"])
+            if guard_teacher_action is not None:
+                guard_before = F.mse_loss(self._policy_dist(batch["obs"]).loc, guard_teacher_action).detach()
+                guard_snapshot = self._actor_state_snapshot()
         if teacher_coef > 0.0:
-            teacher_action = self._teacher_action(batch["obs"])
+            teacher_action = guard_teacher_action if guard_teacher_action is not None else self._teacher_action(batch["obs"])
             if teacher_action is not None:
                 student_action = self._policy_dist(batch["obs"]).loc
                 teacher_bc_loss = F.mse_loss(student_action, teacher_action)
@@ -843,6 +863,14 @@ class SIRLWorldModelRunner:
         with torch.no_grad():
             self._sanitize_parameter_(self.model.logstd, None)
             self.model.logstd.clamp_(min=self.log_std_min, max=self.log_std_max)
+        if guard_snapshot is not None and guard_teacher_action is not None:
+            guard_after = F.mse_loss(self._policy_dist(batch["obs"]).loc, guard_teacher_action).detach()
+            max_mse = float(self.wm_cfg.get("teacher_guard_max_mse", 0.02))
+            max_increase = float(self.wm_cfg.get("teacher_guard_max_increase", 0.005))
+            if float(guard_after.item()) > max_mse or float((guard_after - guard_before).item()) > max_increase:
+                self._restore_actor_state(guard_snapshot)
+                guard_after = guard_before
+                guard_rollback = 1.0
 
         alpha_loss = torch.tensor(0.0, dtype=torch.float, device=self.device)
         if self.auto_alpha and actor_rl_coef > 0.0:
@@ -868,6 +896,9 @@ class SIRLWorldModelRunner:
             "sac/sirl_actor_coef": float(sirl_actor_coef),
             "sac/teacher_bc_loss": float(teacher_bc_loss.detach().item()),
             "sac/teacher_bc_coef": float(teacher_coef),
+            "sac/teacher_guard_before": float(guard_before.detach().item()),
+            "sac/teacher_guard_after": float(guard_after.detach().item()),
+            "sac/teacher_guard_rollback": float(guard_rollback),
             "sac/actor_symmetry_loss": float(actor_symmetry_loss.detach().item()),
             "sac/actor_symmetry_coef": float(symmetry_coef),
             "sac/actor_symmetry_mask_frac": actor_symmetry_mask_frac,
@@ -1021,26 +1052,34 @@ class SIRLWorldModelRunner:
         model_dict = torch.load(checkpoint, map_location=self.device, weights_only=True)
         if "model" in model_dict:
             self.model.load_state_dict(model_dict["model"], strict=False)
-        for name in ("q1", "q2", "q1_target", "q2_target"):
-            if name in model_dict:
-                getattr(self, name).load_state_dict(model_dict[name], strict=False)
-        if "world_models" in model_dict:
+        load_critic_state = bool(self.wm_cfg.get("load_critic_state", True))
+        load_world_model_state = bool(self.wm_cfg.get("load_world_model_state", True))
+        load_alpha_state = bool(self.wm_cfg.get("load_alpha_state", True))
+        load_optimizer_state = bool(self.wm_cfg.get("load_optimizer_state", True))
+        if load_critic_state:
+            for name in ("q1", "q2", "q1_target", "q2_target"):
+                if name in model_dict:
+                    getattr(self, name).load_state_dict(model_dict[name], strict=False)
+        if load_world_model_state and "world_models" in model_dict:
             for model, state in zip(self.world_models, model_dict["world_models"]):
                 model.load_state_dict(state, strict=False)
-        if "log_alpha" in model_dict:
+        if load_alpha_state and "log_alpha" in model_dict:
             self.log_alpha.data.copy_(model_dict["log_alpha"].to(self.device))
-        try:
-            if "actor_optimizer" in model_dict:
-                self.actor_optimizer.load_state_dict(model_dict["actor_optimizer"])
-            if "q_optimizer" in model_dict:
-                self.q_optimizer.load_state_dict(model_dict["q_optimizer"])
-            if "alpha_optimizer" in model_dict:
-                self.alpha_optimizer.load_state_dict(model_dict["alpha_optimizer"])
-            if "world_model_optimizers" in model_dict:
-                for optimizer, state in zip(self.world_model_optimizers, model_dict["world_model_optimizers"]):
-                    optimizer.load_state_dict(state)
-        except Exception as e:
-            print(f"Failed to load optimizer state: {e}")
+        if load_optimizer_state:
+            try:
+                if "actor_optimizer" in model_dict:
+                    self.actor_optimizer.load_state_dict(model_dict["actor_optimizer"])
+                if "q_optimizer" in model_dict:
+                    self.q_optimizer.load_state_dict(model_dict["q_optimizer"])
+                if "alpha_optimizer" in model_dict:
+                    self.alpha_optimizer.load_state_dict(model_dict["alpha_optimizer"])
+                if "world_model_optimizers" in model_dict:
+                    for optimizer, state in zip(self.world_model_optimizers, model_dict["world_model_optimizers"]):
+                        optimizer.load_state_dict(state)
+            except Exception as e:
+                print(f"Failed to load optimizer state: {e}")
+        else:
+            print("[sirl-wm] optimizer state reset for this run.")
         self._sanitize_module_(self.model.actor)
         self._sanitize_module_(self.q1)
         self._sanitize_module_(self.q2)

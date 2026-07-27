@@ -4,7 +4,7 @@ basic:
   task: "K1/Velocity_Command_Walk_K1"
   log_task: "K1/VelocityCommandWalkSIRLCmdFineTune"
   checkpoint: null
-  max_iterations: 5000
+  max_iterations: 3000
   description: "Command-tracking fine-tune from a known-good VelocityCommandWalk checkpoint."
 
 runner:
@@ -14,36 +14,43 @@ runner:
 algorithm:
   sirl_worldmodel:
     learning_starts: 4096
-    updates_per_iter: 2
+    updates_per_iter: 1
     batch_size: 512
-    actor_lr: 2.0e-5
-    critic_lr: 5.0e-5
+    actor_lr: 5.0e-6
+    critic_lr: 2.0e-5
     collect_noise_std: 0.005
+    load_optimizer_state: false
+    load_critic_state: false
+    load_world_model_state: false
+    load_alpha_state: false
     teacher_enabled: true
     teacher_policy_path: "__checkpoint__"
     teacher_action_clip: 1.0
-    teacher_collect_iterations: 5000
-    teacher_collect_decay_iterations: 5000
-    teacher_collect_start_blend: 0.85
-    teacher_collect_end_blend: 0.45
-    teacher_distill_iterations: 5000
-    teacher_distill_steps_per_iter: 2
+    teacher_collect_iterations: 3000
+    teacher_collect_decay_iterations: 3000
+    teacher_collect_start_blend: 1.0
+    teacher_collect_end_blend: 0.85
+    teacher_distill_iterations: 3000
+    teacher_distill_steps_per_iter: 4
     teacher_distill_batch_size: 4096
     teacher_distill_replay_fraction: 0.5
-    teacher_bc_coef: 3.0
+    teacher_bc_coef: 20.0
     teacher_bc_decay_iterations: 0
-    teacher_bc_min_coef: 3.0
-    actor_rl_coef: 0.02
-    actor_rl_start_iteration: 500
-    actor_rl_warmup_iterations: 1500
+    teacher_bc_min_coef: 20.0
+    teacher_guard_enabled: true
+    teacher_guard_max_mse: 0.012
+    teacher_guard_max_increase: 0.002
+    actor_rl_coef: 0.002
+    actor_rl_start_iteration: 1000
+    actor_rl_warmup_iterations: 2000
     actor_mean_l2_coef: 0.02
     actor_action_l2_coef: 0.01
     actor_symmetry_coef: 0.0
     actor_symmetry_start_iteration: 100000000
     actor_symmetry_warmup_iterations: 0
-    sirl_actor_coef: 0.005
-    sirl_actor_start_iteration: 1000
-    sirl_actor_warmup_iterations: 1000
+    sirl_actor_coef: 0.0
+    sirl_actor_start_iteration: 100000000
+    sirl_actor_warmup_iterations: 0
     sirl_q_coef: 0.0
     model_batch_ratio: 0.0
     model_rollout_enabled: false

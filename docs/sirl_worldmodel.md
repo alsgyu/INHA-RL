@@ -86,7 +86,7 @@ python train_sirl_worldmodel.py \
   --sim_device=cuda:0 \
   --rl_device=cuda:0 \
   --num_envs=2048 \
-  --max_iterations=5000
+  --max_iterations=3000
 ```
 
 Validate the fine-tuned checkpoint without MuJoCo straight-path correction:
@@ -94,15 +94,21 @@ Validate the fine-tuned checkpoint without MuJoCo straight-path correction:
 ```bash
 python play_mujoco_walk_getup_k1.py \
   --task K1/VelocityCommandWalk \
-  --checkpoint logs/K1/K1/VelocityCommandWalkSIRLCmdFineTune/<run>/nn/model_2500.pth \
+  --checkpoint logs/K1/K1/VelocityCommandWalkSIRLCmdFineTune/<run>/nn/model_500.pth \
   --walk_only \
   --vx 1.5 --vy 0 --vyaw 0 \
   --duration_s 10
 ```
 
 Keep `2026-07-26-21-35-34/nn/model_30000.pth` as the golden rollback
-checkpoint. Stop the fine-tune if `vx=0.1`, `vx=0.5`, or `vx=1.5` becomes less
-stable than that checkpoint.
+checkpoint. Check `model_500.pth`, `model_1000.pth`, and `model_2000.pth`
+before considering the final checkpoint. Stop the fine-tune if `vx=0.1`,
+`vx=0.5`, or `vx=1.5` becomes less stable than the golden checkpoint.
+
+The fine-tune runner resets optimizer, critic, alpha, and world-model state from
+the checkpoint by default for this config. It keeps only the policy weights and
+uses the same checkpoint as a teacher anchor with a rollback guard, so a single
+bad actor update cannot move the deploy policy far from the known-good gait.
 
 ## 4090 Starting Point
 
