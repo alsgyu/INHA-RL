@@ -180,7 +180,9 @@ class Policy:
             self.commands[1] = vy
             self.commands[2] = vyaw
             
-        clip_range = (-self.policy_interval, self.policy_interval)
+        command_slew_rate = float(self.cfg["policy"].get("command_slew_rate", 1.0))
+        clip_delta = self.policy_interval * command_slew_rate
+        clip_range = (-clip_delta, clip_delta)
         self.smoothed_commands += np.clip(self.commands - self.smoothed_commands, *clip_range)
         command_block = self._resolve_command_block()
         moving = self.gait_frequency > 1.0e-8

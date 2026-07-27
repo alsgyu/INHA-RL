@@ -35,27 +35,28 @@ policy:
   num_actions: 12
   num_observations: 54
   gait_frequency: 0.0
+  command_slew_rate: 1.50
 
   command_adapter:
     stand_command_threshold: 0.035
     gait_frequency_min: 1.15
-    gait_frequency_max: 2.15
+    gait_frequency_max: 1.95
     gait_frequency_speed_min: 0.08
-    gait_frequency_speed_max: 1.45
+    gait_frequency_speed_max: 1.05
     max_yaw_speed_for_drive: 0.90
     foot_yaw_from_yaw_gain: 0.12
     foot_yaw_target_clip: [-0.22, 0.22]
-    body_pitch_gain: 0.11
-    body_pitch_target_clip: [-0.04, 0.16]
+    body_pitch_gain: 0.08
+    body_pitch_target_clip: [-0.04, 0.12]
     body_roll_gain: -0.08
     body_roll_target_clip: [-0.08, 0.08]
-    heading_correction_enabled: true
+    heading_correction_enabled: false
     heading_correction_min_abs_vx: 0.08
     heading_correction_max_abs_vy_command: 0.04
     heading_correction_max_abs_yaw_command: 0.08
-    heading_correction_gain: 1.2
+    heading_correction_gain: 0.45
     heading_correction_deadband: 0.015
-    heading_correction_max_yaw_rate: 0.45
+    heading_correction_max_yaw_rate: 0.18
 
   normalization:
     gravity: 1.0
