@@ -2,45 +2,45 @@ extends: VelocityCommandWalkCmdReactiveFineTune.yaml
 
 basic:
   log_task: "K1/VelocityCommandWalkSIRLCmdWorldModelFineTune"
-  max_iterations: 4000
-  description: "Conservative MBPO-style world-model fine-tune for K1 velocity command walking."
+  max_iterations: 5000
+  description: "Deploy-matched, conservative MBPO-style world-model fine-tune for K1 velocity command walking."
 
 algorithm:
   sirl_worldmodel:
     model_rollout_enabled: true
-    model_batch_ratio: 0.05
+    model_batch_ratio: 0.02
     model_batch_ratio_start: 0.0
-    model_batch_ratio_final: 0.10
-    model_batch_ratio_warmup_start_iteration: 1500
-    model_batch_ratio_warmup_iterations: 1000
-    model_batch_ratio_max: 0.15
-    model_batch_ratio_min_accept_rate: 0.15
-    model_loss_weight: 0.35
-    model_teacher_guard_weight_multiplier: 1.25
+    model_batch_ratio_final: 0.05
+    model_batch_ratio_warmup_start_iteration: 3000
+    model_batch_ratio_warmup_iterations: 1500
+    model_batch_ratio_max: 0.08
+    model_batch_ratio_min_accept_rate: 0.25
+    model_loss_weight: 0.15
+    model_teacher_guard_weight_multiplier: 1.50
 
     model_rollout_horizon: 1
     model_rollout_allow_multi_step: false
-    model_rollout_starts: 262144
-    model_rollout_min_wm_updates: 1500
-    model_rollout_max_wm_loss: 10.0
-    model_rollout_batch_size: 1024
+    model_rollout_starts: 524288
+    model_rollout_min_wm_updates: 2500
+    model_rollout_max_wm_loss: 5.0
+    model_rollout_batch_size: 512
     model_rollout_ensemble_samples: 5
 
-    model_delta_clip: 0.75
+    model_delta_clip: 0.50
     model_reward_clip: 5.0
-    model_done_threshold: 0.6
-    model_done_filter_threshold: 0.6
-    model_delta_norm_max: 3.0
+    model_done_threshold: 0.5
+    model_done_filter_threshold: 0.5
+    model_delta_norm_max: 2.0
 
     model_uncertainty_filter_enabled: true
-    model_uncertainty_quantile: 0.70
+    model_uncertainty_quantile: 0.55
     model_uncertainty_weight_enabled: true
-    model_uncertainty_weight_floor: 0.5
+    model_uncertainty_weight_floor: 0.35
     model_uncertainty_include_velocity: true
 
     model_low_speed_guard_enabled: true
     model_low_speed_vx: 0.35
-    model_low_speed_max_pred_vx: 0.6
+    model_low_speed_max_pred_vx: 0.45
 
     store_privileged_replay: true
     world_model_ensemble_size: 5
@@ -54,6 +54,21 @@ algorithm:
 
 commands:
   command_slew_rate: 3.0
+  adapter:
+    gait_frequency_min: 1.15
+    gait_frequency_max: 1.95
+    gait_frequency_speed_min: 0.08
+    gait_frequency_speed_max: 1.05
+    body_pitch_gain: 0.08
+    body_pitch_target_clip: [-0.04, 0.12]
+    heading_correction_enabled: false
+    heading_correction_gain: 0.0
+    heading_correction_max_yaw_rate: 0.0
+  high_speed_proportion: 0.0
+  high_speed:
+    lin_vel_x: [1.20, 1.60]
+    lin_vel_y: 0.0
+    ang_vel_yaw: 0.0
   training_phases:
     - start_iteration: 0
       command_slew_rate: 3.0
@@ -66,9 +81,9 @@ commands:
       ang_vel_yaw: [0.0, 0.0]
       adapter:
         gait_frequency_max: 1.95
-        gait_frequency_speed_max: 1.20
-        body_pitch_gain: 0.09
-        body_pitch_target_clip: [-0.04, 0.14]
+        gait_frequency_speed_max: 1.05
+        body_pitch_gain: 0.08
+        body_pitch_target_clip: [-0.04, 0.12]
         heading_correction_enabled: false
         heading_correction_gain: 0.0
         heading_correction_max_yaw_rate: 0.0
@@ -82,10 +97,10 @@ commands:
       lin_vel_y: [0.0, 0.0]
       ang_vel_yaw: [0.0, 0.0]
       adapter:
-        gait_frequency_max: 2.05
-        gait_frequency_speed_max: 1.45
-        body_pitch_gain: 0.10
-        body_pitch_target_clip: [-0.04, 0.16]
+        gait_frequency_max: 1.95
+        gait_frequency_speed_max: 1.05
+        body_pitch_gain: 0.08
+        body_pitch_target_clip: [-0.04, 0.12]
         heading_correction_enabled: false
         heading_correction_gain: 0.0
         heading_correction_max_yaw_rate: 0.0
@@ -98,11 +113,16 @@ commands:
       lin_vel_x: [0.05, 1.60]
       lin_vel_y: [-0.02, 0.02]
       ang_vel_yaw: [-0.05, 0.05]
+      high_speed_proportion: 0.20
+      high_speed:
+        lin_vel_x: [1.20, 1.60]
+        lin_vel_y: 0.0
+        ang_vel_yaw: 0.0
       adapter:
-        gait_frequency_max: 2.05
-        gait_frequency_speed_max: 1.45
-        body_pitch_gain: 0.10
-        body_pitch_target_clip: [-0.04, 0.16]
-        heading_correction_enabled: true
-        heading_correction_gain: 0.35
-        heading_correction_max_yaw_rate: 0.14
+        gait_frequency_max: 1.95
+        gait_frequency_speed_max: 1.05
+        body_pitch_gain: 0.08
+        body_pitch_target_clip: [-0.04, 0.12]
+        heading_correction_enabled: false
+        heading_correction_gain: 0.0
+        heading_correction_max_yaw_rate: 0.0

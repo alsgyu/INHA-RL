@@ -31,6 +31,9 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             for key in self.PUBLIC_COMMAND_KEYS
         }
         self.current_adapter_config = dict(self.cfg["commands"].get("adapter", {}))
+        self.current_straight_config = dict(self.cfg["commands"].get("straight", {}))
+        self.current_high_speed_proportion = float(self.cfg["commands"].get("high_speed_proportion", 0.0))
+        self.current_high_speed_config = dict(self.cfg["commands"].get("high_speed", {}))
         self.current_still_proportion = float(self.cfg["commands"].get("still_proportion", 0.0))
         self.current_straight_proportion = float(self.cfg["commands"].get("straight_proportion", 0.0))
         self.current_command_slew_rate = float(self.cfg["commands"].get("command_slew_rate", 0.0))
@@ -43,6 +46,9 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             for key in self.PUBLIC_COMMAND_KEYS
         }
         self.current_adapter_config = dict(command_cfg.get("adapter", {}))
+        self.current_straight_config = dict(command_cfg.get("straight", {}))
+        self.current_high_speed_proportion = float(command_cfg.get("high_speed_proportion", 0.0))
+        self.current_high_speed_config = dict(command_cfg.get("high_speed", {}))
         self.current_still_proportion = float(command_cfg.get("still_proportion", 0.0))
         self.current_straight_proportion = float(command_cfg.get("straight_proportion", 0.0))
         self.current_command_slew_rate = float(command_cfg.get("command_slew_rate", self.current_command_slew_rate))
@@ -67,8 +73,17 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         for key in self.PUBLIC_COMMAND_KEYS:
             if key in phase:
                 self.current_public_command_ranges[key] = list(phase[key])
+                self.current_straight_config[key] = phase[key]
+                if key in self.current_high_speed_config:
+                    self.current_high_speed_config[key] = phase[key]
         if "adapter" in phase:
             self.current_adapter_config.update(phase["adapter"])
+        if "straight" in phase:
+            self.current_straight_config.update(phase["straight"])
+        if "high_speed_proportion" in phase:
+            self.current_high_speed_proportion = float(phase["high_speed_proportion"])
+        if "high_speed" in phase:
+            self.current_high_speed_config.update(phase["high_speed"])
         self.current_command_slew_rate = float(phase.get("command_slew_rate", self.current_command_slew_rate))
         self.current_still_proportion = float(phase.get("still_proportion", self.current_still_proportion))
         self.current_straight_proportion = float(phase.get("straight_proportion", self.current_straight_proportion))
@@ -269,9 +284,15 @@ class VelocityCommandWalkK1(ParameterWalkK1):
     def _apply_straight_commands(self, env_ids):
         if len(env_ids) == 0:
             return
-        straight_cfg = self.cfg["commands"].get("straight", {})
+        straight_cfg = self.current_straight_config
         for command_idx, key in enumerate(self.PUBLIC_COMMAND_KEYS):
-            value = straight_cfg.get(key, self.cfg["commands"].get("fixed", {}).get(key, 0.0))
+            value = straight_cfg.get(
+                key,
+                self.current_public_command_ranges.get(
+                    key,
+                    self.cfg["commands"].get("fixed", {}).get(key, 0.0),
+                ),
+            )
             if isinstance(value, (list, tuple)) and len(value) == 2:
                 self.public_command_targets[env_ids, command_idx] = torch_rand_float(
                     float(value[0]),
@@ -281,6 +302,26 @@ class VelocityCommandWalkK1(ParameterWalkK1):
                 ).squeeze(1)
             else:
                 self.public_command_targets[env_ids, command_idx] = float(value)
+
+    def _apply_high_speed_commands(self, env_ids):
+        if len(env_ids) == 0 or self.current_high_speed_proportion <= 0.0:
+            return
+        count = int(self.current_high_speed_proportion * len(env_ids))
+        if count <= 0:
+            return
+        selected = env_ids[torch.randperm(len(env_ids), device=self.device)[:count]]
+        high_speed_cfg = self.current_high_speed_config
+        vx_range = high_speed_cfg.get("lin_vel_x", self.current_straight_config.get("lin_vel_x"))
+        if not isinstance(vx_range, (list, tuple)) or len(vx_range) != 2:
+            return
+        self.public_command_targets[selected, 0] = torch_rand_float(
+            float(vx_range[0]),
+            float(vx_range[1]),
+            (len(selected), 1),
+            device=self.device,
+        ).squeeze(1)
+        self.public_command_targets[selected, 1] = float(high_speed_cfg.get("lin_vel_y", 0.0))
+        self.public_command_targets[selected, 2] = float(high_speed_cfg.get("ang_vel_yaw", 0.0))
 
     def _resample_commands(self):
         if getattr(self, "is_play", False):
@@ -312,6 +353,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         straight_count = int(self.current_straight_proportion * len(remaining_envs))
         straight_envs = remaining_envs[:straight_count]
         self._apply_straight_commands(straight_envs)
+        self._apply_high_speed_commands(straight_envs)
 
         self.cmd_resample_time[env_ids] += self._sample_resample_steps(len(env_ids))
 
