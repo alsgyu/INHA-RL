@@ -28,6 +28,7 @@ class Policy:
         self.smoothed_commands = np.zeros(3, dtype=np.float32)
 
         self.command_adapter = self.cfg["policy"].get("command_adapter")
+        self.command_source = str(self.cfg["policy"].get("command_source", "remote")).lower()
         self.gait_frequency = float(self.cfg["policy"]["gait_frequency"])
         self.gait_process = 0.0
         self.estimated_yaw = 0.0
@@ -42,6 +43,9 @@ class Policy:
             self.cfg["policy"].get("leg_start_index", len(self.default_dof_pos) - self.cfg["policy"]["num_actions"])
         )
         self.leg_end_index = self.leg_start_index + self.cfg["policy"]["num_actions"]
+
+    def _use_observation_controller_commands(self):
+        return self.command_source in ("observation_controller", "obs_controller", "live")
 
     def reset_runtime_state(self):
         self.commands[:] = 0.0
@@ -194,11 +198,11 @@ class Policy:
         action_scale_multiplier=1.0,
     ):
         self.estimated_yaw = self._wrap_to_pi(self.estimated_yaw + float(base_ang_vel[2]) * self.policy_interval)
-        try:
+        if self._use_observation_controller_commands():
             self.commands[0] = self.obs_controller.get_vx_cmd()
             self.commands[1] = self.obs_controller.get_vy_cmd()
             self.commands[2] = self.obs_controller.get_vyaw_cmd()
-        except Exception:
+        else:
             self.commands[0] = vx
             self.commands[1] = vy
             self.commands[2] = vyaw

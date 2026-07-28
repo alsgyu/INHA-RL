@@ -49,6 +49,7 @@ class Controller:
         self.publish_runner = None
         self.running = True
         self.rl_start_time = None
+        self.rl_start_target = None
 
         self.publish_lock = threading.Lock()
 
@@ -139,10 +140,12 @@ class Controller:
                 break
             time.sleep(0.1)
         self.policy.reset_runtime_state()
+        self.rl_start_target = np.copy(self.filtered_dof_target)
         create_first_frame_rl_cmd(self.low_cmd, self.cfg)
         for i in range(self.cfg["common"]["joint_cnt"]):
-            self.dof_target[i] = self.low_cmd.motor_cmd[i].q
-            self.filtered_dof_target[i] = self.low_cmd.motor_cmd[i].q
+            self.low_cmd.motor_cmd[i].q = self.rl_start_target[i]
+            self.dof_target[i] = self.rl_start_target[i]
+            self.filtered_dof_target[i] = self.rl_start_target[i]
         self._send_cmd(self.low_cmd)
         self.rl_start_time = self.timer.get_time()
         self.next_inference_time = self.rl_start_time
@@ -166,7 +169,9 @@ class Controller:
         ramp_s = float(self.cfg["policy"].get("startup_action_ramp_s", 0.0))
         elapsed = 0.0 if self.rl_start_time is None else max(0.0, time_now - self.rl_start_time)
         if elapsed < hold_s:
-            self.dof_target[:] = np.array(self.cfg["common"]["default_qpos"], dtype=np.float32)
+            if self.rl_start_target is None:
+                self.rl_start_target = np.copy(self.filtered_dof_target)
+            self.dof_target[:] = self.rl_start_target
             self.policy.reset_runtime_state()
             time.sleep(0.001)
             return
@@ -175,7 +180,7 @@ class Controller:
         else:
             action_scale_multiplier = 1.0
 
-        self.dof_target[:] = self.policy.inference(
+        policy_target = self.policy.inference(
             time_now=time_now,
             dof_pos=self.dof_pos,
             dof_vel=self.dof_vel,
@@ -186,6 +191,13 @@ class Controller:
             vyaw=self.remoteControlService.get_vyaw_cmd(),
             action_scale_multiplier=action_scale_multiplier,
         )
+        if action_scale_multiplier < 1.0 and self.rl_start_target is not None:
+            self.dof_target[:] = (
+                (1.0 - action_scale_multiplier) * self.rl_start_target
+                + action_scale_multiplier * policy_target
+            )
+        else:
+            self.dof_target[:] = policy_target
 
         inference_time = time.perf_counter()
         self.logger.debug(f"Inference took {(inference_time - start_time)*1000:.4f} ms")
