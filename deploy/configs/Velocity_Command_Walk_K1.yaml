@@ -36,6 +36,8 @@ policy:
   num_observations: 54
   gait_frequency: 0.0
   command_slew_rate: 3.00
+  startup_hold_s: 0.6
+  startup_action_ramp_s: 1.0
 
   command_adapter:
     stand_command_threshold: 0.035
@@ -101,9 +103,9 @@ prepare:
     1, 1, 1, 1, 1, 1
   ]
   default_qpos: [
-    0.0,  0.0,
-    0.25, -1.4, 0.0, -0.5,
-    0.25, 1.4, 0.0, 0.5,
-    -0.1, 0.0, 0.0, 0.2, -0.1, 0.0,
-    -0.1, 0.0, 0.0, 0.2, -0.1, 0.0,
+    0, 0,
+    0.2, -1.35, 0, -0.5,
+    0.2, 1.35, 0, 0.5,
+    -0.2, 0, 0, 0.4, -0.25, 0,
+    -0.2, 0, 0, 0.4, -0.25, 0
   ]

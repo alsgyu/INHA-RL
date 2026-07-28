@@ -48,6 +48,7 @@ class Controller:
         self._init_communication()
         self.publish_runner = None
         self.running = True
+        self.rl_start_time = None
 
         self.publish_lock = threading.Lock()
 
@@ -137,10 +138,15 @@ class Controller:
             if self.remoteControlService.start_rl_gait():
                 break
             time.sleep(0.1)
+        self.policy.reset_runtime_state()
         create_first_frame_rl_cmd(self.low_cmd, self.cfg)
+        for i in range(self.cfg["common"]["joint_cnt"]):
+            self.dof_target[i] = self.low_cmd.motor_cmd[i].q
+            self.filtered_dof_target[i] = self.low_cmd.motor_cmd[i].q
         self._send_cmd(self.low_cmd)
-        self.next_inference_time = self.timer.get_time()
-        self.next_publish_time = self.timer.get_time()
+        self.rl_start_time = self.timer.get_time()
+        self.next_inference_time = self.rl_start_time
+        self.next_publish_time = self.rl_start_time
         self.publish_runner = threading.Thread(target=self._publish_cmd)
         self.publish_runner.daemon = True
         self.publish_runner.start()
@@ -156,6 +162,19 @@ class Controller:
         self.logger.debug(f"Next start time: {self.next_inference_time}")
         start_time = time.perf_counter()
 
+        hold_s = float(self.cfg["policy"].get("startup_hold_s", 0.0))
+        ramp_s = float(self.cfg["policy"].get("startup_action_ramp_s", 0.0))
+        elapsed = 0.0 if self.rl_start_time is None else max(0.0, time_now - self.rl_start_time)
+        if elapsed < hold_s:
+            self.dof_target[:] = np.array(self.cfg["common"]["default_qpos"], dtype=np.float32)
+            self.policy.reset_runtime_state()
+            time.sleep(0.001)
+            return
+        if ramp_s > 1.0e-6:
+            action_scale_multiplier = min(max((elapsed - hold_s) / ramp_s, 0.0), 1.0)
+        else:
+            action_scale_multiplier = 1.0
+
         self.dof_target[:] = self.policy.inference(
             time_now=time_now,
             dof_pos=self.dof_pos,
@@ -165,6 +184,7 @@ class Controller:
             vx=self.remoteControlService.get_vx_cmd(),
             vy=self.remoteControlService.get_vy_cmd(),
             vyaw=self.remoteControlService.get_vyaw_cmd(),
+            action_scale_multiplier=action_scale_multiplier,
         )
 
         inference_time = time.perf_counter()

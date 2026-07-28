@@ -43,6 +43,18 @@ class Policy:
         )
         self.leg_end_index = self.leg_start_index + self.cfg["policy"]["num_actions"]
 
+    def reset_runtime_state(self):
+        self.commands[:] = 0.0
+        self.smoothed_commands[:] = 0.0
+        self.gait_frequency = 0.0
+        self.gait_process = 0.0
+        self.estimated_yaw = 0.0
+        self.desired_yaw = 0.0
+        self.heading_initialized = False
+        self.heading_correction_yaw = 0.0
+        self.actions[:] = 0.0
+        self.dof_targets[:] = self.default_dof_pos
+
     def _adapter_value(self, key, default):
         if self.command_adapter is None:
             return default
@@ -169,7 +181,18 @@ class Policy:
             dtype=np.float32,
         )
 
-    def inference(self, time_now, dof_pos, dof_vel, base_ang_vel, projected_gravity, vx, vy, vyaw):
+    def inference(
+        self,
+        time_now,
+        dof_pos,
+        dof_vel,
+        base_ang_vel,
+        projected_gravity,
+        vx,
+        vy,
+        vyaw,
+        action_scale_multiplier=1.0,
+    ):
         self.estimated_yaw = self._wrap_to_pi(self.estimated_yaw + float(base_ang_vel[2]) * self.policy_interval)
         try:
             self.commands[0] = self.obs_controller.get_vx_cmd()
@@ -225,6 +248,7 @@ class Policy:
             -norm["clip_actions"],
             norm["clip_actions"],
         )
+        self.actions[:] *= float(np.clip(action_scale_multiplier, 0.0, 1.0))
         self.dof_targets[:] = self.default_dof_pos
         self.dof_targets[self.leg_start_index : self.leg_end_index] += self.cfg["policy"]["control"]["action_scale"] * self.actions
 
