@@ -5,8 +5,8 @@ common:
     2, 2,
     5, 5, 5, 5,
     5, 5, 5, 5,
-    80, 80, 80, 80, 25, 25,
-    80, 80, 80, 80, 25, 25
+    80, 80, 80, 80, 50, 50,
+    80, 80, 80, 80, 50, 50
   ]
   damping: [
     0.2, 0.2,
@@ -92,16 +92,16 @@ mech:
   parallel_mech_rl_mode: "position"
 
 debug:
-  enabled: false
-  print_interval_s: 1.0
+  enabled: true
+  print_interval_s: 0.5
 
 prepare:
   stiffness: [
     2, 2,
     5, 5, 5, 5,
     5, 5, 5, 5,
-    80, 80, 80, 80, 25, 25,
-    80, 80, 80, 80, 25, 25
+    80, 80, 80, 80, 50, 50,
+    80, 80, 80, 80, 50, 50
   ]
   damping: [
     0.2, 0.2,

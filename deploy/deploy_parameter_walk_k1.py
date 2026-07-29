@@ -3,6 +3,8 @@ import time
 import yaml
 import logging
 import threading
+import os
+import subprocess
 
 from booster_robotics_sdk_python import (
     ChannelFactory,
@@ -54,6 +56,45 @@ class Controller:
         self.control_stage = "idle"
 
         self.publish_lock = threading.Lock()
+
+    def _git_commit(self):
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        try:
+            return subprocess.check_output(
+                ["git", "-C", repo_root, "rev-parse", "--short", "HEAD"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+            ).strip()
+        except Exception:
+            return "unknown"
+
+    def print_startup_diagnostics(self, cfg_file):
+        mech_indexes = self.cfg.get("mech", {}).get("parallel_mech_indexes", [])
+        prepare_kp = [float(self.cfg["prepare"]["stiffness"][i]) for i in mech_indexes]
+        common_kp = [float(self.cfg["common"]["stiffness"][i]) for i in mech_indexes]
+        prepare_kd = [float(self.cfg["prepare"]["damping"][i]) for i in mech_indexes]
+        common_kd = [float(self.cfg["common"]["damping"][i]) for i in mech_indexes]
+        print(
+            "[deploy-startup] "
+            f"commit={self._git_commit()} "
+            f"cwd={os.getcwd()} "
+            f"script={os.path.abspath(__file__)} "
+            f"config={os.path.abspath(cfg_file)}"
+        )
+        print(
+            "[deploy-startup] "
+            f"policy={self.cfg['policy']['policy_path']} "
+            f"command_source={self.cfg['policy'].get('command_source', 'remote')} "
+            f"prepare_publish=continuous "
+            f"debug={self.cfg.get('debug', {}).get('enabled', False)}"
+        )
+        print(
+            "[deploy-startup] "
+            f"ankle_ids={mech_indexes} "
+            f"mode=(prepare:{self._parallel_mech_mode('prepare')},rl:{self._parallel_mech_mode('rl')}) "
+            f"prepare_kp={prepare_kp} prepare_kd={prepare_kd} "
+            f"common_kp={common_kp} common_kd={common_kd}"
+        )
 
     def _init_timer(self):
         self.timer = Timer(TimerConfig(time_step=self.cfg["common"]["dt"]))
@@ -213,6 +254,7 @@ class Controller:
         with self.publish_lock:
             self._send_cmd(self.low_cmd)
         self._start_publish_thread()
+        print("[deploy-prepare] custom mode active; continuously publishing prepare command")
         end_time = time.perf_counter()
         self.logger.debug(f"Change mode took {(end_time - send_time)*1000:.4f} ms")
 
@@ -236,6 +278,7 @@ class Controller:
             self.next_inference_time = self.rl_start_time
             self.control_stage = "rl"
         self._start_publish_thread()
+        print("[deploy-rl] RL gait active; blending from current prepare target")
         print(f"{self.remoteControlService.get_operation_hint()}")
 
     def run(self):
@@ -325,8 +368,6 @@ if __name__ == "__main__":
     import argparse
     import signal
     import sys
-    import os
-
     def signal_handler(sig, frame):
         print("\nShutting down...")
         sys.exit(0)
@@ -343,6 +384,7 @@ if __name__ == "__main__":
     ChannelFactory.Instance().Init(0, args.net)
 
     with Controller(cfg_file) as controller:
+        controller.print_startup_diagnostics(cfg_file)
         time.sleep(2)  # Wait for channels to initialize
         print("Initialization complete.")
         controller.start_custom_mode_conditionally()
