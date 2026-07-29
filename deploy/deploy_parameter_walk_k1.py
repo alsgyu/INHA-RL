@@ -133,6 +133,7 @@ class Controller:
             f"deploy_action_clip={self.cfg['policy'].get('deploy_action_clip', 'default')} "
             f"deploy_action_scale={self.cfg['policy'].get('deploy_action_scale', 1.0)} "
             f"scale_actions_in_policy={self.cfg['policy'].get('deploy_scale_actions_in_policy', False)} "
+            f"action_rate_limit={self.cfg['policy'].get('deploy_action_rate_limit', 'off')} "
             f"motion_ramp={self.cfg['policy'].get('motion_start_action_ramp_s', 'default')} "
             f"gait_min={adapter.get('gait_frequency_min', 'default')} "
             f"body_pitch_gain={adapter.get('body_pitch_gain', 'default')} "
@@ -298,6 +299,7 @@ class Controller:
         kd = [float(self.low_cmd.motor_cmd[i].kd) for i in leg_ids]
         tau = [float(self.low_cmd.motor_cmd[i].tau) for i in leg_ids]
         action_abs_max = float(np.max(np.abs(self.policy.actions))) if self.policy.actions.size else 0.0
+        raw_action_abs_max = float(np.max(np.abs(getattr(self.policy, "raw_actions", self.policy.actions))))
         action_sample = [float(x) for x in self.policy.actions]
         print(
             "[deploy-debug] "
@@ -316,6 +318,7 @@ class Controller:
             f"target[{leg_ids}]={[round(x, 3) for x in target]} "
             f"err={[round(x, 3) for x in error]} "
             f"act_max={action_abs_max:.3f} "
+            f"raw_act_max={raw_action_abs_max:.3f} "
             f"act={[round(x, 3) for x in action_sample]} "
             f"kp={[round(x, 1) for x in kp]} "
             f"kd={[round(x, 1) for x in kd]} "

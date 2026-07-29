@@ -53,6 +53,7 @@ class Policy:
         self.heading_correction_yaw = 0.0
         self.dof_targets = np.copy(self.target_default_dof_pos)
         self.obs = np.zeros(self.cfg["policy"]["num_observations"], dtype=np.float32)
+        self.raw_actions = np.zeros(self.cfg["policy"]["num_actions"], dtype=np.float32)
         self.actions = np.zeros(self.cfg["policy"]["num_actions"], dtype=np.float32)
         self.policy_interval = self.cfg["common"]["dt"] * self.cfg["policy"]["control"]["decimation"]
         self.leg_start_index = int(
@@ -72,6 +73,7 @@ class Policy:
         self.desired_yaw = 0.0
         self.heading_initialized = False
         self.heading_correction_yaw = 0.0
+        self.raw_actions[:] = 0.0
         self.actions[:] = 0.0
         self.dof_targets[:] = self.target_default_dof_pos
 
@@ -262,16 +264,22 @@ class Policy:
 
         with torch.no_grad():
             output = self.policy(torch.from_numpy(self.obs).unsqueeze(0)).detach().numpy()[0]
-        self.actions[:] = output[: self.cfg["policy"]["num_actions"]]
+        self.raw_actions[:] = output[: self.cfg["policy"]["num_actions"]]
         deploy_clip = float(self.cfg["policy"].get("deploy_action_clip", norm["clip_actions"]))
-        self.actions[:] = np.clip(
-            self.actions,
+        desired_actions = np.clip(
+            self.raw_actions,
             -deploy_clip,
             deploy_clip,
         )
-        self.actions[:] *= float(self.cfg["policy"].get("deploy_action_scale", 1.0))
+        desired_actions *= float(self.cfg["policy"].get("deploy_action_scale", 1.0))
         if bool(self.cfg["policy"].get("deploy_scale_actions_in_policy", False)):
-            self.actions[:] *= float(np.clip(action_scale_multiplier, 0.0, 1.0))
+            desired_actions *= float(np.clip(action_scale_multiplier, 0.0, 1.0))
+        action_rate_limit = self.cfg["policy"].get("deploy_action_rate_limit")
+        if action_rate_limit is None or float(action_rate_limit) <= 0.0:
+            self.actions[:] = desired_actions
+        else:
+            max_delta = float(action_rate_limit) * self.policy_interval
+            self.actions[:] += np.clip(desired_actions - self.actions, -max_delta, max_delta)
         self.dof_targets[:] = self.target_default_dof_pos
         self.dof_targets[self.leg_start_index : self.leg_end_index] += self.cfg["policy"]["control"]["action_scale"] * self.actions
 
