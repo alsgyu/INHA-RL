@@ -104,6 +104,10 @@ class Controller:
             policy_cfg["deploy_action_rate_limit"] = 0.0
             policy_cfg.pop("deploy_action_clip_by_index", None)
             policy_cfg.pop("deploy_action_scale_by_index", None)
+            policy_cfg.pop("deploy_action_rate_limit_by_index", None)
+            policy_cfg["rl_publish_mode"] = "policy_step"
+            policy_cfg["rl_target_filter_alpha"] = 1.0
+            policy_cfg["motion_start_action_ramp_s"] = 0.0
             adapter["gait_frequency_min"] = 1.15
             adapter["heading_correction_enabled"] = False
             reload_policy = True
@@ -146,6 +150,10 @@ class Controller:
         if rl_target_filter_alpha is not None:
             self.cfg["policy"]["rl_target_filter_alpha"] = float(rl_target_filter_alpha)
 
+        rl_publish_mode = getattr(args, "rl_publish_mode", None)
+        if rl_publish_mode is not None:
+            self.cfg["policy"]["rl_publish_mode"] = str(rl_publish_mode)
+
         motion_ramp = getattr(args, "motion_start_action_ramp_s", None)
         if motion_ramp is not None:
             self.cfg["policy"]["motion_start_action_ramp_s"] = float(motion_ramp)
@@ -181,11 +189,17 @@ class Controller:
             f"scale_actions_in_policy={self.cfg['policy'].get('deploy_scale_actions_in_policy', False)} "
             f"action_rate_limit={self.cfg['policy'].get('deploy_action_rate_limit', 'off')} "
             f"action_rate_limit_by_index={self.cfg['policy'].get('deploy_action_rate_limit_by_index', 'off')} "
+            f"rl_publish_mode={self._rl_publish_mode()} "
             f"target_filter_alpha={self.cfg['policy'].get('rl_target_filter_alpha', 0.2)} "
             f"motion_ramp={self.cfg['policy'].get('motion_start_action_ramp_s', 'default')} "
             f"gait_min={adapter.get('gait_frequency_min', 'default')} "
             f"body_pitch_gain={adapter.get('body_pitch_gain', 'default')} "
             f"debug={self.cfg.get('debug', {}).get('enabled', False)}"
+        )
+        print(
+            "[deploy-startup] "
+            f"action_dof_indexes={[int(i) for i in getattr(self.policy, 'action_dof_indexes', [])]} "
+            f"policy_joint_names={getattr(self.policy, 'policy_joint_names', 'unknown')}"
         )
         print(
             "[deploy-startup] "
@@ -287,6 +301,9 @@ class Controller:
         threshold = float(self.cfg["policy"].get("zero_command_hold_threshold", 0.035))
         return self._remote_command_norm() <= threshold
 
+    def _rl_publish_mode(self):
+        return str(self.cfg["policy"].get("rl_publish_mode", "continuous")).lower()
+
     def _start_publish_thread(self):
         if self.publish_runner is not None and self.publish_runner.is_alive():
             return
@@ -331,6 +348,21 @@ class Controller:
             else:
                 raise ValueError(f"Unsupported parallel_mech mode '{mode}' for stage '{stage}'")
 
+    def _write_filtered_target_to_low_cmd(self, stage):
+        for i in range(self.cfg["common"]["joint_cnt"]):
+            self.low_cmd.motor_cmd[i].q = self.filtered_dof_target[i]
+        self._apply_parallel_mech_cmd("prepare" if stage in ("prepare", "rl_hold") else "rl")
+
+    def _publish_policy_step_target(self):
+        if self._rl_publish_mode() not in ("policy", "policy_step", "policy_dt"):
+            return
+        with self.publish_lock:
+            if self.control_stage != "rl":
+                return
+            self.filtered_dof_target[:] = self.dof_target
+            self._write_filtered_target_to_low_cmd("rl")
+            self._send_cmd(self.low_cmd)
+
     def _print_debug_state(self, time_now):
         debug_cfg = self.cfg.get("debug", {})
         if not bool(debug_cfg.get("enabled", False)):
@@ -346,12 +378,13 @@ class Controller:
         kp = [float(self.low_cmd.motor_cmd[i].kp) for i in leg_ids]
         kd = [float(self.low_cmd.motor_cmd[i].kd) for i in leg_ids]
         tau = [float(self.low_cmd.motor_cmd[i].tau) for i in leg_ids]
-        leg_target = self.filtered_dof_target[self.policy.leg_start_index : self.policy.leg_end_index]
-        leg_actual = self.dof_pos_latest[self.policy.leg_start_index : self.policy.leg_end_index]
-        leg_desired = self.dof_target[self.policy.leg_start_index : self.policy.leg_end_index]
+        action_dof_indexes = self.policy.action_dof_indexes
+        leg_target = self.filtered_dof_target[action_dof_indexes]
+        leg_actual = self.dof_pos_latest[action_dof_indexes]
+        leg_desired = self.dof_target[action_dof_indexes]
         leg_error_abs_max = float(np.max(np.abs(leg_target - leg_actual)))
         target_lag_abs_max = float(np.max(np.abs(leg_desired - leg_target)))
-        leg_vel_abs_max = float(np.max(np.abs(self.dof_vel[self.policy.leg_start_index : self.policy.leg_end_index])))
+        leg_vel_abs_max = float(np.max(np.abs(self.dof_vel[action_dof_indexes])))
         action_abs_max = float(np.max(np.abs(self.policy.actions))) if self.policy.actions.size else 0.0
         raw_action_abs_max = float(np.max(np.abs(getattr(self.policy, "raw_actions", self.policy.actions))))
         lateral_action_ids = [1, 2, 5, 7, 8, 11]
@@ -540,6 +573,7 @@ class Controller:
 
         inference_time = time.perf_counter()
         self.logger.debug(f"Inference took {(inference_time - start_time)*1000:.4f} ms")
+        self._publish_policy_step_target()
         self._print_debug_state(time_now)
         time.sleep(0.001)
 
@@ -554,15 +588,15 @@ class Controller:
 
             with self.publish_lock:
                 stage = self.control_stage
+                if stage == "rl" and self._rl_publish_mode() in ("policy", "policy_step", "policy_dt"):
+                    continue
                 if stage == "rl":
                     alpha = float(np.clip(self.cfg["policy"].get("rl_target_filter_alpha", 0.2), 0.0, 1.0))
                     self.filtered_dof_target = self.filtered_dof_target * (1.0 - alpha) + self.dof_target * alpha
                 elif stage in ("prepare", "rl_hold"):
                     self.filtered_dof_target[:] = self.dof_target
 
-                for i in range(self.cfg["common"]["joint_cnt"]):
-                    self.low_cmd.motor_cmd[i].q = self.filtered_dof_target[i]
-                self._apply_parallel_mech_cmd("prepare" if stage in ("prepare", "rl_hold") else "rl")
+                self._write_filtered_target_to_low_cmd(stage)
 
                 start_time = time.perf_counter()
                 self._send_cmd(self.low_cmd)
@@ -607,6 +641,12 @@ if __name__ == "__main__":
     parser.add_argument("--deploy_action_scale", type=float, default=None)
     parser.add_argument("--deploy_action_rate_limit", type=float, default=None)
     parser.add_argument("--rl_target_filter_alpha", type=float, default=None)
+    parser.add_argument(
+        "--rl_publish_mode",
+        choices=["continuous", "policy", "policy_step", "policy_dt"],
+        default=None,
+        help="Publish RL targets continuously or once per policy step like Booster Deploy.",
+    )
     parser.add_argument("--motion_start_action_ramp_s", type=float, default=None)
     args = parser.parse_args()
     cfg_file = os.path.join("configs", args.config)

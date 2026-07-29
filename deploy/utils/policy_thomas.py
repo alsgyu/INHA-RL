@@ -57,13 +57,34 @@ class Policy:
         self.raw_actions = np.zeros(self.cfg["policy"]["num_actions"], dtype=np.float32)
         self.actions = np.zeros(self.cfg["policy"]["num_actions"], dtype=np.float32)
         self.policy_interval = self.cfg["common"]["dt"] * self.cfg["policy"]["control"]["decimation"]
-        self.leg_start_index = int(
-            self.cfg["policy"].get("leg_start_index", len(self.default_dof_pos) - self.cfg["policy"]["num_actions"])
-        )
-        self.leg_end_index = self.leg_start_index + self.cfg["policy"]["num_actions"]
+        self.action_dof_indexes = self._resolve_action_dof_indexes()
+        self.leg_start_index = int(self.action_dof_indexes[0])
+        self.leg_end_index = int(self.action_dof_indexes[-1]) + 1
         self._validate_action_vector("deploy_action_clip_by_index")
         self._validate_action_vector("deploy_action_scale_by_index")
         self._validate_action_vector("deploy_action_rate_limit_by_index")
+
+    def _resolve_action_dof_indexes(self):
+        num_actions = self.cfg["policy"]["num_actions"]
+        joint_names = self.cfg["common"].get("joint_names")
+        policy_joint_names = self.cfg["policy"].get("policy_joint_names")
+        if policy_joint_names is None:
+            leg_start_index = int(self.cfg["policy"].get("leg_start_index", len(self.default_dof_pos) - num_actions))
+            indexes = np.arange(leg_start_index, leg_start_index + num_actions, dtype=np.int64)
+            self.policy_joint_names = [f"dof_{int(i)}" for i in indexes]
+            return indexes
+
+        if len(policy_joint_names) != num_actions:
+            raise ValueError(f"policy_joint_names must contain {num_actions} values, got {len(policy_joint_names)}")
+        if joint_names is None or len(joint_names) != self.cfg["common"]["joint_cnt"]:
+            raise ValueError("common.joint_names must be present and match common.joint_cnt when policy_joint_names is set")
+
+        name_to_index = {name: index for index, name in enumerate(joint_names)}
+        missing = [name for name in policy_joint_names if name not in name_to_index]
+        if missing:
+            raise ValueError(f"policy_joint_names contains joints not found in common.joint_names: {missing}")
+        self.policy_joint_names = list(policy_joint_names)
+        return np.asarray([name_to_index[name] for name in policy_joint_names], dtype=np.int64)
 
     def _validate_action_vector(self, key):
         values = self.cfg["policy"].get(key)
@@ -269,10 +290,10 @@ class Policy:
         self.obs[16] = np.cos(2 * np.pi * self.gait_process) * moving
         self.obs[17] = np.sin(2 * np.pi * self.gait_process) * moving
         self.obs[18:30] = (
-            dof_pos[self.leg_start_index : self.leg_end_index]
-            - self.default_dof_pos[self.leg_start_index : self.leg_end_index]
+            dof_pos[self.action_dof_indexes]
+            - self.default_dof_pos[self.action_dof_indexes]
         ) * norm["dof_pos"]
-        self.obs[30:42] = dof_vel[self.leg_start_index : self.leg_end_index] * norm["dof_vel"]
+        self.obs[30:42] = dof_vel[self.action_dof_indexes] * norm["dof_vel"]
         self.obs[42:54] = self.actions
 
         with torch.no_grad():
@@ -308,6 +329,6 @@ class Policy:
             max_delta = float(action_rate_limit) * self.policy_interval
             self.actions[:] += np.clip(desired_actions - self.actions, -max_delta, max_delta)
         self.dof_targets[:] = self.target_default_dof_pos
-        self.dof_targets[self.leg_start_index : self.leg_end_index] += self.cfg["policy"]["control"]["action_scale"] * self.actions
+        self.dof_targets[self.action_dof_indexes] += self.cfg["policy"]["control"]["action_scale"] * self.actions
 
         return self.dof_targets
