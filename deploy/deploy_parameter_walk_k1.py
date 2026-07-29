@@ -106,19 +106,41 @@ class Controller:
     def _send_cmd(self, cmd: LowCmd):
         self.low_cmd_publisher.Write(cmd)
 
-    def _apply_parallel_mech_cmd(self):
-        indexes = self.cfg.get("mech", {}).get("parallel_mech_indexes", [])
+    def _parallel_mech_mode(self, stage):
+        mech_cfg = self.cfg.get("mech", {})
+        return str(
+            mech_cfg.get(f"parallel_mech_{stage}_mode", mech_cfg.get("parallel_mech_mode", "position"))
+        ).lower()
+
+    def _apply_parallel_mech_cmd(self, stage):
+        mech_cfg = self.cfg.get("mech", {})
+        indexes = mech_cfg.get("parallel_mech_indexes", [])
         if not indexes:
             return
-        stiffness = self.cfg["common"]["stiffness"]
+        mode = self._parallel_mech_mode(stage)
+        if mode in ("off", "none", "disabled"):
+            return
+
+        gain_section = "prepare" if stage == "prepare" else "common"
+        stiffness = self.cfg[gain_section]["stiffness"]
+        damping = self.cfg[gain_section]["damping"]
         torque_limit = self.cfg["common"].get("torque_limit", [0.0] * self.cfg["common"]["joint_cnt"])
         for i in indexes:
             target = float(self.filtered_dof_target[i])
-            current = float(self.dof_pos_latest[i])
-            limit = float(torque_limit[i])
-            self.low_cmd.motor_cmd[i].q = current
-            self.low_cmd.motor_cmd[i].tau = float(np.clip((target - current) * float(stiffness[i]), -limit, limit))
-            self.low_cmd.motor_cmd[i].kp = 0.0
+            if mode in ("position", "pd", "servo"):
+                self.low_cmd.motor_cmd[i].q = target
+                self.low_cmd.motor_cmd[i].tau = 0.0
+                self.low_cmd.motor_cmd[i].kp = float(stiffness[i])
+                self.low_cmd.motor_cmd[i].kd = float(damping[i])
+            elif mode == "torque":
+                current = float(self.dof_pos_latest[i])
+                limit = float(torque_limit[i])
+                self.low_cmd.motor_cmd[i].q = current
+                self.low_cmd.motor_cmd[i].tau = float(np.clip((target - current) * float(stiffness[i]), -limit, limit))
+                self.low_cmd.motor_cmd[i].kp = 0.0
+                self.low_cmd.motor_cmd[i].kd = float(damping[i])
+            else:
+                raise ValueError(f"Unsupported parallel_mech mode '{mode}' for stage '{stage}'")
 
     def _print_debug_state(self, time_now):
         debug_cfg = self.cfg.get("debug", {})
@@ -140,6 +162,7 @@ class Controller:
             f"{self.policy.smoothed_commands[1]:+.2f},"
             f"{self.policy.smoothed_commands[2]:+.2f}) "
             f"gait={self.policy.gait_frequency:.2f} "
+            f"mech=(prepare:{self._parallel_mech_mode('prepare')},rl:{self._parallel_mech_mode('rl')}) "
             f"actual[{leg_ids}]={[round(x, 3) for x in actual]} "
             f"target[{leg_ids}]={[round(x, 3) for x in target]}"
         )
@@ -165,7 +188,7 @@ class Controller:
         for i in range(self.cfg["common"]["joint_cnt"]):
             self.dof_target[i] = self.low_cmd.motor_cmd[i].q
             self.filtered_dof_target[i] = self.low_cmd.motor_cmd[i].q
-        self._apply_parallel_mech_cmd()
+        self._apply_parallel_mech_cmd("prepare")
         self._send_cmd(self.low_cmd)
         send_time = time.perf_counter()
         self.logger.debug(f"Send cmd took {(send_time - start_time)*1000:.4f} ms")
@@ -186,7 +209,7 @@ class Controller:
             self.low_cmd.motor_cmd[i].q = self.rl_start_target[i]
             self.dof_target[i] = self.rl_start_target[i]
             self.filtered_dof_target[i] = self.rl_start_target[i]
-        self._apply_parallel_mech_cmd()
+        self._apply_parallel_mech_cmd("rl")
         self._send_cmd(self.low_cmd)
         self.rl_start_time = self.timer.get_time()
         self.next_inference_time = self.rl_start_time
@@ -258,7 +281,7 @@ class Controller:
 
             for i in range(self.cfg["common"]["joint_cnt"]):
                 self.low_cmd.motor_cmd[i].q = self.filtered_dof_target[i]
-            self._apply_parallel_mech_cmd()
+            self._apply_parallel_mech_cmd("rl")
 
             start_time = time.perf_counter()
             self._send_cmd(self.low_cmd)
