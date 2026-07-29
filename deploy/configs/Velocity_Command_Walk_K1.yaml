@@ -36,28 +36,28 @@ policy:
   num_observations: 54
   gait_frequency: 0.0
   command_source: "remote"
-  command_slew_rate: 1.00
+  command_slew_rate: 3.00
   startup_hold_s: 0.2
   startup_action_ramp_s: 3.0
   zero_command_hold_prepare: true
   zero_command_hold_threshold: 0.035
   motion_start_hold_s: 0.2
-  motion_start_action_ramp_s: 5.0
-  deploy_action_clip: 0.30
-  deploy_action_scale: 0.50
-  deploy_default_qpos_source: "prepare"
+  motion_start_action_ramp_s: 3.0
+  deploy_action_clip: 1.0
+  deploy_action_scale: 0.35
+  deploy_default_qpos_source: "common"
 
   command_adapter:
     stand_command_threshold: 0.035
-    gait_frequency_min: 1.05
-    gait_frequency_max: 1.55
+    gait_frequency_min: 1.15
+    gait_frequency_max: 1.95
     gait_frequency_speed_min: 0.08
     gait_frequency_speed_max: 1.05
     max_yaw_speed_for_drive: 0.90
     foot_yaw_from_yaw_gain: 0.12
     foot_yaw_target_clip: [-0.22, 0.22]
-    body_pitch_gain: 0.00
-    body_pitch_target_clip: [0.00, 0.00]
+    body_pitch_gain: 0.08
+    body_pitch_target_clip: [-0.04, 0.12]
     body_roll_gain: -0.08
     body_roll_target_clip: [-0.08, 0.08]
     heading_correction_enabled: false
