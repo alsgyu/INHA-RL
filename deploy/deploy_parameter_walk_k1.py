@@ -219,6 +219,7 @@ class Controller:
             "[deploy-startup] "
             f"ankle_ids={mech_indexes} "
             f"mode=(prepare:{self._parallel_mech_mode('prepare')},rl:{self._parallel_mech_mode('rl')}) "
+            f"prepare_transition_s={self.cfg.get('prepare', {}).get('transition_s', 0.0)} "
             f"prepare_kp={prepare_kp} prepare_kd={prepare_kd} "
             f"common_kp={common_kp} common_kd={common_kd}"
         )
@@ -242,6 +243,37 @@ class Controller:
             f"knee={self.cfg['common']['default_qpos'][19]:+.3f},"
             f"ankle={self.cfg['common']['default_qpos'][20]:+.3f})"
         )
+
+    def _send_prepare_target_locked(self, target):
+        create_prepare_cmd(self.low_cmd, self.cfg)
+        for i in range(self.cfg["common"]["joint_cnt"]):
+            self.low_cmd.motor_cmd[i].q = float(target[i])
+            self.dof_target[i] = float(target[i])
+            self.filtered_dof_target[i] = float(target[i])
+        self.control_stage = "prepare"
+        self._apply_parallel_mech_cmd("prepare")
+        self._send_cmd(self.low_cmd)
+
+    def _ramp_to_prepare_target(self, start_target, final_target):
+        transition_s = float(self.cfg.get("prepare", {}).get("transition_s", 0.0))
+        if transition_s <= 1.0e-6:
+            with self.publish_lock:
+                self._send_prepare_target_locked(final_target)
+            return
+
+        transition_dt_s = max(float(self.cfg.get("prepare", {}).get("transition_dt_s", 0.02)), 0.002)
+        ramp_start = time.perf_counter()
+        print(f"[deploy-prepare] ramping prepare target over {transition_s:.2f}s")
+        while True:
+            elapsed = time.perf_counter() - ramp_start
+            alpha = min(max(elapsed / transition_s, 0.0), 1.0)
+            smooth_alpha = alpha * alpha * (3.0 - 2.0 * alpha)
+            target = start_target + smooth_alpha * (final_target - start_target)
+            with self.publish_lock:
+                self._send_prepare_target_locked(target)
+            if alpha >= 1.0:
+                break
+            time.sleep(transition_dt_s)
 
     def _init_timer(self):
         self.timer = Timer(TimerConfig(time_step=self.cfg["common"]["dt"]))
@@ -497,19 +529,16 @@ class Controller:
                 break
             time.sleep(0.1)
         start_time = time.perf_counter()
+        prepare_target = np.array(self.cfg["prepare"]["default_qpos"], dtype=np.float32)
+        start_target = np.copy(self.dof_pos_latest)
+        if not np.any(np.abs(start_target) > 1.0e-6):
+            start_target = np.copy(prepare_target)
         with self.publish_lock:
-            create_prepare_cmd(self.low_cmd, self.cfg)
-            for i in range(self.cfg["common"]["joint_cnt"]):
-                self.dof_target[i] = self.low_cmd.motor_cmd[i].q
-                self.filtered_dof_target[i] = self.low_cmd.motor_cmd[i].q
-            self.control_stage = "prepare"
-            self._apply_parallel_mech_cmd("prepare")
-            self._send_cmd(self.low_cmd)
+            self._send_prepare_target_locked(start_target)
         send_time = time.perf_counter()
         self.logger.debug(f"Send cmd took {(send_time - start_time)*1000:.4f} ms")
         self.client.ChangeMode(RobotMode.kCustom)
-        with self.publish_lock:
-            self._send_cmd(self.low_cmd)
+        self._ramp_to_prepare_target(start_target, prepare_target)
         print("[deploy-prepare] custom mode active; prepare command sent")
         end_time = time.perf_counter()
         self.logger.debug(f"Change mode took {(end_time - send_time)*1000:.4f} ms")
