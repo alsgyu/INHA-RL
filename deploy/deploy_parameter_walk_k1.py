@@ -56,6 +56,7 @@ class Controller:
         self.rl_start_time = None
         self.rl_start_target = None
         self.rl_motion_start_time = None
+        self.motion_start_alpha = 0.0
         self.last_debug_print_time = 0.0
         self.control_stage = "idle"
 
@@ -109,6 +110,7 @@ class Controller:
 
     def print_startup_diagnostics(self, cfg_file):
         mech_indexes = self.cfg.get("mech", {}).get("parallel_mech_indexes", [])
+        adapter = self.cfg["policy"].get("command_adapter", {})
         prepare_kp = [float(self.cfg["prepare"]["stiffness"][i]) for i in mech_indexes]
         common_kp = [float(self.cfg["common"]["stiffness"][i]) for i in mech_indexes]
         prepare_kd = [float(self.cfg["prepare"]["damping"][i]) for i in mech_indexes]
@@ -130,7 +132,10 @@ class Controller:
             f"target_default_blend={getattr(self.policy, 'target_default_blend', 'default')} "
             f"deploy_action_clip={self.cfg['policy'].get('deploy_action_clip', 'default')} "
             f"deploy_action_scale={self.cfg['policy'].get('deploy_action_scale', 1.0)} "
+            f"scale_actions_in_policy={self.cfg['policy'].get('deploy_scale_actions_in_policy', False)} "
             f"motion_ramp={self.cfg['policy'].get('motion_start_action_ramp_s', 'default')} "
+            f"gait_min={adapter.get('gait_frequency_min', 'default')} "
+            f"body_pitch_gain={adapter.get('body_pitch_gain', 'default')} "
             f"debug={self.cfg.get('debug', {}).get('enabled', False)}"
         )
         print(
@@ -293,6 +298,7 @@ class Controller:
             f"{self.policy.smoothed_commands[1]:+.2f},"
             f"{self.policy.smoothed_commands[2]:+.2f}) "
             f"gait={self.policy.gait_frequency:.2f} "
+            f"alpha={self.motion_start_alpha:.2f} "
             f"stage={self.control_stage} "
             f"rpy=({self.base_rpy[0]:+.3f},{self.base_rpy[1]:+.3f},{self.base_rpy[2]:+.3f}) "
             f"mech=(prepare:{self._parallel_mech_mode('prepare')},rl:{self._parallel_mech_mode('rl')}) "
@@ -385,6 +391,7 @@ class Controller:
                 self._set_joint_gains(hold_gain_section)
                 self.control_stage = "rl_hold"
                 self.rl_motion_start_time = None
+                self.motion_start_alpha = 0.0
                 self.policy.reset_runtime_state()
                 self.dof_target[:] = self.rl_start_target
             time.sleep(0.001)
@@ -394,6 +401,7 @@ class Controller:
             with self.publish_lock:
                 self.control_stage = "rl"
                 self.rl_motion_start_time = time_now
+                self.motion_start_alpha = 0.0
                 self.rl_start_target = np.copy(self.filtered_dof_target)
                 self.dof_target[:] = self.rl_start_target
                 self._set_joint_gains("common")
@@ -412,6 +420,7 @@ class Controller:
             if self.rl_start_target is None:
                 self.rl_start_target = np.copy(self.filtered_dof_target)
             self.dof_target[:] = self.rl_start_target
+            self.motion_start_alpha = 0.0
             self.policy.reset_runtime_state()
             time.sleep(0.001)
             return
@@ -419,6 +428,7 @@ class Controller:
             action_scale_multiplier = min(max((elapsed - hold_s) / ramp_s, 0.0), 1.0)
         else:
             action_scale_multiplier = 1.0
+        self.motion_start_alpha = action_scale_multiplier
 
         policy_target = self.policy.inference(
             time_now=time_now,

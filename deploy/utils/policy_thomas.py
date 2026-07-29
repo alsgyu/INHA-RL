@@ -270,7 +270,8 @@ class Policy:
             deploy_clip,
         )
         self.actions[:] *= float(self.cfg["policy"].get("deploy_action_scale", 1.0))
-        self.actions[:] *= float(np.clip(action_scale_multiplier, 0.0, 1.0))
+        if bool(self.cfg["policy"].get("deploy_scale_actions_in_policy", False)):
+            self.actions[:] *= float(np.clip(action_scale_multiplier, 0.0, 1.0))
         self.dof_targets[:] = self.target_default_dof_pos
         self.dof_targets[self.leg_start_index : self.leg_end_index] += self.cfg["policy"]["control"]["action_scale"] * self.actions
 
