@@ -41,10 +41,11 @@ policy:
   startup_action_ramp_s: 3.0
   zero_command_hold_prepare: true
   zero_command_hold_threshold: 0.035
+  rl_stance_transition_s: 1.5
   motion_start_hold_s: 0.2
-  motion_start_action_ramp_s: 1.5
+  motion_start_action_ramp_s: 2.0
   deploy_action_clip: 1.0
-  deploy_action_scale: 1.0
+  deploy_action_scale: 0.65
   deploy_default_qpos_source: "common"
 
   command_adapter:
@@ -110,15 +111,15 @@ prepare:
     2, 2,
     5, 5, 5, 5,
     5, 5, 5, 5,
-    80, 80, 80, 80, 25, 25,
-    80, 80, 80, 80, 25, 25
+    80, 80, 80, 80, 50, 50,
+    80, 80, 80, 80, 50, 50
   ]
   damping: [
     0.2, 0.2,
     0.5, 0.5, 0.5, 0.5,
     0.5, 0.5, 0.5, 0.5,
-    1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1
+    1, 1, 1, 1, 2, 2,
+    1, 1, 1, 1, 2, 2
   ]
   default_qpos: [
     0, 0,

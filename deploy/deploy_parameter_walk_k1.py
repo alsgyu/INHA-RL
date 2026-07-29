@@ -322,46 +322,20 @@ class Controller:
                 break
             time.sleep(0.1)
         start_time = time.perf_counter()
-        start_target = np.copy(self.dof_pos_latest)
-        if not np.all(np.isfinite(start_target)) or np.max(np.abs(start_target)) < 1.0e-6:
-            start_target = np.array(self.cfg["prepare"]["default_qpos"], dtype=np.float32)
         with self.publish_lock:
             create_prepare_cmd(self.low_cmd, self.cfg)
-            prepare_target = np.array([self.low_cmd.motor_cmd[i].q for i in range(self.cfg["common"]["joint_cnt"])], dtype=np.float32)
             for i in range(self.cfg["common"]["joint_cnt"]):
-                self.low_cmd.motor_cmd[i].q = start_target[i]
-                self.dof_target[i] = start_target[i]
-                self.filtered_dof_target[i] = start_target[i]
+                self.dof_target[i] = self.low_cmd.motor_cmd[i].q
+                self.filtered_dof_target[i] = self.low_cmd.motor_cmd[i].q
             self.control_stage = "prepare"
             self._apply_parallel_mech_cmd("prepare")
             self._send_cmd(self.low_cmd)
         send_time = time.perf_counter()
         self.logger.debug(f"Send cmd took {(send_time - start_time)*1000:.4f} ms")
         self.client.ChangeMode(RobotMode.kCustom)
-        transition_s = max(float(self.cfg["prepare"].get("transition_s", 0.0)), 0.0)
-        transition_start = time.perf_counter()
-        while transition_s > 1.0e-6:
-            alpha = min((time.perf_counter() - transition_start) / transition_s, 1.0)
-            target = (1.0 - alpha) * start_target + alpha * prepare_target
-            with self.publish_lock:
-                self.dof_target[:] = target
-                self.filtered_dof_target[:] = target
-                for i in range(self.cfg["common"]["joint_cnt"]):
-                    self.low_cmd.motor_cmd[i].q = self.filtered_dof_target[i]
-                self._apply_parallel_mech_cmd("prepare")
-                self._send_cmd(self.low_cmd)
-            if alpha >= 1.0:
-                break
-            time.sleep(self.cfg["common"]["dt"])
         with self.publish_lock:
-            self.dof_target[:] = prepare_target
-            self.filtered_dof_target[:] = prepare_target
-            for i in range(self.cfg["common"]["joint_cnt"]):
-                self.low_cmd.motor_cmd[i].q = self.filtered_dof_target[i]
-            self._apply_parallel_mech_cmd("prepare")
             self._send_cmd(self.low_cmd)
-        self._start_publish_thread()
-        print("[deploy-prepare] custom mode active; continuously publishing prepare command")
+        print("[deploy-prepare] custom mode active; prepare command sent")
         end_time = time.perf_counter()
         self.logger.debug(f"Change mode took {(end_time - send_time)*1000:.4f} ms")
 
@@ -373,20 +347,43 @@ class Controller:
             time.sleep(0.1)
         with self.publish_lock:
             self.policy.reset_runtime_state()
-            self.rl_start_target = np.copy(self.filtered_dof_target)
-            self._set_joint_gains("prepare")
+            current_target = np.copy(self.filtered_dof_target)
+            self.rl_start_target = np.array(self.cfg["common"]["default_qpos"], dtype=np.float32)
+            self._set_joint_gains("common")
             for i in range(self.cfg["common"]["joint_cnt"]):
-                self.low_cmd.motor_cmd[i].q = self.rl_start_target[i]
-                self.dof_target[i] = self.rl_start_target[i]
-                self.filtered_dof_target[i] = self.rl_start_target[i]
-            self._apply_parallel_mech_cmd("prepare")
+                self.low_cmd.motor_cmd[i].q = current_target[i]
+                self.dof_target[i] = current_target[i]
+                self.filtered_dof_target[i] = current_target[i]
+            self._apply_parallel_mech_cmd("rl")
             self._send_cmd(self.low_cmd)
             self.rl_start_time = self.timer.get_time()
             self.next_inference_time = self.rl_start_time
             self.rl_motion_start_time = None
             self.control_stage = "rl_hold"
+        transition_s = max(float(self.cfg["policy"].get("rl_stance_transition_s", 1.5)), 0.0)
+        transition_start = time.perf_counter()
+        while transition_s > 1.0e-6:
+            alpha = min((time.perf_counter() - transition_start) / transition_s, 1.0)
+            target = (1.0 - alpha) * current_target + alpha * self.rl_start_target
+            with self.publish_lock:
+                self.dof_target[:] = target
+                self.filtered_dof_target[:] = target
+                for i in range(self.cfg["common"]["joint_cnt"]):
+                    self.low_cmd.motor_cmd[i].q = self.filtered_dof_target[i]
+                self._apply_parallel_mech_cmd("rl")
+                self._send_cmd(self.low_cmd)
+            if alpha >= 1.0:
+                break
+            time.sleep(self.cfg["common"]["dt"])
+        with self.publish_lock:
+            self.dof_target[:] = self.rl_start_target
+            self.filtered_dof_target[:] = self.rl_start_target
+            for i in range(self.cfg["common"]["joint_cnt"]):
+                self.low_cmd.motor_cmd[i].q = self.filtered_dof_target[i]
+            self._apply_parallel_mech_cmd("rl")
+            self._send_cmd(self.low_cmd)
         self._start_publish_thread()
-        print("[deploy-rl] RL gait armed; holding stable target until movement command")
+        print("[deploy-rl] RL gait armed; holding policy default target until movement command")
         print(f"{self.remoteControlService.get_operation_hint()}")
 
     def run(self):
@@ -405,7 +402,7 @@ class Controller:
                     self.rl_start_target = np.copy(self.filtered_dof_target)
                 elif self.rl_start_target is None:
                     self.rl_start_target = np.copy(self.filtered_dof_target)
-                self._set_joint_gains("prepare")
+                self._set_joint_gains("common")
                 self.control_stage = "rl_hold"
                 self.rl_motion_start_time = None
                 self.policy.reset_runtime_state()
@@ -485,7 +482,7 @@ class Controller:
 
                 for i in range(self.cfg["common"]["joint_cnt"]):
                     self.low_cmd.motor_cmd[i].q = self.filtered_dof_target[i]
-                self._apply_parallel_mech_cmd("prepare" if stage in ("prepare", "rl_hold") else "rl")
+                self._apply_parallel_mech_cmd("prepare" if stage == "prepare" else "rl")
 
                 start_time = time.perf_counter()
                 self._send_cmd(self.low_cmd)
