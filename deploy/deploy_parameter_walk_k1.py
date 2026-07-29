@@ -3,6 +3,7 @@ import time
 import yaml
 import logging
 import threading
+import hashlib
 import os
 import subprocess
 
@@ -78,15 +79,35 @@ class Controller:
         if not os.path.isabs(policy_path):
             policy_path = os.path.abspath(policy_path)
         try:
-            return subprocess.check_output(
-                ["git", "hash-object", policy_path],
-                stderr=subprocess.DEVNULL,
-                text=True,
-            ).strip()
+            digest = hashlib.sha1()
+            with open(policy_path, "rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
         except Exception:
             return "unknown"
 
     def apply_prepare_overrides(self, args):
+        reload_policy = False
+        policy_path = getattr(args, "policy_path", None)
+        if policy_path is not None:
+            self.cfg["policy"]["policy_path"] = policy_path
+            reload_policy = True
+
+        deploy_profile = str(getattr(args, "deploy_profile", "safe")).lower()
+        if deploy_profile == "training_exact":
+            policy_cfg = self.cfg["policy"]
+            adapter = policy_cfg.setdefault("command_adapter", {})
+            policy_cfg["deploy_action_clip"] = 1.0
+            policy_cfg["deploy_action_scale"] = 1.0
+            policy_cfg["deploy_scale_actions_in_policy"] = True
+            policy_cfg["deploy_action_rate_limit"] = 0.0
+            policy_cfg.pop("deploy_action_clip_by_index", None)
+            policy_cfg.pop("deploy_action_scale_by_index", None)
+            adapter["gait_frequency_min"] = 1.15
+            adapter["heading_correction_enabled"] = False
+            reload_policy = True
+
         pitch_ids = {
             "hip": [10, 16],
             "knee": [13, 19],
@@ -117,9 +138,20 @@ class Controller:
         if deploy_action_scale is not None:
             self.cfg["policy"]["deploy_action_scale"] = float(deploy_action_scale)
 
+        deploy_action_rate_limit = getattr(args, "deploy_action_rate_limit", None)
+        if deploy_action_rate_limit is not None:
+            self.cfg["policy"]["deploy_action_rate_limit"] = float(deploy_action_rate_limit)
+
+        rl_target_filter_alpha = getattr(args, "rl_target_filter_alpha", None)
+        if rl_target_filter_alpha is not None:
+            self.cfg["policy"]["rl_target_filter_alpha"] = float(rl_target_filter_alpha)
+
         motion_ramp = getattr(args, "motion_start_action_ramp_s", None)
         if motion_ramp is not None:
             self.cfg["policy"]["motion_start_action_ramp_s"] = float(motion_ramp)
+
+        if reload_policy:
+            self.policy = Policy(cfg=self.cfg)
 
     def print_startup_diagnostics(self, cfg_file):
         mech_indexes = self.cfg.get("mech", {}).get("parallel_mech_indexes", [])
@@ -148,6 +180,7 @@ class Controller:
             f"deploy_action_scale={self.cfg['policy'].get('deploy_action_scale', 1.0)} "
             f"scale_actions_in_policy={self.cfg['policy'].get('deploy_scale_actions_in_policy', False)} "
             f"action_rate_limit={self.cfg['policy'].get('deploy_action_rate_limit', 'off')} "
+            f"target_filter_alpha={self.cfg['policy'].get('rl_target_filter_alpha', 0.2)} "
             f"motion_ramp={self.cfg['policy'].get('motion_start_action_ramp_s', 'default')} "
             f"gait_min={adapter.get('gait_frequency_min', 'default')} "
             f"body_pitch_gain={adapter.get('body_pitch_gain', 'default')} "
@@ -314,7 +347,9 @@ class Controller:
         tau = [float(self.low_cmd.motor_cmd[i].tau) for i in leg_ids]
         leg_target = self.filtered_dof_target[self.policy.leg_start_index : self.policy.leg_end_index]
         leg_actual = self.dof_pos_latest[self.policy.leg_start_index : self.policy.leg_end_index]
+        leg_desired = self.dof_target[self.policy.leg_start_index : self.policy.leg_end_index]
         leg_error_abs_max = float(np.max(np.abs(leg_target - leg_actual)))
+        target_lag_abs_max = float(np.max(np.abs(leg_desired - leg_target)))
         leg_vel_abs_max = float(np.max(np.abs(self.dof_vel[self.policy.leg_start_index : self.policy.leg_end_index])))
         action_abs_max = float(np.max(np.abs(self.policy.actions))) if self.policy.actions.size else 0.0
         raw_action_abs_max = float(np.max(np.abs(getattr(self.policy, "raw_actions", self.policy.actions))))
@@ -353,6 +388,7 @@ class Controller:
             f"target[{leg_ids}]={[round(x, 3) for x in target]} "
             f"err={[round(x, 3) for x in error]} "
             f"leg_err_max={leg_error_abs_max:.3f} "
+            f"target_lag_max={target_lag_abs_max:.3f} "
             f"leg_vel_max={leg_vel_abs_max:.3f} "
             f"act_max={action_abs_max:.3f} "
             f"raw_act_max={raw_action_abs_max:.3f} "
@@ -518,7 +554,8 @@ class Controller:
             with self.publish_lock:
                 stage = self.control_stage
                 if stage == "rl":
-                    self.filtered_dof_target = self.filtered_dof_target * 0.8 + self.dof_target * 0.2
+                    alpha = float(np.clip(self.cfg["policy"].get("rl_target_filter_alpha", 0.2), 0.0, 1.0))
+                    self.filtered_dof_target = self.filtered_dof_target * (1.0 - alpha) + self.dof_target * alpha
                 elif stage in ("prepare", "rl_hold"):
                     self.filtered_dof_target[:] = self.dof_target
 
@@ -553,6 +590,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, type=str, help="Name of the configuration file.")
     parser.add_argument("--net", type=str, default="127.0.0.1", help="Network interface for SDK communication.")
+    parser.add_argument("--policy_path", type=str, default=None, help="Override TorchScript .pt policy path.")
+    parser.add_argument(
+        "--deploy_profile",
+        choices=["safe", "training_exact"],
+        default="safe",
+        help="Use safe real-robot limits or the training-like action path for diagnosis.",
+    )
     parser.add_argument("--prepare_hip_pitch", type=float, default=None)
     parser.add_argument("--prepare_knee_pitch", type=float, default=None)
     parser.add_argument("--prepare_ankle_pitch", type=float, default=None)
@@ -560,6 +604,8 @@ if __name__ == "__main__":
     parser.add_argument("--prepare_ankle_kd", type=float, default=None)
     parser.add_argument("--deploy_action_clip", type=float, default=None)
     parser.add_argument("--deploy_action_scale", type=float, default=None)
+    parser.add_argument("--deploy_action_rate_limit", type=float, default=None)
+    parser.add_argument("--rl_target_filter_alpha", type=float, default=None)
     parser.add_argument("--motion_start_action_ramp_s", type=float, default=None)
     args = parser.parse_args()
     cfg_file = os.path.join("configs", args.config)

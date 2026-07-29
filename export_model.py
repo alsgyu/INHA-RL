@@ -1,5 +1,6 @@
 import os
 import glob
+import hashlib
 import json
 import shutil
 import yaml
@@ -49,6 +50,14 @@ def get_robot_type(task_name):
     else:
         # Default fallback - could be extended for other robot types
         return "Unknown"
+
+
+def file_sha1(path):
+    digest = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -103,6 +112,10 @@ if __name__ == "__main__":
 
     metadata = cfg.get("metadata", {}).copy()
     metadata["task"] = args.task
+    metadata["checkpoint_path"] = cfg["basic"]["checkpoint"]
+    metadata["checkpoint_sha1"] = file_sha1(cfg["basic"]["checkpoint"])
+    metadata["exported_policy_path"] = save_path
+    metadata["exported_policy_sha1"] = file_sha1(save_path)
     metadata["model_class"] = cfg.get("basic", {}).get("model", "BaseActorCritic")
     metadata["num_actions"] = cfg["env"]["num_actions"]
     metadata["num_observations"] = cfg["env"]["num_observations"]
