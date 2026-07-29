@@ -71,6 +71,8 @@ policy:
   #               R hip pitch/roll/yaw, R knee, R ankle pitch/roll.
   deploy_action_clip_by_index: [0.70, 0.35, 0.08, 0.75, 0.55, 0.28, 0.70, 0.35, 0.08, 0.75, 0.55, 0.28]
   deploy_action_scale_by_index: [0.85, 0.75, 0.20, 0.85, 0.80, 0.75, 0.85, 0.75, 0.20, 0.85, 0.80, 0.75]
+  deploy_action_lower_by_index: [-0.60, -0.28, -0.04, -0.30, -0.45, -0.22, -0.60, -0.28, -0.04, -0.30, -0.45, -0.22]
+  deploy_action_upper_by_index: [0.45, 0.28, 0.04, 0.56, 0.14, 0.22, 0.45, 0.28, 0.04, 0.56, 0.14, 0.22]
 
   command_adapter:
     stand_command_threshold: 0.035
@@ -82,10 +84,15 @@ policy:
     foot_yaw_from_yaw_gain: 0.12
     foot_yaw_target_clip: [-0.22, 0.22]
     body_pitch_gain: 0.08
-    body_pitch_offset: -0.02
-    body_pitch_target_clip: [-0.04, 0.08]
+    body_pitch_offset: -0.035
+    body_pitch_target_clip: [-0.05, 0.06]
     body_roll_gain: -0.08
     body_roll_target_clip: [-0.08, 0.08]
+    forward_pitch_vx_comp_enabled: true
+    forward_pitch_vx_comp_deadband: 0.04
+    forward_pitch_vx_comp_gain: 0.80
+    forward_pitch_vx_comp_max: 0.05
+    forward_pitch_vx_comp_min_vx: 0.05
     heading_correction_enabled: false
     heading_correction_min_abs_vx: 0.08
     heading_correction_max_abs_vy_command: 0.04

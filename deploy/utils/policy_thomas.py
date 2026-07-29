@@ -42,7 +42,9 @@ class Policy:
 
         self.commands = np.zeros(3, dtype=np.float32)
         self.smoothed_commands = np.zeros(3, dtype=np.float32)
+        self.policy_commands = np.zeros(3, dtype=np.float32)
         self.command_block = np.zeros(10, dtype=np.float32)
+        self.balance_vx_correction = 0.0
 
         self.command_adapter = self.cfg["policy"].get("command_adapter")
         self.command_source = str(self.cfg["policy"].get("command_source", "remote")).lower()
@@ -63,6 +65,8 @@ class Policy:
         self._validate_action_vector("deploy_action_clip_by_index")
         self._validate_action_vector("deploy_action_scale_by_index")
         self._validate_action_vector("deploy_action_rate_limit_by_index")
+        self._validate_action_vector("deploy_action_lower_by_index")
+        self._validate_action_vector("deploy_action_upper_by_index")
 
     def _resolve_action_dof_indexes(self):
         num_actions = self.cfg["policy"]["num_actions"]
@@ -99,7 +103,9 @@ class Policy:
     def reset_runtime_state(self):
         self.commands[:] = 0.0
         self.smoothed_commands[:] = 0.0
+        self.policy_commands[:] = 0.0
         self.command_block[:] = 0.0
+        self.balance_vx_correction = 0.0
         self.gait_frequency = 0.0
         self.gait_process = 0.0
         self.estimated_yaw = 0.0
@@ -156,16 +162,37 @@ class Policy:
         self.heading_correction_yaw = float(np.clip(correction, -max_correction, max_correction))
         return self.heading_correction_yaw
 
+    def _adapt_commands_for_balance(self, projected_gravity):
+        self.policy_commands[:] = self.smoothed_commands
+        self.balance_vx_correction = 0.0
+        adapter = self.command_adapter
+        if adapter is None or not bool(adapter.get("forward_pitch_vx_comp_enabled", False)):
+            return
+
+        if self.policy_commands[0] <= 0.0:
+            return
+        forward_pitch = max(float(projected_gravity[0]) - float(adapter.get("forward_pitch_vx_comp_deadband", 0.04)), 0.0)
+        correction = min(
+            forward_pitch * float(adapter.get("forward_pitch_vx_comp_gain", 0.8)),
+            float(adapter.get("forward_pitch_vx_comp_max", 0.05)),
+        )
+        if correction <= 0.0:
+            return
+        min_vx = float(adapter.get("forward_pitch_vx_comp_min_vx", 0.04))
+        original_vx = float(self.policy_commands[0])
+        self.policy_commands[0] = max(min_vx, original_vx - correction)
+        self.balance_vx_correction = original_vx - float(self.policy_commands[0])
+
     def _resolve_command_block(self):
         adapter = self.command_adapter
         if adapter is None:
-            moving = np.linalg.norm(self.smoothed_commands) > 1.0e-5
+            moving = np.linalg.norm(self.policy_commands) > 1.0e-5
             self.gait_frequency = float(self.obs_controller.get_value(9)) if moving else 0.0
             return np.array(
                 [
-                    self.smoothed_commands[0],
-                    self.smoothed_commands[1],
-                    self.smoothed_commands[2],
+                    self.policy_commands[0],
+                    self.policy_commands[1],
+                    self.policy_commands[2],
                     self.gait_frequency,
                     self.obs_controller.get_value(10),
                     self.obs_controller.get_value(11),
@@ -177,7 +204,7 @@ class Policy:
                 dtype=np.float32,
             )
 
-        vx, vy, yaw = self.smoothed_commands
+        vx, vy, yaw = self.policy_commands
         stand_threshold = float(adapter.get("stand_command_threshold", 0.04))
         moving = np.sqrt(vx * vx + vy * vy + yaw * yaw) > stand_threshold
         internal_yaw = yaw + self._heading_correction(moving)
@@ -262,6 +289,7 @@ class Policy:
         clip_delta = self.policy_interval * command_slew_rate
         clip_range = (-clip_delta, clip_delta)
         self.smoothed_commands += np.clip(self.commands - self.smoothed_commands, *clip_range)
+        self._adapt_commands_for_balance(projected_gravity)
         command_block = self._resolve_command_block()
         self.command_block[:] = command_block
         moving = self.gait_frequency > 1.0e-8
@@ -316,6 +344,20 @@ class Policy:
         deploy_scale_by_index = self.cfg["policy"].get("deploy_action_scale_by_index")
         if deploy_scale_by_index is not None:
             desired_actions *= np.asarray(deploy_scale_by_index, dtype=np.float32)
+        deploy_lower_by_index = self.cfg["policy"].get("deploy_action_lower_by_index")
+        deploy_upper_by_index = self.cfg["policy"].get("deploy_action_upper_by_index")
+        if deploy_lower_by_index is not None or deploy_upper_by_index is not None:
+            lower = (
+                np.asarray(deploy_lower_by_index, dtype=np.float32)
+                if deploy_lower_by_index is not None
+                else np.full(self.cfg["policy"]["num_actions"], -np.inf, dtype=np.float32)
+            )
+            upper = (
+                np.asarray(deploy_upper_by_index, dtype=np.float32)
+                if deploy_upper_by_index is not None
+                else np.full(self.cfg["policy"]["num_actions"], np.inf, dtype=np.float32)
+            )
+            desired_actions = np.clip(desired_actions, lower, upper)
         if bool(self.cfg["policy"].get("deploy_scale_actions_in_policy", False)):
             desired_actions *= float(np.clip(action_scale_multiplier, 0.0, 1.0))
         action_rate_limit = self.cfg["policy"].get("deploy_action_rate_limit")

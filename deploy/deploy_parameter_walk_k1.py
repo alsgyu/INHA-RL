@@ -105,10 +105,14 @@ class Controller:
             policy_cfg.pop("deploy_action_clip_by_index", None)
             policy_cfg.pop("deploy_action_scale_by_index", None)
             policy_cfg.pop("deploy_action_rate_limit_by_index", None)
+            policy_cfg.pop("deploy_action_lower_by_index", None)
+            policy_cfg.pop("deploy_action_upper_by_index", None)
             policy_cfg["rl_publish_mode"] = "policy_step"
             policy_cfg["rl_target_filter_alpha"] = 1.0
             policy_cfg["motion_start_action_ramp_s"] = 0.0
             adapter["gait_frequency_min"] = 1.15
+            adapter["body_pitch_offset"] = 0.0
+            adapter["forward_pitch_vx_comp_enabled"] = False
             adapter["heading_correction_enabled"] = False
             reload_policy = True
 
@@ -190,6 +194,8 @@ class Controller:
             f"scale_actions_in_policy={self.cfg['policy'].get('deploy_scale_actions_in_policy', False)} "
             f"action_rate_limit={self.cfg['policy'].get('deploy_action_rate_limit', 'off')} "
             f"action_rate_limit_by_index={self.cfg['policy'].get('deploy_action_rate_limit_by_index', 'off')} "
+            f"action_lower_by_index={self.cfg['policy'].get('deploy_action_lower_by_index', 'off')} "
+            f"action_upper_by_index={self.cfg['policy'].get('deploy_action_upper_by_index', 'off')} "
             f"rl_publish_mode={self._rl_publish_mode()} "
             f"target_filter_alpha={self.cfg['policy'].get('rl_target_filter_alpha', 0.2)} "
             f"dof_vel_source={self.cfg['policy'].get('policy_dof_vel_source', 'raw')} "
@@ -201,6 +207,7 @@ class Controller:
             f"gait_min={adapter.get('gait_frequency_min', 'default')} "
             f"body_pitch_gain={adapter.get('body_pitch_gain', 'default')} "
             f"body_pitch_offset={adapter.get('body_pitch_offset', 0.0)} "
+            f"forward_pitch_vx_comp={adapter.get('forward_pitch_vx_comp_enabled', False)} "
             f"debug={self.cfg.get('debug', {}).get('enabled', False)}"
         )
         print(
@@ -443,11 +450,12 @@ class Controller:
             f"cmd=({self.remoteControlService.get_vx_cmd():+.2f},"
             f"{self.remoteControlService.get_vy_cmd():+.2f},"
             f"{self.remoteControlService.get_vyaw_cmd():+.2f}) "
-            f"policy_cmd=({self.policy.smoothed_commands[0]:+.2f},"
-            f"{self.policy.smoothed_commands[1]:+.2f},"
-            f"{self.policy.smoothed_commands[2]:+.2f}) "
+            f"policy_cmd=({self.policy.policy_commands[0]:+.2f},"
+            f"{self.policy.policy_commands[1]:+.2f},"
+            f"{self.policy.policy_commands[2]:+.2f}) "
             f"cmd10={[round(x, 3) for x in command_block]} "
             f"gait={self.policy.gait_frequency:.2f} "
+            f"vx_corr={getattr(self.policy, 'balance_vx_correction', 0.0):+.2f} "
             f"yaw_corr={getattr(self.policy, 'heading_correction_yaw', 0.0):+.2f} "
             f"alpha={self.motion_start_alpha:.2f} "
             f"stage={self.control_stage} "
