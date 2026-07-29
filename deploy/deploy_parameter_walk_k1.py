@@ -103,6 +103,7 @@ class Controller:
 
     def _init_low_state_values(self):
         self.base_ang_vel = np.zeros(3, dtype=np.float32)
+        self.base_rpy = np.zeros(3, dtype=np.float32)
         self.projected_gravity = np.zeros(3, dtype=np.float32)
         self.dof_pos = np.zeros(self.cfg["common"]["joint_cnt"], dtype=np.float32)
         self.dof_vel = np.zeros(self.cfg["common"]["joint_cnt"], dtype=np.float32)
@@ -131,6 +132,7 @@ class Controller:
             self.running = False
         self.timer.tick_timer_if_sim()
         time_now = self.timer.get_time()
+        self.base_rpy[:] = low_state_msg.imu_state.rpy
         for i, motor in enumerate(low_state_msg.motor_state_serial):
             self.dof_pos_latest[i] = motor.q
         if time_now >= self.next_inference_time:
@@ -203,6 +205,7 @@ class Controller:
         leg_ids = [10, 13, 14, 15, 16, 19, 20, 21]
         actual = [float(self.dof_pos_latest[i]) for i in leg_ids]
         target = [float(self.filtered_dof_target[i]) for i in leg_ids]
+        error = [target[j] - actual[j] for j in range(len(leg_ids))]
         kp = [float(self.low_cmd.motor_cmd[i].kp) for i in leg_ids]
         kd = [float(self.low_cmd.motor_cmd[i].kd) for i in leg_ids]
         tau = [float(self.low_cmd.motor_cmd[i].tau) for i in leg_ids]
@@ -215,9 +218,11 @@ class Controller:
             f"{self.policy.smoothed_commands[1]:+.2f},"
             f"{self.policy.smoothed_commands[2]:+.2f}) "
             f"gait={self.policy.gait_frequency:.2f} "
+            f"rpy=({self.base_rpy[0]:+.3f},{self.base_rpy[1]:+.3f},{self.base_rpy[2]:+.3f}) "
             f"mech=(prepare:{self._parallel_mech_mode('prepare')},rl:{self._parallel_mech_mode('rl')}) "
             f"actual[{leg_ids}]={[round(x, 3) for x in actual]} "
             f"target[{leg_ids}]={[round(x, 3) for x in target]} "
+            f"err={[round(x, 3) for x in error]} "
             f"kp={[round(x, 1) for x in kp]} "
             f"kd={[round(x, 1) for x in kd]} "
             f"tau={[round(x, 2) for x in tau]}"
