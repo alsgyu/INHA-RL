@@ -191,6 +191,8 @@ class Controller:
             f"action_rate_limit_by_index={self.cfg['policy'].get('deploy_action_rate_limit_by_index', 'off')} "
             f"rl_publish_mode={self._rl_publish_mode()} "
             f"target_filter_alpha={self.cfg['policy'].get('rl_target_filter_alpha', 0.2)} "
+            f"dof_vel_source={self.cfg['policy'].get('policy_dof_vel_source', 'raw')} "
+            f"dof_vel_filter_alpha={self.cfg['policy'].get('policy_dof_vel_filter_alpha', 'off')} "
             f"motion_ramp={self.cfg['policy'].get('motion_start_action_ramp_s', 'default')} "
             f"gait_min={adapter.get('gait_frequency_min', 'default')} "
             f"body_pitch_gain={adapter.get('body_pitch_gain', 'default')} "
@@ -244,6 +246,9 @@ class Controller:
         self.dof_target = np.zeros(self.cfg["common"]["joint_cnt"], dtype=np.float32)
         self.filtered_dof_target = np.zeros(self.cfg["common"]["joint_cnt"], dtype=np.float32)
         self.dof_pos_latest = np.zeros(self.cfg["common"]["joint_cnt"], dtype=np.float32)
+        self.policy_dof_pos_prev = np.zeros(self.cfg["common"]["joint_cnt"], dtype=np.float32)
+        self.policy_dof_vel = np.zeros(self.cfg["common"]["joint_cnt"], dtype=np.float32)
+        self.policy_dof_vel_initialized = False
 
     def _init_communication(self) -> None:
         try:
@@ -303,6 +308,32 @@ class Controller:
 
     def _rl_publish_mode(self):
         return str(self.cfg["policy"].get("rl_publish_mode", "continuous")).lower()
+
+    def _reset_policy_dof_vel(self):
+        self.policy_dof_pos_prev[:] = self.dof_pos
+        self.policy_dof_vel[:] = 0.0
+        self.policy_dof_vel_initialized = True
+
+    def _update_policy_dof_vel(self):
+        source = str(self.cfg["policy"].get("policy_dof_vel_source", "raw")).lower()
+        if source in ("raw", "motor", "motor_state", "low_state"):
+            self.policy_dof_vel[:] = self.dof_vel
+            return
+        if source not in ("finite_difference", "finite_diff", "policy_step"):
+            raise ValueError(f"Unsupported policy_dof_vel_source '{source}'")
+
+        if not self.policy_dof_vel_initialized:
+            self._reset_policy_dof_vel()
+            return
+
+        dt = max(float(self.policy.get_policy_interval()), 1.0e-6)
+        measured = (self.dof_pos - self.policy_dof_pos_prev) / dt
+        vel_clip = self.cfg["policy"].get("policy_dof_vel_clip")
+        if vel_clip is not None and float(vel_clip) > 0.0:
+            measured = np.clip(measured, -float(vel_clip), float(vel_clip))
+        alpha = float(np.clip(self.cfg["policy"].get("policy_dof_vel_filter_alpha", 1.0), 0.0, 1.0))
+        self.policy_dof_vel[:] = (1.0 - alpha) * self.policy_dof_vel + alpha * measured
+        self.policy_dof_pos_prev[:] = self.dof_pos
 
     def _start_publish_thread(self):
         if self.publish_runner is not None and self.publish_runner.is_alive():
@@ -384,7 +415,8 @@ class Controller:
         leg_desired = self.dof_target[action_dof_indexes]
         leg_error_abs_max = float(np.max(np.abs(leg_target - leg_actual)))
         target_lag_abs_max = float(np.max(np.abs(leg_desired - leg_target)))
-        leg_vel_abs_max = float(np.max(np.abs(self.dof_vel[action_dof_indexes])))
+        leg_vel_abs_max = float(np.max(np.abs(self.policy_dof_vel[action_dof_indexes])))
+        raw_leg_vel_abs_max = float(np.max(np.abs(self.dof_vel[action_dof_indexes])))
         action_abs_max = float(np.max(np.abs(self.policy.actions))) if self.policy.actions.size else 0.0
         raw_action_abs_max = float(np.max(np.abs(getattr(self.policy, "raw_actions", self.policy.actions))))
         lateral_action_ids = [1, 2, 5, 7, 8, 11]
@@ -424,6 +456,7 @@ class Controller:
             f"leg_err_max={leg_error_abs_max:.3f} "
             f"target_lag_max={target_lag_abs_max:.3f} "
             f"leg_vel_max={leg_vel_abs_max:.3f} "
+            f"raw_leg_vel_max={raw_leg_vel_abs_max:.3f} "
             f"act_max={action_abs_max:.3f} "
             f"raw_act_max={raw_action_abs_max:.3f} "
             f"lat_act_max={lateral_action_abs_max:.3f} "
@@ -476,6 +509,7 @@ class Controller:
             time.sleep(0.1)
         with self.publish_lock:
             self.policy.reset_runtime_state()
+            self._reset_policy_dof_vel()
             current_target = np.copy(self.filtered_dof_target)
             self.rl_start_target = current_target
             self._set_joint_gains("prepare")
@@ -515,6 +549,7 @@ class Controller:
                 self.rl_motion_start_time = None
                 self.motion_start_alpha = 0.0
                 self.policy.reset_runtime_state()
+                self._reset_policy_dof_vel()
                 self.dof_target[:] = self.rl_start_target
             time.sleep(0.001)
             return
@@ -532,6 +567,7 @@ class Controller:
                 self._apply_parallel_mech_cmd("rl")
                 self._send_cmd(self.low_cmd)
                 self.policy.reset_runtime_state()
+                self._reset_policy_dof_vel()
 
         hold_s = float(self.cfg["policy"].get("motion_start_hold_s", self.cfg["policy"].get("startup_hold_s", 0.0)))
         ramp_s = float(
@@ -551,11 +587,12 @@ class Controller:
         else:
             action_scale_multiplier = 1.0
         self.motion_start_alpha = action_scale_multiplier
+        self._update_policy_dof_vel()
 
         policy_target = self.policy.inference(
             time_now=time_now,
             dof_pos=self.dof_pos,
-            dof_vel=self.dof_vel,
+            dof_vel=self.policy_dof_vel,
             base_ang_vel=self.base_ang_vel,
             projected_gravity=self.projected_gravity,
             vx=self.remoteControlService.get_vx_cmd(),
