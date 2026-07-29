@@ -72,6 +72,18 @@ class Policy:
         self.walk_heading_initialized = False
         self.walk_heading_correction_yaw = 0.0
         self.policy_interval = self.cfg["common"]["dt"] * self.cfg["walk_policy"]["control"]["decimation"]
+        self._validate_walk_action_vector("action_clip_by_index")
+        self._validate_walk_action_vector("action_scale_by_index")
+        self._validate_walk_action_vector("action_lower_by_index")
+        self._validate_walk_action_vector("action_upper_by_index")
+        self._validate_walk_action_vector("action_rate_limit_by_index")
+
+    def _validate_walk_action_vector(self, key):
+        values = self.cfg["walk_policy"].get("control", {}).get(key)
+        if values is not None and len(values) != self.cfg["walk_policy"]["num_actions"]:
+            raise ValueError(
+                f"walk_policy.control.{key} must contain {self.cfg['walk_policy']['num_actions']} values, got {len(values)}"
+            )
 
     def get_policy_interval(self):
         return self.policy_interval
@@ -204,15 +216,15 @@ class Policy:
         if not moving:
             self.walk_actions *= float(walk_cfg.get("stand_action_decay", 0.0))
         heading_correction_yaw = self._walk_heading_correction(walk_cfg, moving, base_rpy)
-        internal_command = self._resolve_walk_internal_command(walk_cfg, moving, heading_correction_yaw)
+        internal_command = self._resolve_walk_internal_command(walk_cfg, moving, heading_correction_yaw, projected_gravity)
         gait_frequency = internal_command["gait_frequency"]
         self.walk_gait_process = np.fmod(self.walk_gait_process + self.policy_interval * gait_frequency, 1.0)
 
         command_block = np.array(
             [
-                self.smoothed_commands[0],
-                self.smoothed_commands[1],
-                self.smoothed_commands[2],
+                internal_command["lin_vel_x"],
+                internal_command["lin_vel_y"],
+                internal_command["ang_vel_yaw"],
                 gait_frequency,
                 internal_command["foot_yaw_L"],
                 internal_command["foot_yaw_R"],
@@ -251,7 +263,39 @@ class Policy:
 
         with torch.no_grad():
             output = self.walk_policy(torch.from_numpy(self.walk_obs).unsqueeze(0)).detach().numpy()[0]
-        self.walk_actions[:] = np.clip(output, -norm["clip_actions"], norm["clip_actions"])
+        desired_actions = np.clip(output, -norm["clip_actions"], norm["clip_actions"])
+        control_cfg = walk_cfg.get("control", {})
+        action_clip_by_index = control_cfg.get("action_clip_by_index")
+        if action_clip_by_index is not None:
+            action_clip = np.asarray(action_clip_by_index, dtype=np.float32)
+            desired_actions = np.clip(desired_actions, -action_clip, action_clip)
+        action_scale_by_index = control_cfg.get("action_scale_by_index")
+        if action_scale_by_index is not None:
+            desired_actions *= np.asarray(action_scale_by_index, dtype=np.float32)
+        action_lower_by_index = control_cfg.get("action_lower_by_index")
+        action_upper_by_index = control_cfg.get("action_upper_by_index")
+        if action_lower_by_index is not None or action_upper_by_index is not None:
+            lower = (
+                np.asarray(action_lower_by_index, dtype=np.float32)
+                if action_lower_by_index is not None
+                else np.full(walk_cfg["num_actions"], -np.inf, dtype=np.float32)
+            )
+            upper = (
+                np.asarray(action_upper_by_index, dtype=np.float32)
+                if action_upper_by_index is not None
+                else np.full(walk_cfg["num_actions"], np.inf, dtype=np.float32)
+            )
+            desired_actions = np.clip(desired_actions, lower, upper)
+        action_rate_limit_by_index = control_cfg.get("action_rate_limit_by_index")
+        action_rate_limit = control_cfg.get("action_rate_limit")
+        if action_rate_limit_by_index is not None:
+            max_delta = np.asarray(action_rate_limit_by_index, dtype=np.float32) * self.policy_interval
+            self.walk_actions[:] += np.clip(desired_actions - self.walk_actions, -max_delta, max_delta)
+        elif action_rate_limit is not None and float(action_rate_limit) > 0.0:
+            max_delta = float(action_rate_limit) * self.policy_interval
+            self.walk_actions[:] += np.clip(desired_actions - self.walk_actions, -max_delta, max_delta)
+        else:
+            self.walk_actions[:] = desired_actions
         self.dof_targets[:] = self.default_dof_pos
         self.dof_targets[leg_start:leg_end] = (
             self.walk_default_dof_pos[leg_start:leg_end]
@@ -299,9 +343,12 @@ class Policy:
         self.walk_heading_correction_yaw = float(np.clip(correction, -max_correction, max_correction))
         return self.walk_heading_correction_yaw
 
-    def _resolve_walk_internal_command(self, walk_cfg, moving, heading_correction_yaw=0.0):
+    def _resolve_walk_internal_command(self, walk_cfg, moving, heading_correction_yaw=0.0, projected_gravity=None):
         if not moving:
             return {
+                "lin_vel_x": 0.0,
+                "lin_vel_y": 0.0,
+                "ang_vel_yaw": 0.0,
                 "gait_frequency": 0.0,
                 "foot_yaw_L": 0.0,
                 "foot_yaw_R": 0.0,
@@ -314,6 +361,9 @@ class Policy:
         adapter = walk_cfg.get("velocity_command_adapter", {})
         if not bool(adapter.get("enabled", False)):
             return {
+                "lin_vel_x": float(self.smoothed_commands[0]),
+                "lin_vel_y": float(self.smoothed_commands[1]),
+                "ang_vel_yaw": float(self.smoothed_commands[2]),
                 "gait_frequency": self._resolve_walk_gait_frequency(walk_cfg),
                 "foot_yaw_L": float(walk_cfg.get("foot_yaw_L", 0.0)),
                 "foot_yaw_R": float(walk_cfg.get("foot_yaw_R", 0.0)),
@@ -324,6 +374,15 @@ class Policy:
             }
 
         vx, vy, vyaw = [float(value) for value in self.smoothed_commands]
+        if bool(adapter.get("forward_pitch_vx_comp_enabled", False)) and projected_gravity is not None and vx > 0.0:
+            forward_pitch = max(float(projected_gravity[0]) - float(adapter.get("forward_pitch_vx_comp_deadband", 0.04)), 0.0)
+            correction = min(
+                forward_pitch * float(adapter.get("forward_pitch_vx_comp_gain", 0.8)),
+                float(adapter.get("forward_pitch_vx_comp_max", 0.05)),
+            )
+            min_vx = float(adapter.get("forward_pitch_vx_comp_min_vx", 0.04))
+            compensated_vx = max(min_vx, vx - correction)
+            vx = min(vx, compensated_vx)
         internal_vyaw = vyaw + float(heading_correction_yaw)
         linear_speed = np.hypot(vx, vy)
         speed_min = float(adapter.get("gait_frequency_speed_min", 0.08))
@@ -344,7 +403,7 @@ class Policy:
         )
         pitch_clip = adapter.get("body_pitch_target_clip", [-0.04, 0.12])
         body_pitch = np.clip(
-            vx * float(adapter.get("body_pitch_gain", 0.08)),
+            vx * float(adapter.get("body_pitch_gain", 0.08)) + float(adapter.get("body_pitch_offset", 0.0)),
             float(pitch_clip[0]),
             float(pitch_clip[1]),
         )
@@ -355,6 +414,9 @@ class Policy:
             float(roll_clip[1]),
         )
         return {
+            "lin_vel_x": float(vx),
+            "lin_vel_y": float(vy),
+            "ang_vel_yaw": float(vyaw),
             "gait_frequency": float(gait_frequency),
             "foot_yaw_L": float(foot_yaw),
             "foot_yaw_R": float(foot_yaw),

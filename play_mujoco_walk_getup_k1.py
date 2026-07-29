@@ -13,6 +13,30 @@ from deploy.utils.policy_walk_getup_k1 import Policy
 
 
 LEG_START_INDEX = 10
+K1_JOINT_NAMES = [
+    "AAHead_yaw",
+    "Head_pitch",
+    "ALeft_Shoulder_Pitch",
+    "Left_Shoulder_Roll",
+    "Left_Elbow_Pitch",
+    "Left_Elbow_Yaw",
+    "ARight_Shoulder_Pitch",
+    "Right_Shoulder_Roll",
+    "Right_Elbow_Pitch",
+    "Right_Elbow_Yaw",
+    "Left_Hip_Pitch",
+    "Left_Hip_Roll",
+    "Left_Hip_Yaw",
+    "Left_Knee_Pitch",
+    "Left_Ankle_Pitch",
+    "Left_Ankle_Roll",
+    "Right_Hip_Pitch",
+    "Right_Hip_Roll",
+    "Right_Hip_Yaw",
+    "Right_Knee_Pitch",
+    "Right_Ankle_Pitch",
+    "Right_Ankle_Roll",
+]
 
 
 class ClampedActor(torch.nn.Module):
@@ -69,6 +93,103 @@ def load_task_config(cfg_file, visited=None):
     elif not os.path.isabs(parent):
         parent = os.path.join(os.path.dirname(cfg_file), parent)
     return merge_dicts(load_task_config(parent, visited), cfg)
+
+
+def longest_matching_key(joint_name, values):
+    matches = [key for key in values.keys() if key != "default" and key in joint_name]
+    if not matches:
+        return None
+    return max(matches, key=len)
+
+
+def task_name_from_config_path(cfg_file):
+    rel = os.path.relpath(cfg_file, "envs")
+    return os.path.splitext(rel)[0]
+
+
+def infer_task_from_checkpoint(checkpoint):
+    if checkpoint in (None, "", "-1", -1, "deploy"):
+        return None
+    parts = os.path.normpath(str(checkpoint)).split(os.sep)
+    try:
+        logs_idx = parts.index("logs")
+    except ValueError:
+        return None
+    if len(parts) <= logs_idx + 3:
+        return None
+    log_task = os.path.join(parts[logs_idx + 2], parts[logs_idx + 3])
+    for cfg_file in glob.glob(os.path.join("envs", "**", "*.yaml"), recursive=True):
+        try:
+            task_cfg = load_task_config(cfg_file)
+        except Exception:
+            continue
+        if task_cfg.get("basic", {}).get("log_task") == log_task:
+            return task_name_from_config_path(cfg_file)
+    return None
+
+
+def apply_task_joint_map_to_vector(base_values, value_map):
+    values = np.array(base_values, dtype=np.float32)
+    for index, joint_name in enumerate(K1_JOINT_NAMES[: len(values)]):
+        key = longest_matching_key(joint_name, value_map)
+        if key is not None:
+            values[index] = float(value_map[key])
+    return values.tolist()
+
+
+def apply_task_default_pose(base_values, default_angles):
+    values = np.array(base_values, dtype=np.float32)
+    default_value = float(default_angles.get("default", 0.0))
+    for index, joint_name in enumerate(K1_JOINT_NAMES[: len(values)]):
+        key = longest_matching_key(joint_name, default_angles)
+        if key is not None:
+            values[index] = float(default_angles[key])
+        elif index >= LEG_START_INDEX:
+            values[index] = default_value
+    return values.tolist()
+
+
+def sync_walk_policy_from_task_config(cfg, task_cfg):
+    walk_cfg = cfg["walk_policy"]
+    task_control = task_cfg.get("control", {})
+    task_commands = task_cfg.get("commands", {})
+    task_norm = task_cfg.get("normalization", {})
+
+    for key in ("stiffness", "damping"):
+        if key in task_control:
+            cfg["common"][key] = apply_task_joint_map_to_vector(cfg["common"][key], task_control[key])
+
+    default_angles = task_cfg.get("init_state", {}).get("default_joint_angles")
+    if default_angles:
+        synced_default = apply_task_default_pose(cfg["common"]["default_qpos"], default_angles)
+        cfg["common"]["default_qpos"] = synced_default
+        walk_cfg["default_qpos"] = list(synced_default)
+
+    if task_norm:
+        walk_cfg.setdefault("normalization", {}).update(task_norm)
+    walk_control = walk_cfg.setdefault("control", {})
+    for key in (
+        "action_scale",
+        "decimation",
+        "action_clip_by_index",
+        "action_scale_by_index",
+        "action_lower_by_index",
+        "action_upper_by_index",
+        "action_rate_limit",
+        "action_rate_limit_by_index",
+    ):
+        if key in task_control:
+            walk_control[key] = task_control[key]
+
+    if "command_slew_rate" in task_commands:
+        walk_cfg["command_slew_rate"] = task_commands["command_slew_rate"]
+    adapter = task_commands.get("adapter")
+    if adapter:
+        walk_adapter = walk_cfg.setdefault("velocity_command_adapter", {})
+        walk_adapter.update(adapter)
+        walk_adapter["enabled"] = True
+        if "stand_command_threshold" in adapter:
+            walk_cfg["stand_command_threshold"] = adapter["stand_command_threshold"]
 
 
 def robot_type(task_name):
@@ -323,6 +444,17 @@ def resolve_default_base_height(cfg, args):
     )
 
 
+def apply_walk_cli_overrides(cfg, args):
+    if args.command_slew_rate is not None:
+        cfg["walk_policy"]["command_slew_rate"] = float(args.command_slew_rate)
+    if args.walk_action_clip is not None:
+        cfg["walk_policy"]["normalization"]["clip_actions"] = float(args.walk_action_clip)
+    if args.walk_action_scale is not None:
+        cfg["walk_policy"]["control"]["action_scale"] = float(args.walk_action_scale)
+    if args.disable_velocity_adapter:
+        cfg["walk_policy"].setdefault("velocity_command_adapter", {})["enabled"] = False
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="deploy/configs/Walk_GetUp_k1.yaml")
@@ -400,34 +532,36 @@ def main():
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = yaml.load(f.read(), Loader=yaml.FullLoader)
     apply_default_pose_overrides(cfg, args)
-    if args.command_slew_rate is not None:
-        cfg["walk_policy"]["command_slew_rate"] = float(args.command_slew_rate)
-    if args.walk_action_clip is not None:
-        cfg["walk_policy"]["normalization"]["clip_actions"] = float(args.walk_action_clip)
-    if args.walk_action_scale is not None:
-        cfg["walk_policy"]["control"]["action_scale"] = float(args.walk_action_scale)
-    if args.disable_velocity_adapter:
-        cfg["walk_policy"].setdefault("velocity_command_adapter", {})["enabled"] = False
+    apply_walk_cli_overrides(cfg, args)
     default_base_height = resolve_default_base_height(cfg, args)
 
     torch.set_num_threads(1)
     enable_getup = (not args.walk_only) and (args.enable_getup or args.start_fallen or args.force_fall_after_s >= 0.0)
     checkpoint_actor = None
     checkpoint_action_clip = None
+    requested_task = args.task
+    checkpoint_task = infer_task_from_checkpoint(args.checkpoint) or requested_task
+    synced_task = None
     policy_source = args.walk_policy or cfg["walk_policy"]["policy_path"]
     checkpoint_warning = None
     if args.walk_policy:
         cfg["walk_policy"]["policy_path"] = args.walk_policy
     else:
         checkpoint_actor, checkpoint_path, checkpoint_action_clip = load_checkpoint_actor(
-            args.task,
+            checkpoint_task,
             args.checkpoint,
             action_clip_override=args.checkpoint_action_clip,
         )
         if checkpoint_actor is not None:
             policy_source = checkpoint_path
+            task_cfg = load_task_config(os.path.join("envs", f"{checkpoint_task}.yaml"))
+            sync_walk_policy_from_task_config(cfg, task_cfg)
+            apply_default_pose_overrides(cfg, args)
+            apply_walk_cli_overrides(cfg, args)
+            default_base_height = resolve_default_base_height(cfg, args)
+            synced_task = checkpoint_task
         elif args.checkpoint not in (None, "", "deploy"):
-            checkpoint_warning = f"Could not find checkpoint '{args.checkpoint}' for {args.task}; falling back to deploy policy."
+            checkpoint_warning = f"Could not find checkpoint '{args.checkpoint}' for {checkpoint_task}; falling back to deploy policy."
     policy = Policy(
         cfg,
         enable_getup=enable_getup,
@@ -499,14 +633,21 @@ def main():
         )
     if checkpoint_warning:
         print(f"[mujoco] warning: {checkpoint_warning}")
+    if checkpoint_task != requested_task:
+        print(f"[mujoco] inferred checkpoint task={checkpoint_task} from requested task={requested_task}")
+    if synced_task is not None:
+        print(f"[mujoco] synced walk config from task={synced_task}")
     print(f"[mujoco] walk policy source={policy.walk_policy_path}")
     if checkpoint_actor is not None and checkpoint_action_clip is not None:
         print(f"[mujoco] checkpoint action clip={float(checkpoint_action_clip):.3f}")
+    walk_control = cfg["walk_policy"].get("control", {})
     print(
         f"[mujoco] walk action_clip={cfg['walk_policy']['normalization']['clip_actions']:.3f} "
         f"action_scale={float(cfg['walk_policy']['control']['action_scale']):.3f} "
         f"command_slew_rate={float(cfg['walk_policy'].get('command_slew_rate', 1.0)):.3f} "
-        f"velocity_adapter={bool(cfg['walk_policy'].get('velocity_command_adapter', {}).get('enabled', False))}"
+        f"velocity_adapter={bool(cfg['walk_policy'].get('velocity_command_adapter', {}).get('enabled', False))} "
+        f"action_by_index={walk_control.get('action_clip_by_index') is not None} "
+        f"rate_limit_by_index={walk_control.get('action_rate_limit_by_index') is not None}"
     )
     if args.straight_path_correction:
         print(
