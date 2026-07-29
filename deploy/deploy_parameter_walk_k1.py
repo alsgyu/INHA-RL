@@ -51,6 +51,7 @@ class Controller:
         self.rl_start_time = None
         self.rl_start_target = None
         self.last_debug_print_time = 0.0
+        self.control_stage = "idle"
 
         self.publish_lock = threading.Lock()
 
@@ -106,6 +107,14 @@ class Controller:
     def _send_cmd(self, cmd: LowCmd):
         self.low_cmd_publisher.Write(cmd)
 
+    def _start_publish_thread(self):
+        if self.publish_runner is not None and self.publish_runner.is_alive():
+            return
+        self.next_publish_time = self.timer.get_time()
+        self.publish_runner = threading.Thread(target=self._publish_cmd)
+        self.publish_runner.daemon = True
+        self.publish_runner.start()
+
     def _parallel_mech_mode(self, stage):
         mech_cfg = self.cfg.get("mech", {})
         return str(
@@ -153,6 +162,9 @@ class Controller:
         leg_ids = [10, 13, 14, 15, 16, 19, 20, 21]
         actual = [float(self.dof_pos_latest[i]) for i in leg_ids]
         target = [float(self.filtered_dof_target[i]) for i in leg_ids]
+        kp = [float(self.low_cmd.motor_cmd[i].kp) for i in leg_ids]
+        kd = [float(self.low_cmd.motor_cmd[i].kd) for i in leg_ids]
+        tau = [float(self.low_cmd.motor_cmd[i].tau) for i in leg_ids]
         print(
             "[deploy-debug] "
             f"cmd=({self.remoteControlService.get_vx_cmd():+.2f},"
@@ -164,7 +176,10 @@ class Controller:
             f"gait={self.policy.gait_frequency:.2f} "
             f"mech=(prepare:{self._parallel_mech_mode('prepare')},rl:{self._parallel_mech_mode('rl')}) "
             f"actual[{leg_ids}]={[round(x, 3) for x in actual]} "
-            f"target[{leg_ids}]={[round(x, 3) for x in target]}"
+            f"target[{leg_ids}]={[round(x, 3) for x in target]} "
+            f"kp={[round(x, 1) for x in kp]} "
+            f"kd={[round(x, 1) for x in kd]} "
+            f"tau={[round(x, 2) for x in tau]}"
         )
 
     def cleanup(self) -> None:
@@ -184,15 +199,20 @@ class Controller:
                 break
             time.sleep(0.1)
         start_time = time.perf_counter()
-        create_prepare_cmd(self.low_cmd, self.cfg)
-        for i in range(self.cfg["common"]["joint_cnt"]):
-            self.dof_target[i] = self.low_cmd.motor_cmd[i].q
-            self.filtered_dof_target[i] = self.low_cmd.motor_cmd[i].q
-        self._apply_parallel_mech_cmd("prepare")
-        self._send_cmd(self.low_cmd)
+        with self.publish_lock:
+            create_prepare_cmd(self.low_cmd, self.cfg)
+            for i in range(self.cfg["common"]["joint_cnt"]):
+                self.dof_target[i] = self.low_cmd.motor_cmd[i].q
+                self.filtered_dof_target[i] = self.low_cmd.motor_cmd[i].q
+            self.control_stage = "prepare"
+            self._apply_parallel_mech_cmd("prepare")
+            self._send_cmd(self.low_cmd)
         send_time = time.perf_counter()
         self.logger.debug(f"Send cmd took {(send_time - start_time)*1000:.4f} ms")
         self.client.ChangeMode(RobotMode.kCustom)
+        with self.publish_lock:
+            self._send_cmd(self.low_cmd)
+        self._start_publish_thread()
         end_time = time.perf_counter()
         self.logger.debug(f"Change mode took {(end_time - send_time)*1000:.4f} ms")
 
@@ -202,21 +222,20 @@ class Controller:
             if self.remoteControlService.start_rl_gait():
                 break
             time.sleep(0.1)
-        self.policy.reset_runtime_state()
-        self.rl_start_target = np.copy(self.filtered_dof_target)
-        create_first_frame_rl_cmd(self.low_cmd, self.cfg)
-        for i in range(self.cfg["common"]["joint_cnt"]):
-            self.low_cmd.motor_cmd[i].q = self.rl_start_target[i]
-            self.dof_target[i] = self.rl_start_target[i]
-            self.filtered_dof_target[i] = self.rl_start_target[i]
-        self._apply_parallel_mech_cmd("rl")
-        self._send_cmd(self.low_cmd)
-        self.rl_start_time = self.timer.get_time()
-        self.next_inference_time = self.rl_start_time
-        self.next_publish_time = self.rl_start_time
-        self.publish_runner = threading.Thread(target=self._publish_cmd)
-        self.publish_runner.daemon = True
-        self.publish_runner.start()
+        with self.publish_lock:
+            self.policy.reset_runtime_state()
+            self.rl_start_target = np.copy(self.filtered_dof_target)
+            create_first_frame_rl_cmd(self.low_cmd, self.cfg)
+            for i in range(self.cfg["common"]["joint_cnt"]):
+                self.low_cmd.motor_cmd[i].q = self.rl_start_target[i]
+                self.dof_target[i] = self.rl_start_target[i]
+                self.filtered_dof_target[i] = self.rl_start_target[i]
+            self._apply_parallel_mech_cmd("rl")
+            self._send_cmd(self.low_cmd)
+            self.rl_start_time = self.timer.get_time()
+            self.next_inference_time = self.rl_start_time
+            self.control_stage = "rl"
+        self._start_publish_thread()
         print(f"{self.remoteControlService.get_operation_hint()}")
 
     def run(self):
@@ -277,16 +296,22 @@ class Controller:
             self.next_publish_time += self.cfg["common"]["dt"]
             self.logger.debug(f"Next publish time: {self.next_publish_time}")
 
-            self.filtered_dof_target = self.filtered_dof_target * 0.8 + self.dof_target * 0.2
+            with self.publish_lock:
+                stage = self.control_stage
+                if stage == "rl":
+                    self.filtered_dof_target = self.filtered_dof_target * 0.8 + self.dof_target * 0.2
+                elif stage == "prepare":
+                    self.filtered_dof_target[:] = self.dof_target
 
-            for i in range(self.cfg["common"]["joint_cnt"]):
-                self.low_cmd.motor_cmd[i].q = self.filtered_dof_target[i]
-            self._apply_parallel_mech_cmd("rl")
+                for i in range(self.cfg["common"]["joint_cnt"]):
+                    self.low_cmd.motor_cmd[i].q = self.filtered_dof_target[i]
+                self._apply_parallel_mech_cmd("prepare" if stage == "prepare" else "rl")
 
-            start_time = time.perf_counter()
-            self._send_cmd(self.low_cmd)
+                start_time = time.perf_counter()
+                self._send_cmd(self.low_cmd)
             publish_time = time.perf_counter()
             self.logger.debug(f"Publish took {(publish_time - start_time)*1000:.4f} ms")
+            self._print_debug_state(time_now)
             time.sleep(0.001)
 
     def __enter__(self) -> "Controller":
