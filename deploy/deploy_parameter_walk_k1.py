@@ -155,6 +155,16 @@ class Controller:
             f"knee={self.cfg['prepare']['default_qpos'][19]:+.3f},"
             f"ankle={self.cfg['prepare']['default_qpos'][20]:+.3f})"
         )
+        print(
+            "[deploy-startup] "
+            f"common_leg_pose="
+            f"L(hip={self.cfg['common']['default_qpos'][10]:+.3f},"
+            f"knee={self.cfg['common']['default_qpos'][13]:+.3f},"
+            f"ankle={self.cfg['common']['default_qpos'][14]:+.3f}) "
+            f"R(hip={self.cfg['common']['default_qpos'][16]:+.3f},"
+            f"knee={self.cfg['common']['default_qpos'][19]:+.3f},"
+            f"ankle={self.cfg['common']['default_qpos'][20]:+.3f})"
+        )
 
     def _init_timer(self):
         self.timer = Timer(TimerConfig(time_step=self.cfg["common"]["dt"]))
