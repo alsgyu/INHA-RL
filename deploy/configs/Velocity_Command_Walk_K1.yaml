@@ -88,6 +88,10 @@ remote_control:
 mech:
   parallel_mech_indexes: [14, 15, 20, 21]
 
+debug:
+  enabled: false
+  print_interval_s: 1.0
+
 prepare:
   stiffness: [
     2, 2,

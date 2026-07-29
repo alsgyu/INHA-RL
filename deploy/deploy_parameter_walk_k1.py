@@ -50,6 +50,7 @@ class Controller:
         self.running = True
         self.rl_start_time = None
         self.rl_start_target = None
+        self.last_debug_print_time = 0.0
 
         self.publish_lock = threading.Lock()
 
@@ -105,6 +106,44 @@ class Controller:
     def _send_cmd(self, cmd: LowCmd):
         self.low_cmd_publisher.Write(cmd)
 
+    def _apply_parallel_mech_cmd(self):
+        indexes = self.cfg.get("mech", {}).get("parallel_mech_indexes", [])
+        if not indexes:
+            return
+        stiffness = self.cfg["common"]["stiffness"]
+        torque_limit = self.cfg["common"].get("torque_limit", [0.0] * self.cfg["common"]["joint_cnt"])
+        for i in indexes:
+            target = float(self.filtered_dof_target[i])
+            current = float(self.dof_pos_latest[i])
+            limit = float(torque_limit[i])
+            self.low_cmd.motor_cmd[i].q = current
+            self.low_cmd.motor_cmd[i].tau = float(np.clip((target - current) * float(stiffness[i]), -limit, limit))
+            self.low_cmd.motor_cmd[i].kp = 0.0
+
+    def _print_debug_state(self, time_now):
+        debug_cfg = self.cfg.get("debug", {})
+        if not bool(debug_cfg.get("enabled", False)):
+            return
+        interval = max(float(debug_cfg.get("print_interval_s", 1.0)), 1.0e-3)
+        if time_now - self.last_debug_print_time < interval:
+            return
+        self.last_debug_print_time = time_now
+        leg_ids = [10, 13, 14, 15, 16, 19, 20, 21]
+        actual = [float(self.dof_pos_latest[i]) for i in leg_ids]
+        target = [float(self.filtered_dof_target[i]) for i in leg_ids]
+        print(
+            "[deploy-debug] "
+            f"cmd=({self.remoteControlService.get_vx_cmd():+.2f},"
+            f"{self.remoteControlService.get_vy_cmd():+.2f},"
+            f"{self.remoteControlService.get_vyaw_cmd():+.2f}) "
+            f"policy_cmd=({self.policy.smoothed_commands[0]:+.2f},"
+            f"{self.policy.smoothed_commands[1]:+.2f},"
+            f"{self.policy.smoothed_commands[2]:+.2f}) "
+            f"gait={self.policy.gait_frequency:.2f} "
+            f"actual[{leg_ids}]={[round(x, 3) for x in actual]} "
+            f"target[{leg_ids}]={[round(x, 3) for x in target]}"
+        )
+
     def cleanup(self) -> None:
         """Cleanup resources."""
         self.remoteControlService.close()
@@ -126,6 +165,7 @@ class Controller:
         for i in range(self.cfg["common"]["joint_cnt"]):
             self.dof_target[i] = self.low_cmd.motor_cmd[i].q
             self.filtered_dof_target[i] = self.low_cmd.motor_cmd[i].q
+        self._apply_parallel_mech_cmd()
         self._send_cmd(self.low_cmd)
         send_time = time.perf_counter()
         self.logger.debug(f"Send cmd took {(send_time - start_time)*1000:.4f} ms")
@@ -146,6 +186,7 @@ class Controller:
             self.low_cmd.motor_cmd[i].q = self.rl_start_target[i]
             self.dof_target[i] = self.rl_start_target[i]
             self.filtered_dof_target[i] = self.rl_start_target[i]
+        self._apply_parallel_mech_cmd()
         self._send_cmd(self.low_cmd)
         self.rl_start_time = self.timer.get_time()
         self.next_inference_time = self.rl_start_time
@@ -201,6 +242,7 @@ class Controller:
 
         inference_time = time.perf_counter()
         self.logger.debug(f"Inference took {(inference_time - start_time)*1000:.4f} ms")
+        self._print_debug_state(time_now)
         time.sleep(0.001)
 
     def _publish_cmd(self):
@@ -216,7 +258,7 @@ class Controller:
 
             for i in range(self.cfg["common"]["joint_cnt"]):
                 self.low_cmd.motor_cmd[i].q = self.filtered_dof_target[i]
-            
+            self._apply_parallel_mech_cmd()
 
             start_time = time.perf_counter()
             self._send_cmd(self.low_cmd)
