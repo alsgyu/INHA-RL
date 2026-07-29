@@ -12,15 +12,15 @@ common:
     2, 2,
     5, 5, 5, 5,
     5, 5, 5, 5,
-    100, 100, 100, 100, 120, 90,
-    100, 100, 100, 100, 120, 90
+    100, 100, 100, 100, 110, 80,
+    100, 100, 100, 100, 110, 80
   ]
   damping: [
     0.2, 0.2,
     0.5, 0.5, 0.5, 0.5,
     0.5, 0.5, 0.5, 0.5,
-    2, 2.2, 2, 2, 4.0, 2.5,
-    2, 2.2, 2, 2, 4.0, 2.5
+    2, 2.2, 2, 2, 4.5, 3.0,
+    2, 2.2, 2, 2, 4.5, 3.0
   ]
   default_qpos: [
     0, 0,
@@ -62,16 +62,16 @@ policy:
   deploy_scale_actions_in_policy: false
   deploy_action_rate_limit: 0.0
   # Keep yaw slow, but let hip/ankle roll react for balance.
-  deploy_action_rate_limit_by_index: [4.0, 3.0, 0.5, 5.0, 4.0, 3.0, 4.0, 3.0, 0.5, 5.0, 4.0, 3.0]
+  deploy_action_rate_limit_by_index: [3.2, 2.2, 0.4, 4.0, 3.0, 2.2, 3.2, 2.2, 0.4, 4.0, 3.0, 2.2]
   rl_publish_mode: "policy_step"
-  rl_target_filter_alpha: 1.0
+  rl_target_filter_alpha: 0.75
   policy_dof_vel_source: "finite_difference"
-  policy_dof_vel_filter_alpha: 0.35
-  policy_dof_vel_clip: 12.0
+  policy_dof_vel_filter_alpha: 0.20
+  policy_dof_vel_clip: 8.0
   # Action order: L hip pitch/roll/yaw, L knee, L ankle pitch/roll,
   #               R hip pitch/roll/yaw, R knee, R ankle pitch/roll.
   deploy_action_clip_by_index: [0.70, 0.35, 0.08, 0.75, 0.55, 0.28, 0.70, 0.35, 0.08, 0.75, 0.55, 0.28]
-  deploy_action_scale_by_index: [0.85, 0.75, 0.20, 0.85, 0.80, 0.75, 0.85, 0.75, 0.20, 0.85, 0.80, 0.75]
+  deploy_action_scale_by_index: [0.82, 0.65, 0.18, 0.82, 0.72, 0.65, 0.82, 0.65, 0.18, 0.82, 0.72, 0.65]
   deploy_action_lower_by_index: [-0.60, -0.28, -0.04, -0.30, -0.45, -0.22, -0.60, -0.28, -0.04, -0.30, -0.45, -0.22]
   deploy_action_upper_by_index: [0.45, 0.28, 0.04, 0.56, 0.16, 0.22, 0.45, 0.28, 0.04, 0.56, 0.16, 0.22]
 

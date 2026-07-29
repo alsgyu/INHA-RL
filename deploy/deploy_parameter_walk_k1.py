@@ -444,7 +444,8 @@ class Controller:
         with self.publish_lock:
             if self.control_stage != "rl":
                 return
-            self.filtered_dof_target[:] = self.dof_target
+            alpha = float(np.clip(self.cfg["policy"].get("rl_target_filter_alpha", 1.0), 0.0, 1.0))
+            self.filtered_dof_target[:] = self.filtered_dof_target * (1.0 - alpha) + self.dof_target * alpha
             self._write_filtered_target_to_low_cmd("rl")
             self._send_cmd(self.low_cmd)
 
