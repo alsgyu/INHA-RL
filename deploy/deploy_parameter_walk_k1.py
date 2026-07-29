@@ -219,6 +219,7 @@ class Controller:
             "[deploy-startup] "
             f"ankle_ids={mech_indexes} "
             f"mode=(prepare:{self._parallel_mech_mode('prepare')},rl:{self._parallel_mech_mode('rl')}) "
+            f"prepare_hold_current={self.cfg.get('prepare', {}).get('hold_current_on_custom', False)} "
             f"prepare_transition_s={self.cfg.get('prepare', {}).get('transition_s', 0.0)} "
             f"prepare_kp={prepare_kp} prepare_kd={prepare_kd} "
             f"common_kp={common_kp} common_kd={common_kd}"
@@ -533,13 +534,19 @@ class Controller:
         start_target = np.copy(self.dof_pos_latest)
         if not np.any(np.abs(start_target) > 1.0e-6):
             start_target = np.copy(prepare_target)
+        hold_current = bool(self.cfg.get("prepare", {}).get("hold_current_on_custom", False))
+        if hold_current:
+            prepare_target = np.copy(start_target)
         with self.publish_lock:
             self._send_prepare_target_locked(start_target)
         send_time = time.perf_counter()
         self.logger.debug(f"Send cmd took {(send_time - start_time)*1000:.4f} ms")
         self.client.ChangeMode(RobotMode.kCustom)
         self._start_publish_thread()
-        self._ramp_to_prepare_target(start_target, prepare_target)
+        if hold_current:
+            print("[deploy-prepare] holding current joint target")
+        else:
+            self._ramp_to_prepare_target(start_target, prepare_target)
         print("[deploy-prepare] custom mode active; prepare command sent")
         end_time = time.perf_counter()
         self.logger.debug(f"Change mode took {(end_time - send_time)*1000:.4f} ms")
