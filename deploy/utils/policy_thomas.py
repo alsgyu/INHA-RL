@@ -20,7 +20,14 @@ class Policy:
         return self.policy_interval
 
     def _init_inference_variables(self):
-        self.default_dof_pos = np.array(self.cfg["common"]["default_qpos"], dtype=np.float32)
+        default_source = str(self.cfg["policy"].get("deploy_default_qpos_source", "common")).lower()
+        if default_source == "prepare":
+            self.default_dof_pos = np.array(self.cfg["prepare"]["default_qpos"], dtype=np.float32)
+        elif default_source == "common":
+            self.default_dof_pos = np.array(self.cfg["common"]["default_qpos"], dtype=np.float32)
+        else:
+            raise ValueError(f"Unsupported deploy_default_qpos_source '{default_source}'")
+        self.default_dof_pos_source = default_source
         self.stiffness = np.array(self.cfg["common"]["stiffness"], dtype=np.float32)
         self.damping = np.array(self.cfg["common"]["damping"], dtype=np.float32)
 
