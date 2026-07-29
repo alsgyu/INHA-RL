@@ -663,6 +663,13 @@ def main():
         f"torque_scale={float(args.torque_scale):.3f}"
     )
     print(
+        "[mujoco] leg_pd "
+        f"L(kp hip={stiffness[10]:.1f}, knee={stiffness[13]:.1f}, ankle={stiffness[14]:.1f}/{stiffness[15]:.1f}; "
+        f"kd hip={damping[10]:.1f}, knee={damping[13]:.1f}, ankle={damping[14]:.1f}/{damping[15]:.1f}) "
+        f"R(kp hip={stiffness[16]:.1f}, knee={stiffness[19]:.1f}, ankle={stiffness[20]:.1f}/{stiffness[21]:.1f}; "
+        f"kd hip={damping[16]:.1f}, knee={damping[19]:.1f}, ankle={damping[20]:.1f}/{damping[21]:.1f})"
+    )
+    print(
         f"[mujoco] model nq={model.nq} nv={model.nv} nu={model.nu} "
         f"actuated_dof={model.nu} ground_configured={ground_configured} "
         f"ground_friction=({args.ground_friction:.2f},{args.ground_torsional_friction:.3f},"
