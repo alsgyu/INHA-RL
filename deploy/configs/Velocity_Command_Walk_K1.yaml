@@ -47,6 +47,7 @@ policy:
   deploy_action_clip: 1.0
   deploy_action_scale: 0.55
   deploy_default_qpos_source: "common"
+  deploy_target_default_blend: 0.35
 
   command_adapter:
     stand_command_threshold: 0.035

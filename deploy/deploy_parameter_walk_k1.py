@@ -127,6 +127,7 @@ class Controller:
             f"prepare_publish=continuous "
             f"zero_hold={self.cfg['policy'].get('zero_command_hold_prepare', False)} "
             f"default_source={getattr(self.policy, 'default_dof_pos_source', 'unknown')} "
+            f"target_default_blend={getattr(self.policy, 'target_default_blend', 'default')} "
             f"deploy_action_clip={self.cfg['policy'].get('deploy_action_clip', 'default')} "
             f"deploy_action_scale={self.cfg['policy'].get('deploy_action_scale', 1.0)} "
             f"motion_ramp={self.cfg['policy'].get('motion_start_action_ramp_s', 'default')} "

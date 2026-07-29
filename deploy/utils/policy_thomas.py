@@ -28,6 +28,15 @@ class Policy:
         else:
             raise ValueError(f"Unsupported deploy_default_qpos_source '{default_source}'")
         self.default_dof_pos_source = default_source
+        target_default_blend = self.cfg["policy"].get("deploy_target_default_blend")
+        if target_default_blend is None:
+            self.target_default_dof_pos = np.copy(self.default_dof_pos)
+        else:
+            blend = float(np.clip(float(target_default_blend), 0.0, 1.0))
+            prepare_default = np.array(self.cfg["prepare"]["default_qpos"], dtype=np.float32)
+            common_default = np.array(self.cfg["common"]["default_qpos"], dtype=np.float32)
+            self.target_default_dof_pos = prepare_default + blend * (common_default - prepare_default)
+        self.target_default_blend = target_default_blend
         self.stiffness = np.array(self.cfg["common"]["stiffness"], dtype=np.float32)
         self.damping = np.array(self.cfg["common"]["damping"], dtype=np.float32)
 
@@ -42,7 +51,7 @@ class Policy:
         self.desired_yaw = 0.0
         self.heading_initialized = False
         self.heading_correction_yaw = 0.0
-        self.dof_targets = np.copy(self.default_dof_pos)
+        self.dof_targets = np.copy(self.target_default_dof_pos)
         self.obs = np.zeros(self.cfg["policy"]["num_observations"], dtype=np.float32)
         self.actions = np.zeros(self.cfg["policy"]["num_actions"], dtype=np.float32)
         self.policy_interval = self.cfg["common"]["dt"] * self.cfg["policy"]["control"]["decimation"]
@@ -64,7 +73,7 @@ class Policy:
         self.heading_initialized = False
         self.heading_correction_yaw = 0.0
         self.actions[:] = 0.0
-        self.dof_targets[:] = self.default_dof_pos
+        self.dof_targets[:] = self.target_default_dof_pos
 
     def _adapter_value(self, key, default):
         if self.command_adapter is None:
@@ -262,7 +271,7 @@ class Policy:
         )
         self.actions[:] *= float(self.cfg["policy"].get("deploy_action_scale", 1.0))
         self.actions[:] *= float(np.clip(action_scale_multiplier, 0.0, 1.0))
-        self.dof_targets[:] = self.default_dof_pos
+        self.dof_targets[:] = self.target_default_dof_pos
         self.dof_targets[self.leg_start_index : self.leg_end_index] += self.cfg["policy"]["control"]["action_scale"] * self.actions
 
         return self.dof_targets
