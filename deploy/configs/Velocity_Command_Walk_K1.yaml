@@ -43,9 +43,9 @@ policy:
   zero_command_hold_threshold: 0.035
   rl_stance_transition_s: 2.0
   motion_start_hold_s: 0.2
-  motion_start_action_ramp_s: 2.0
+  motion_start_action_ramp_s: 3.0
   deploy_action_clip: 1.0
-  deploy_action_scale: 0.65
+  deploy_action_scale: 0.55
   deploy_default_qpos_source: "common"
 
   command_adapter:
