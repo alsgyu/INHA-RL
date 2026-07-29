@@ -538,6 +538,7 @@ class Controller:
         send_time = time.perf_counter()
         self.logger.debug(f"Send cmd took {(send_time - start_time)*1000:.4f} ms")
         self.client.ChangeMode(RobotMode.kCustom)
+        self._start_publish_thread()
         self._ramp_to_prepare_target(start_target, prepare_target)
         print("[deploy-prepare] custom mode active; prepare command sent")
         end_time = time.perf_counter()
