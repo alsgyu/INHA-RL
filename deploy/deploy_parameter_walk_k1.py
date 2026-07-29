@@ -16,7 +16,7 @@ from booster_robotics_sdk_python import (
     RobotMode,
 )
 
-from utils.command import create_prepare_cmd, create_first_frame_rl_cmd
+from utils.command import create_prepare_cmd
 from utils.remote_control_service import JoystickConfig, RemoteControlService
 from utils.rotate import rotate_vector_inverse_rpy
 from utils.timer import TimerConfig, Timer
@@ -52,6 +52,7 @@ class Controller:
         self.running = True
         self.rl_start_time = None
         self.rl_start_target = None
+        self.rl_motion_start_time = None
         self.last_debug_print_time = 0.0
         self.control_stage = "idle"
 
@@ -109,6 +110,7 @@ class Controller:
             f"policy={self.cfg['policy']['policy_path']} "
             f"command_source={self.cfg['policy'].get('command_source', 'remote')} "
             f"prepare_publish=continuous "
+            f"zero_hold={self.cfg['policy'].get('zero_command_hold_prepare', False)} "
             f"debug={self.cfg.get('debug', {}).get('enabled', False)}"
         )
         print(
@@ -183,6 +185,24 @@ class Controller:
     def _send_cmd(self, cmd: LowCmd):
         self.low_cmd_publisher.Write(cmd)
 
+    def _set_joint_gains(self, section):
+        for i in range(self.cfg["common"]["joint_cnt"]):
+            self.low_cmd.motor_cmd[i].kp = float(self.cfg[section]["stiffness"][i])
+            self.low_cmd.motor_cmd[i].kd = float(self.cfg[section]["damping"][i])
+            self.low_cmd.motor_cmd[i].tau = 0.0
+
+    def _remote_command_norm(self):
+        vx = float(self.remoteControlService.get_vx_cmd())
+        vy = float(self.remoteControlService.get_vy_cmd())
+        vyaw = float(self.remoteControlService.get_vyaw_cmd())
+        return float(np.sqrt(vx * vx + vy * vy + vyaw * vyaw))
+
+    def _zero_command_hold_active(self):
+        if not bool(self.cfg["policy"].get("zero_command_hold_prepare", False)):
+            return False
+        threshold = float(self.cfg["policy"].get("zero_command_hold_threshold", 0.035))
+        return self._remote_command_norm() <= threshold
+
     def _start_publish_thread(self):
         if self.publish_runner is not None and self.publish_runner.is_alive():
             return
@@ -251,6 +271,7 @@ class Controller:
             f"{self.policy.smoothed_commands[1]:+.2f},"
             f"{self.policy.smoothed_commands[2]:+.2f}) "
             f"gait={self.policy.gait_frequency:.2f} "
+            f"stage={self.control_stage} "
             f"rpy=({self.base_rpy[0]:+.3f},{self.base_rpy[1]:+.3f},{self.base_rpy[2]:+.3f}) "
             f"mech=(prepare:{self._parallel_mech_mode('prepare')},rl:{self._parallel_mech_mode('rl')}) "
             f"actual[{leg_ids}]={[round(x, 3) for x in actual]} "
@@ -305,18 +326,19 @@ class Controller:
         with self.publish_lock:
             self.policy.reset_runtime_state()
             self.rl_start_target = np.copy(self.filtered_dof_target)
-            create_first_frame_rl_cmd(self.low_cmd, self.cfg)
+            self._set_joint_gains("prepare")
             for i in range(self.cfg["common"]["joint_cnt"]):
                 self.low_cmd.motor_cmd[i].q = self.rl_start_target[i]
                 self.dof_target[i] = self.rl_start_target[i]
                 self.filtered_dof_target[i] = self.rl_start_target[i]
-            self._apply_parallel_mech_cmd("rl")
+            self._apply_parallel_mech_cmd("prepare")
             self._send_cmd(self.low_cmd)
             self.rl_start_time = self.timer.get_time()
             self.next_inference_time = self.rl_start_time
-            self.control_stage = "rl"
+            self.rl_motion_start_time = None
+            self.control_stage = "rl_hold"
         self._start_publish_thread()
-        print("[deploy-rl] RL gait active; blending from current prepare target")
+        print("[deploy-rl] RL gait armed; holding stable target until movement command")
         print(f"{self.remoteControlService.get_operation_hint()}")
 
     def run(self):
@@ -329,9 +351,38 @@ class Controller:
         self.logger.debug(f"Next start time: {self.next_inference_time}")
         start_time = time.perf_counter()
 
-        hold_s = float(self.cfg["policy"].get("startup_hold_s", 0.0))
-        ramp_s = float(self.cfg["policy"].get("startup_action_ramp_s", 0.0))
-        elapsed = 0.0 if self.rl_start_time is None else max(0.0, time_now - self.rl_start_time)
+        if self._zero_command_hold_active():
+            with self.publish_lock:
+                if self.control_stage == "rl":
+                    self.rl_start_target = np.copy(self.filtered_dof_target)
+                elif self.rl_start_target is None:
+                    self.rl_start_target = np.copy(self.filtered_dof_target)
+                self._set_joint_gains("prepare")
+                self.control_stage = "rl_hold"
+                self.rl_motion_start_time = None
+                self.policy.reset_runtime_state()
+                self.dof_target[:] = self.rl_start_target
+            time.sleep(0.001)
+            return
+
+        if self.control_stage != "rl":
+            with self.publish_lock:
+                self.control_stage = "rl"
+                self.rl_motion_start_time = time_now
+                self.rl_start_target = np.copy(self.filtered_dof_target)
+                self.dof_target[:] = self.rl_start_target
+                self._set_joint_gains("common")
+                for i in range(self.cfg["common"]["joint_cnt"]):
+                    self.low_cmd.motor_cmd[i].q = self.filtered_dof_target[i]
+                self._apply_parallel_mech_cmd("rl")
+                self._send_cmd(self.low_cmd)
+                self.policy.reset_runtime_state()
+
+        hold_s = float(self.cfg["policy"].get("motion_start_hold_s", self.cfg["policy"].get("startup_hold_s", 0.0)))
+        ramp_s = float(
+            self.cfg["policy"].get("motion_start_action_ramp_s", self.cfg["policy"].get("startup_action_ramp_s", 0.0))
+        )
+        elapsed = 0.0 if self.rl_motion_start_time is None else max(0.0, time_now - self.rl_motion_start_time)
         if elapsed < hold_s:
             if self.rl_start_target is None:
                 self.rl_start_target = np.copy(self.filtered_dof_target)
@@ -381,12 +432,12 @@ class Controller:
                 stage = self.control_stage
                 if stage == "rl":
                     self.filtered_dof_target = self.filtered_dof_target * 0.8 + self.dof_target * 0.2
-                elif stage == "prepare":
+                elif stage in ("prepare", "rl_hold"):
                     self.filtered_dof_target[:] = self.dof_target
 
                 for i in range(self.cfg["common"]["joint_cnt"]):
                     self.low_cmd.motor_cmd[i].q = self.filtered_dof_target[i]
-                self._apply_parallel_mech_cmd("prepare" if stage == "prepare" else "rl")
+                self._apply_parallel_mech_cmd("prepare" if stage in ("prepare", "rl_hold") else "rl")
 
                 start_time = time.perf_counter()
                 self._send_cmd(self.low_cmd)

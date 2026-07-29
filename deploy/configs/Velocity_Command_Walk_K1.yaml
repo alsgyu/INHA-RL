@@ -37,8 +37,12 @@ policy:
   gait_frequency: 0.0
   command_source: "remote"
   command_slew_rate: 3.00
-  startup_hold_s: 0.3
-  startup_action_ramp_s: 1.5
+  startup_hold_s: 0.2
+  startup_action_ramp_s: 3.0
+  zero_command_hold_prepare: true
+  zero_command_hold_threshold: 0.035
+  motion_start_hold_s: 0.2
+  motion_start_action_ramp_s: 3.0
 
   command_adapter:
     stand_command_threshold: 0.035
