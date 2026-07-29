@@ -19,7 +19,7 @@ common:
     0.2, 0.2,
     0.5, 0.5, 0.5, 0.5,
     0.5, 0.5, 0.5, 0.5,
-    2, 2, 2, 2, 1.5, 1,
+    2, 2.5, 2, 2, 1.5, 1,
     2, 2, 2, 2, 1.5, 1
   ]
   default_qpos: [
@@ -61,7 +61,7 @@ policy:
   deploy_scale_actions_in_policy: false
   deploy_action_rate_limit: 0.0
   # Keep yaw slow, but let hip/ankle roll react for balance.
-  deploy_action_rate_limit_by_index: [4.0, 3.0, 0.5, 5.0, 4.0, 3.0, 4.0, 3.0, 0.5, 5.0, 4.0, 3.0]
+  deploy_action_rate_limit_by_index: [4.0, 2.2, 0.5, 5.0, 4.0, 2.5, 4.0, 3.0, 0.5, 5.0, 4.0, 3.0]
   rl_publish_mode: "policy_step"
   rl_target_filter_alpha: 1.0
   policy_dof_vel_source: "finite_difference"
@@ -70,7 +70,7 @@ policy:
   # Action order: L hip pitch/roll/yaw, L knee, L ankle pitch/roll,
   #               R hip pitch/roll/yaw, R knee, R ankle pitch/roll.
   deploy_action_clip_by_index: [0.70, 0.35, 0.08, 0.75, 0.55, 0.28, 0.70, 0.35, 0.08, 0.75, 0.55, 0.28]
-  deploy_action_scale_by_index: [0.85, 0.75, 0.20, 0.85, 0.80, 0.75, 0.85, 0.75, 0.20, 0.85, 0.80, 0.75]
+  deploy_action_scale_by_index: [0.85, 0.65, 0.20, 0.85, 0.80, 0.68, 0.85, 0.75, 0.20, 0.85, 0.80, 0.75]
   deploy_action_lower_by_index: [-0.60, -0.28, -0.04, -0.30, -0.45, -0.22, -0.60, -0.28, -0.04, -0.30, -0.45, -0.22]
   deploy_action_upper_by_index: [0.45, 0.28, 0.04, 0.56, 0.08, 0.22, 0.45, 0.28, 0.04, 0.56, 0.08, 0.22]
 
@@ -84,15 +84,15 @@ policy:
     foot_yaw_from_yaw_gain: 0.12
     foot_yaw_target_clip: [-0.22, 0.22]
     body_pitch_gain: 0.08
-    body_pitch_offset: -0.050
-    body_pitch_target_clip: [-0.07, 0.05]
+    body_pitch_offset: -0.060
+    body_pitch_target_clip: [-0.08, 0.04]
     body_roll_gain: -0.08
     body_roll_target_clip: [-0.08, 0.08]
     forward_pitch_vx_comp_enabled: true
-    forward_pitch_vx_comp_deadband: 0.04
-    forward_pitch_vx_comp_gain: 0.80
-    forward_pitch_vx_comp_max: 0.08
-    forward_pitch_vx_comp_min_vx: 0.03
+    forward_pitch_vx_comp_deadband: 0.035
+    forward_pitch_vx_comp_gain: 0.95
+    forward_pitch_vx_comp_max: 0.09
+    forward_pitch_vx_comp_min_vx: 0.025
     heading_correction_enabled: false
     heading_correction_min_abs_vx: 0.08
     heading_correction_max_abs_vy_command: 0.04
@@ -157,6 +157,6 @@ prepare:
     0, 0,
     0.2, -1.35, 0, -0.5,
     0.2, 1.35, 0, 0.5,
-    -0.1, 0, 0, 0.2, -0.1, 0,
-    -0.1, 0, 0, 0.2, -0.1, 0
+    -0.12, 0, 0, 0.24, -0.13, 0,
+    -0.12, 0, 0, 0.24, -0.13, 0
   ]
