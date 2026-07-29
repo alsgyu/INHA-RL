@@ -42,9 +42,9 @@ policy:
   zero_command_hold_prepare: true
   zero_command_hold_threshold: 0.035
   motion_start_hold_s: 0.2
-  motion_start_action_ramp_s: 3.0
+  motion_start_action_ramp_s: 1.5
   deploy_action_clip: 1.0
-  deploy_action_scale: 0.35
+  deploy_action_scale: 1.0
   deploy_default_qpos_source: "common"
 
   command_adapter:
@@ -87,11 +87,11 @@ policy:
     decimation: 10
 
 remote_control:
-  max_vx: 0.20
+  max_vx: 0.50
   max_vy: 0.10
   max_vyaw: 0.30
   control_threshold: 0.035
-  keyboard_step_vx: 0.05
+  keyboard_step_vx: 0.10
   keyboard_step_vy: 0.05
   keyboard_step_vyaw: 0.05
 
@@ -106,24 +106,25 @@ debug:
   print_interval_s: 0.5
 
 prepare:
+  transition_s: 2.0
   stiffness: [
     2, 2,
     5, 5, 5, 5,
     5, 5, 5, 5,
-    80, 80, 80, 80, 100, 100,
-    80, 80, 80, 80, 100, 100
+    80, 80, 80, 80, 50, 50,
+    80, 80, 80, 80, 50, 50
   ]
   damping: [
     0.2, 0.2,
     0.5, 0.5, 0.5, 0.5,
     0.5, 0.5, 0.5, 0.5,
-    1, 1, 1, 1, 2, 2,
-    1, 1, 1, 1, 2, 2
+    1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1
   ]
   default_qpos: [
     0, 0,
     0.2, -1.35, 0, -0.5,
     0.2, 1.35, 0, 0.5,
-    -0.08, 0, 0, 0.16, -0.05, 0,
-    -0.08, 0, 0, 0.16, -0.05, 0
+    -0.2, 0, 0, 0.4, -0.25, 0,
+    -0.2, 0, 0, 0.4, -0.25, 0
   ]
