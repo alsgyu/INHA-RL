@@ -60,6 +60,15 @@ class Policy:
             self.cfg["policy"].get("leg_start_index", len(self.default_dof_pos) - self.cfg["policy"]["num_actions"])
         )
         self.leg_end_index = self.leg_start_index + self.cfg["policy"]["num_actions"]
+        self._validate_action_vector("deploy_action_clip_by_index")
+        self._validate_action_vector("deploy_action_scale_by_index")
+
+    def _validate_action_vector(self, key):
+        values = self.cfg["policy"].get(key)
+        if values is not None and len(values) != self.cfg["policy"]["num_actions"]:
+            raise ValueError(
+                f"{key} must contain {self.cfg['policy']['num_actions']} values, got {len(values)}"
+            )
 
     def _use_observation_controller_commands(self):
         return self.command_source in ("observation_controller", "obs_controller", "live")
@@ -266,12 +275,22 @@ class Policy:
             output = self.policy(torch.from_numpy(self.obs).unsqueeze(0)).detach().numpy()[0]
         self.raw_actions[:] = output[: self.cfg["policy"]["num_actions"]]
         deploy_clip = float(self.cfg["policy"].get("deploy_action_clip", norm["clip_actions"]))
+        deploy_clip = np.full(self.cfg["policy"]["num_actions"], deploy_clip, dtype=np.float32)
+        deploy_clip_by_index = self.cfg["policy"].get("deploy_action_clip_by_index")
+        if deploy_clip_by_index is not None:
+            deploy_clip = np.minimum(
+                deploy_clip,
+                np.asarray(deploy_clip_by_index, dtype=np.float32),
+            )
         desired_actions = np.clip(
             self.raw_actions,
             -deploy_clip,
             deploy_clip,
         )
         desired_actions *= float(self.cfg["policy"].get("deploy_action_scale", 1.0))
+        deploy_scale_by_index = self.cfg["policy"].get("deploy_action_scale_by_index")
+        if deploy_scale_by_index is not None:
+            desired_actions *= np.asarray(deploy_scale_by_index, dtype=np.float32)
         if bool(self.cfg["policy"].get("deploy_scale_actions_in_policy", False)):
             desired_actions *= float(np.clip(action_scale_multiplier, 0.0, 1.0))
         action_rate_limit = self.cfg["policy"].get("deploy_action_rate_limit")

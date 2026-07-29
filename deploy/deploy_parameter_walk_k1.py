@@ -300,6 +300,12 @@ class Controller:
         tau = [float(self.low_cmd.motor_cmd[i].tau) for i in leg_ids]
         action_abs_max = float(np.max(np.abs(self.policy.actions))) if self.policy.actions.size else 0.0
         raw_action_abs_max = float(np.max(np.abs(getattr(self.policy, "raw_actions", self.policy.actions))))
+        lateral_action_ids = [1, 2, 5, 7, 8, 11]
+        lateral_action_abs_max = (
+            float(np.max(np.abs(self.policy.actions[lateral_action_ids])))
+            if self.policy.actions.size > max(lateral_action_ids)
+            else 0.0
+        )
         action_sample = [float(x) for x in self.policy.actions]
         print(
             "[deploy-debug] "
@@ -319,6 +325,7 @@ class Controller:
             f"err={[round(x, 3) for x in error]} "
             f"act_max={action_abs_max:.3f} "
             f"raw_act_max={raw_action_abs_max:.3f} "
+            f"lat_act_max={lateral_action_abs_max:.3f} "
             f"act={[round(x, 3) for x in action_sample]} "
             f"kp={[round(x, 1) for x in kp]} "
             f"kd={[round(x, 1) for x in kd]} "
