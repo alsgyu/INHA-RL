@@ -1,0 +1,201 @@
+extends: VelocityCommandWalk.yaml
+
+basic:
+  task: "K1/Velocity_Command_Walk_K1"
+  log_task: "K1/VelocityCommandWalkSIRLRealFineTune"
+  checkpoint: "logs/K1/K1/VelocityCommandWalkSIRL/2026-07-26-21-35-34/nn/model_30000.pth"
+  max_iterations: 8000
+  description: "Real-deploy fine-tune from the 2026-07-26 golden checkpoint with acab87d deploy action limits and ankle support."
+
+runner:
+  save_interval: 500
+  progress_interval: 10
+
+algorithm:
+  sirl_worldmodel:
+    learning_starts: 4096
+    updates_per_iter: 1
+    batch_size: 512
+    actor_lr: 4.0e-6
+    critic_lr: 1.5e-5
+    collect_noise_std: 0.003
+    load_optimizer_state: false
+    load_critic_state: false
+    load_world_model_state: false
+    load_alpha_state: false
+    teacher_enabled: true
+    teacher_policy_path: "__checkpoint__"
+    teacher_action_clip: 1.0
+    teacher_collect_iterations: 6000
+    teacher_collect_decay_iterations: 6000
+    teacher_collect_start_blend: 1.0
+    teacher_collect_end_blend: 0.78
+    teacher_distill_iterations: 6000
+    teacher_distill_steps_per_iter: 3
+    teacher_distill_batch_size: 4096
+    teacher_distill_replay_fraction: 0.5
+    teacher_bc_coef: 10.0
+    teacher_bc_decay_iterations: 6000
+    teacher_bc_min_coef: 4.0
+    teacher_bc_low_speed_vx: 0.25
+    teacher_bc_high_speed_vx: 0.55
+    teacher_bc_low_speed_weight: 3.0
+    # Pitch joints may adapt to the real-deploy wrapper; roll/yaw stay close to the golden policy.
+    teacher_bc_action_weights: [0.45, 1.0, 1.0, 0.45, 0.35, 1.0, 0.45, 1.0, 1.0, 0.45, 0.35, 1.0]
+    teacher_distill_action_weights: [0.55, 1.0, 1.0, 0.55, 0.45, 1.0, 0.55, 1.0, 1.0, 0.55, 0.45, 1.0]
+    teacher_guard_enabled: true
+    teacher_guard_action_weights: [0.35, 1.0, 1.0, 0.35, 0.30, 1.0, 0.35, 1.0, 1.0, 0.35, 0.30, 1.0]
+    teacher_guard_max_mse: 0.012
+    teacher_guard_max_increase: 0.002
+    actor_rl_coef: 0.004
+    actor_rl_start_iteration: 800
+    actor_rl_warmup_iterations: 2200
+    actor_mean_l2_coef: 0.015
+    actor_action_l2_coef: 0.008
+    actor_symmetry_coef: 0.015
+    actor_symmetry_start_iteration: 800
+    actor_symmetry_warmup_iterations: 2500
+    model_batch_ratio: 0.0
+    model_rollout_enabled: false
+    sirl_metric_penalties:
+      velocity_error: 1.4
+      feet_slip: 0.5
+      swing_clearance_deficit: 0.6
+      base_tilt: 1.2
+      low_height: 0.6
+      stand_drift: 1.2
+
+control:
+  stiffness: {"Hip": 100., "Hip_Pitch": 100., "Hip_Roll": 100., "Hip_Yaw": 100., "Knee": 100., "Knee_Pitch": 100., "Ankle": 50., "Ankle_Pitch": 120., "Ankle_Roll": 90.}
+  damping: {"Hip": 2., "Hip_Pitch": 2., "Hip_Roll": 2.2, "Hip_Yaw": 2., "Knee": 2., "Knee_Pitch": 2., "Ankle": 1., "Ankle_Pitch": 4.0, "Ankle_Roll": 2.5}
+  action_scale: 1.
+  decimation: 10
+  # Action order:
+  # [L_Hip_Pitch, L_Hip_Roll, L_Hip_Yaw, L_Knee_Pitch, L_Ankle_Pitch, L_Ankle_Roll,
+  #  R_Hip_Pitch, R_Hip_Roll, R_Hip_Yaw, R_Knee_Pitch, R_Ankle_Pitch, R_Ankle_Roll]
+  action_clip_by_index: [0.70, 0.35, 0.08, 0.75, 0.55, 0.28, 0.70, 0.35, 0.08, 0.75, 0.55, 0.28]
+  action_scale_by_index: [0.85, 0.75, 0.20, 0.85, 0.80, 0.75, 0.85, 0.75, 0.20, 0.85, 0.80, 0.75]
+  action_lower_by_index: [-0.60, -0.28, -0.04, -0.30, -0.45, -0.22, -0.60, -0.28, -0.04, -0.30, -0.45, -0.22]
+  action_upper_by_index: [0.45, 0.28, 0.04, 0.56, 0.16, 0.22, 0.45, 0.28, 0.04, 0.56, 0.16, 0.22]
+  action_rate_limit_by_index: [4.0, 3.0, 0.5, 5.0, 4.0, 3.0, 4.0, 3.0, 0.5, 5.0, 4.0, 3.0]
+
+commands:
+  command_slew_rate: 3.0
+  still_proportion: 0.35
+  straight_proportion: 0.96
+  lin_vel_x: [0.0, 0.40]
+  lin_vel_y: [-0.04, 0.04]
+  ang_vel_yaw: [-0.12, 0.12]
+  straight:
+    lin_vel_x: [0.04, 0.24]
+    lin_vel_y: 0.0
+    ang_vel_yaw: 0.0
+  adapter:
+    stand_command_threshold: 0.035
+    gait_frequency_min: 1.15
+    gait_frequency_max: 1.75
+    gait_frequency_speed_min: 0.08
+    gait_frequency_speed_max: 1.05
+    max_yaw_speed_for_drive: 0.90
+    foot_yaw_from_yaw_gain: 0.12
+    foot_yaw_target_clip: [-0.22, 0.22]
+    body_pitch_gain: 0.0
+    body_pitch_offset: 0.0
+    body_pitch_target_clip: [-0.030, 0.030]
+    body_roll_gain: -0.08
+    body_roll_target_clip: [-0.08, 0.08]
+    forward_pitch_vx_comp_enabled: true
+    forward_pitch_vx_comp_deadband: 0.035
+    forward_pitch_vx_comp_gain: 0.90
+    forward_pitch_vx_comp_max: 0.085
+    forward_pitch_vx_comp_min_vx: 0.038
+    heading_correction_enabled: true
+    heading_correction_min_abs_vx: 0.08
+    heading_correction_max_abs_vy_command: 0.04
+    heading_correction_max_abs_yaw_command: 0.08
+    heading_correction_gain: 0.05
+    heading_correction_deadband: 0.035
+    heading_correction_max_yaw_rate: 0.015
+  training_phases:
+    - start_iteration: 0
+      disturbance_scale: 0.0
+      still_proportion: 0.45
+      straight_proportion: 1.00
+      resampling_time_s: [5.0, 8.0]
+      lin_vel_x: [0.04, 0.12]
+      lin_vel_y: [0.0, 0.0]
+      ang_vel_yaw: [0.0, 0.0]
+      adapter:
+        gait_frequency_max: 1.35
+    - start_iteration: 1500
+      disturbance_scale: 0.03
+      still_proportion: 0.40
+      straight_proportion: 1.00
+      resampling_time_s: [5.0, 8.0]
+      lin_vel_x: [0.04, 0.18]
+      lin_vel_y: [0.0, 0.0]
+      ang_vel_yaw: [0.0, 0.0]
+      adapter:
+        gait_frequency_max: 1.48
+    - start_iteration: 3500
+      disturbance_scale: 0.06
+      still_proportion: 0.35
+      straight_proportion: 0.98
+      resampling_time_s: [5.0, 8.0]
+      lin_vel_x: [0.04, 0.24]
+      lin_vel_y: [-0.02, 0.02]
+      ang_vel_yaw: [-0.06, 0.06]
+      adapter:
+        gait_frequency_max: 1.62
+    - start_iteration: 6000
+      disturbance_scale: 0.10
+      still_proportion: 0.30
+      straight_proportion: 0.94
+      resampling_time_s: [5.0, 8.0]
+      lin_vel_x: [0.04, 0.40]
+      lin_vel_y: [-0.04, 0.04]
+      ang_vel_yaw: [-0.12, 0.12]
+      adapter:
+        gait_frequency_max: 1.75
+
+noise:
+  dof_vel:
+    range: [0., 0.16]
+    operation: "additive"
+    distribution: "gaussian"
+
+randomization:
+  dof_stiffness:
+    range: [0.85, 1.15]
+    operation: "scaling"
+    distribution: "uniform"
+  dof_damping:
+    range: [0.75, 1.25]
+    operation: "scaling"
+    distribution: "uniform"
+  dof_friction:
+    range: [0.0, 3.0]
+    operation: "additive"
+    distribution: "uniform"
+  base_com:
+    range: [-0.025, 0.025]
+    operation: "additive"
+    distribution: "uniform"
+  base_mass:
+    range: [0.85, 1.15]
+    operation: "scaling"
+    distribution: "uniform"
+
+rewards:
+  scales:
+    orientation: -75.0
+    ang_vel_xy: -0.35
+    action_rate: -5.5
+    feet_slip: -4.0
+    straight_path_lateral: -3.0
+    straight_heading: -2.0
+    straight_lateral_vel: -9.0
+    straight_yaw_vel: -9.0
+
+metadata:
+  policy_name: "velocity_command_walk_k1_real_ft"

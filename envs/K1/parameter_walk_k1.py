@@ -36,6 +36,13 @@ class ParameterWalkK1(BaseTask):
         if self.cfg.get("basic", {}).get("enable_csv_logging", False):
             self._init_csv_logging()
 
+    @staticmethod
+    def _longest_matching_key(joint_name, values):
+        matches = [key for key in values.keys() if key != "default" and key in joint_name]
+        if not matches:
+            return None
+        return max(matches, key=len)
+
     def _create_envs(self):
         self.num_envs = self.cfg["env"]["num_envs"]
         asset_cfg = self.cfg["asset"]
@@ -75,15 +82,16 @@ class ParameterWalkK1(BaseTask):
         self.dof_stiffness = torch.zeros(self.num_envs, self.num_dofs, dtype=torch.float, device=self.device)
         self.dof_damping = torch.zeros(self.num_envs, self.num_dofs, dtype=torch.float, device=self.device)
         self.dof_friction = torch.zeros(self.num_envs, self.num_dofs, dtype=torch.float, device=self.device)
+        stiffness_cfg = self.cfg["control"]["stiffness"]
+        damping_cfg = self.cfg["control"]["damping"]
         for i in range(self.num_dofs):
-            found = False
-            for name in self.cfg["control"]["stiffness"].keys():
-                if name in self.dof_names[i]:
-                    self.dof_stiffness[:, i] = self.cfg["control"]["stiffness"][name]
-                    self.dof_damping[:, i] = self.cfg["control"]["damping"][name]
-                    found = True
-            if not found:
+            name = self._longest_matching_key(self.dof_names[i], stiffness_cfg)
+            if name is None:
                 raise ValueError(f"PD gain of joint {self.dof_names[i]} were not defined")
+            if name not in damping_cfg:
+                raise ValueError(f"PD damping of joint {self.dof_names[i]} were not defined for key {name}")
+            self.dof_stiffness[:, i] = stiffness_cfg[name]
+            self.dof_damping[:, i] = damping_cfg[name]
         self.dof_stiffness = apply_randomization(self.dof_stiffness, self.cfg["randomization"].get("dof_stiffness"))
         self.dof_damping = apply_randomization(self.dof_damping, self.cfg["randomization"].get("dof_damping"))
         self.dof_friction = apply_randomization(self.dof_friction, self.cfg["randomization"].get("dof_friction"))
@@ -234,6 +242,11 @@ class ParameterWalkK1(BaseTask):
         self.gravity_vec = to_torch(get_axis_params(-1.0, self.up_axis_idx), device=self.device).repeat((self.num_envs, 1))
         self.actions = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device)
         self.last_actions = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device)
+        self.action_clip_by_index = self._control_action_tensor("action_clip_by_index")
+        self.action_scale_by_index = self._control_action_tensor("action_scale_by_index")
+        self.action_lower_by_index = self._control_action_tensor("action_lower_by_index")
+        self.action_upper_by_index = self._control_action_tensor("action_upper_by_index")
+        self.action_rate_limit_by_index = self._control_action_tensor("action_rate_limit_by_index")
         self.last_dof_vel = torch.zeros_like(self.dof_vel)
         self.last_root_vel = torch.zeros_like(self.root_states[:, 7:13])
         self.last_dof_targets = torch.zeros(self.num_envs, self.num_dofs, dtype=torch.float, device=self.device)
@@ -291,13 +304,19 @@ class ParameterWalkK1(BaseTask):
         self.dof_pos_ref = torch.zeros(self.num_envs, self.num_dofs, dtype=torch.float, device=self.device)
         self.default_dof_pos = torch.zeros(1, self.num_dofs, dtype=torch.float, device=self.device)
         for i in range(self.num_dofs):
-            found = False
-            for name in self.cfg["init_state"]["default_joint_angles"].keys():
-                if name in self.dof_names[i]:
-                    self.default_dof_pos[:, i] = self.cfg["init_state"]["default_joint_angles"][name]
-                    found = True
-            if not found:
+            name = self._longest_matching_key(self.dof_names[i], self.cfg["init_state"]["default_joint_angles"])
+            if name is None:
                 self.default_dof_pos[:, i] = self.cfg["init_state"]["default_joint_angles"]["default"]
+            else:
+                self.default_dof_pos[:, i] = self.cfg["init_state"]["default_joint_angles"][name]
+
+    def _control_action_tensor(self, name):
+        values = self.cfg["control"].get(name)
+        if values is None:
+            return None
+        if len(values) != self.num_actions:
+            raise ValueError(f"control.{name} must contain {self.num_actions} values, got {len(values)}")
+        return torch.tensor(values, dtype=torch.float, device=self.device).unsqueeze(0)
 
     def _prepare_reward_function(self):
         """Prepares a list of reward functions, whcih will be called to compute the total reward.
@@ -714,7 +733,33 @@ class ParameterWalkK1(BaseTask):
 
     def step(self, actions):
         # pre physics step
-        self.actions[:] = torch.clip(actions, -self.cfg["normalization"]["clip_actions"], self.cfg["normalization"]["clip_actions"])
+        processed_actions = torch.clip(
+            actions,
+            -self.cfg["normalization"]["clip_actions"],
+            self.cfg["normalization"]["clip_actions"],
+        )
+        if self.action_clip_by_index is not None:
+            processed_actions = torch.minimum(
+                torch.maximum(processed_actions, -self.action_clip_by_index),
+                self.action_clip_by_index,
+            )
+        if self.action_scale_by_index is not None:
+            processed_actions = processed_actions * self.action_scale_by_index
+        if self.action_lower_by_index is not None:
+            processed_actions = torch.maximum(processed_actions, self.action_lower_by_index)
+        if self.action_upper_by_index is not None:
+            processed_actions = torch.minimum(processed_actions, self.action_upper_by_index)
+
+        action_rate_limit = self.cfg["control"].get("action_rate_limit")
+        if self.action_rate_limit_by_index is not None:
+            max_delta = self.action_rate_limit_by_index * self.dt
+            action_delta = processed_actions - self.actions
+            processed_actions = self.actions + torch.minimum(torch.maximum(action_delta, -max_delta), max_delta)
+        elif action_rate_limit is not None and float(action_rate_limit) > 0.0:
+            max_delta = float(action_rate_limit) * self.dt
+            processed_actions = self.actions + torch.clamp(processed_actions - self.actions, -max_delta, max_delta)
+
+        self.actions[:] = processed_actions
         dof_targets = self.default_dof_pos + self.cfg["control"]["action_scale"] * self.actions
         
         # Log actions for first environment only

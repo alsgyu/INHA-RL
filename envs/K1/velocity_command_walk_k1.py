@@ -177,6 +177,19 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         vx = self.commands[env_ids, 0]
         vy = self.commands[env_ids, 1]
         yaw = self.commands[env_ids, 2]
+        if bool(adapter.get("forward_pitch_vx_comp_enabled", False)):
+            forward_pitch = torch.clamp(
+                self.projected_gravity[env_ids, 0] - float(adapter.get("forward_pitch_vx_comp_deadband", 0.04)),
+                min=0.0,
+            )
+            correction = torch.minimum(
+                forward_pitch * float(adapter.get("forward_pitch_vx_comp_gain", 0.8)),
+                torch.full_like(forward_pitch, float(adapter.get("forward_pitch_vx_comp_max", 0.05))),
+            )
+            min_vx = float(adapter.get("forward_pitch_vx_comp_min_vx", 0.04))
+            compensated_vx = torch.maximum(torch.full_like(vx, min_vx), vx - correction)
+            vx = torch.where(vx > 0.0, torch.minimum(vx, compensated_vx), vx)
+            self.commands[env_ids, 0] = vx
         internal_yaw = self._heading_corrected_yaw_command(env_ids, vx, vy, yaw, adapter)
         linear_speed = torch.sqrt(torch.square(vx) + torch.square(vy))
         yaw_speed = torch.abs(internal_yaw)
@@ -206,9 +219,10 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         )
 
         pitch_gain = float(adapter.get("body_pitch_gain", 0.08))
+        pitch_offset = float(adapter.get("body_pitch_offset", 0.0))
         pitch_clip = adapter.get("body_pitch_target_clip", [-0.04, 0.12])
         body_pitch = torch.clamp(
-            vx * pitch_gain,
+            vx * pitch_gain + pitch_offset,
             min=float(pitch_clip[0]),
             max=float(pitch_clip[1]),
         )
