@@ -41,6 +41,9 @@ class Controller:
                 max_vy=float(remote_cfg.get("max_vy", 0.5)),
                 max_vyaw=float(remote_cfg.get("max_vyaw", 0.5)),
                 control_threshold=float(remote_cfg.get("control_threshold", 0.1)),
+                keyboard_step_vx=float(remote_cfg.get("keyboard_step_vx", 0.1)),
+                keyboard_step_vy=float(remote_cfg.get("keyboard_step_vy", 0.1)),
+                keyboard_step_vyaw=float(remote_cfg.get("keyboard_step_vyaw", 0.1)),
             )
         )
         self.policy = Policy(cfg=self.cfg)
@@ -92,6 +95,18 @@ class Controller:
             for i in self.cfg.get("mech", {}).get("parallel_mech_indexes", []):
                 self.cfg["prepare"]["damping"][i] = float(ankle_kd)
 
+        deploy_action_clip = getattr(args, "deploy_action_clip", None)
+        if deploy_action_clip is not None:
+            self.cfg["policy"]["deploy_action_clip"] = float(deploy_action_clip)
+
+        deploy_action_scale = getattr(args, "deploy_action_scale", None)
+        if deploy_action_scale is not None:
+            self.cfg["policy"]["deploy_action_scale"] = float(deploy_action_scale)
+
+        motion_ramp = getattr(args, "motion_start_action_ramp_s", None)
+        if motion_ramp is not None:
+            self.cfg["policy"]["motion_start_action_ramp_s"] = float(motion_ramp)
+
     def print_startup_diagnostics(self, cfg_file):
         mech_indexes = self.cfg.get("mech", {}).get("parallel_mech_indexes", [])
         prepare_kp = [float(self.cfg["prepare"]["stiffness"][i]) for i in mech_indexes]
@@ -111,6 +126,9 @@ class Controller:
             f"command_source={self.cfg['policy'].get('command_source', 'remote')} "
             f"prepare_publish=continuous "
             f"zero_hold={self.cfg['policy'].get('zero_command_hold_prepare', False)} "
+            f"deploy_action_clip={self.cfg['policy'].get('deploy_action_clip', 'default')} "
+            f"deploy_action_scale={self.cfg['policy'].get('deploy_action_scale', 1.0)} "
+            f"motion_ramp={self.cfg['policy'].get('motion_start_action_ramp_s', 'default')} "
             f"debug={self.cfg.get('debug', {}).get('enabled', False)}"
         )
         print(
@@ -262,6 +280,8 @@ class Controller:
         kp = [float(self.low_cmd.motor_cmd[i].kp) for i in leg_ids]
         kd = [float(self.low_cmd.motor_cmd[i].kd) for i in leg_ids]
         tau = [float(self.low_cmd.motor_cmd[i].tau) for i in leg_ids]
+        action_abs_max = float(np.max(np.abs(self.policy.actions))) if self.policy.actions.size else 0.0
+        action_sample = [float(x) for x in self.policy.actions]
         print(
             "[deploy-debug] "
             f"cmd=({self.remoteControlService.get_vx_cmd():+.2f},"
@@ -277,6 +297,8 @@ class Controller:
             f"actual[{leg_ids}]={[round(x, 3) for x in actual]} "
             f"target[{leg_ids}]={[round(x, 3) for x in target]} "
             f"err={[round(x, 3) for x in error]} "
+            f"act_max={action_abs_max:.3f} "
+            f"act={[round(x, 3) for x in action_sample]} "
             f"kp={[round(x, 1) for x in kp]} "
             f"kd={[round(x, 1) for x in kd]} "
             f"tau={[round(x, 2) for x in tau]}"
@@ -471,6 +493,9 @@ if __name__ == "__main__":
     parser.add_argument("--prepare_ankle_pitch", type=float, default=None)
     parser.add_argument("--prepare_ankle_kp", type=float, default=None)
     parser.add_argument("--prepare_ankle_kd", type=float, default=None)
+    parser.add_argument("--deploy_action_clip", type=float, default=None)
+    parser.add_argument("--deploy_action_scale", type=float, default=None)
+    parser.add_argument("--motion_start_action_ramp_s", type=float, default=None)
     args = parser.parse_args()
     cfg_file = os.path.join("configs", args.config)
 

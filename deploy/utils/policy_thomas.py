@@ -247,11 +247,13 @@ class Policy:
         with torch.no_grad():
             output = self.policy(torch.from_numpy(self.obs).unsqueeze(0)).detach().numpy()[0]
         self.actions[:] = output[: self.cfg["policy"]["num_actions"]]
+        deploy_clip = float(self.cfg["policy"].get("deploy_action_clip", norm["clip_actions"]))
         self.actions[:] = np.clip(
             self.actions,
-            -norm["clip_actions"],
-            norm["clip_actions"],
+            -deploy_clip,
+            deploy_clip,
         )
+        self.actions[:] *= float(self.cfg["policy"].get("deploy_action_scale", 1.0))
         self.actions[:] *= float(np.clip(action_scale_multiplier, 0.0, 1.0))
         self.dof_targets[:] = self.default_dof_pos
         self.dof_targets[self.leg_start_index : self.leg_end_index] += self.cfg["policy"]["control"]["action_scale"] * self.actions

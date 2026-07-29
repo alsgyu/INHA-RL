@@ -12,6 +12,9 @@ class JoystickConfig:
     max_vy: float = 0.5
     max_vyaw: float = 0.5
     control_threshold: float = 0.1
+    keyboard_step_vx: float = 0.1
+    keyboard_step_vy: float = 0.1
+    keyboard_step_vyaw: float = 0.1
     # logitech
     custom_mode_button: evdev.ecodes = evdev.ecodes.BTN_C
     rl_gait_button: evdev.ecodes = evdev.ecodes.BTN_B
@@ -80,34 +83,34 @@ class RemoteControlService:
             self.keyboard_start_rl_gait = True
         if key == "w":
             old_x = self.vx
-            self.vx += 0.1
+            self.vx += self.config.keyboard_step_vx
             self.vx = min(self.vx, self.config.max_vx)
-            print(f"VX: {old_x:.1f} => {self.vx:.1f}")
+            print(f"VX: {old_x:.2f} => {self.vx:.2f}")
         if key == "s":
             old_x = self.vx
-            self.vx -= 0.1
+            self.vx -= self.config.keyboard_step_vx
             self.vx = max(self.vx, -self.config.max_vx)
-            print(f"VX: {old_x:.1f} => {self.vx:.1f}")
+            print(f"VX: {old_x:.2f} => {self.vx:.2f}")
         if key == "a":
             old_y = self.vy
-            self.vy += 0.1
+            self.vy += self.config.keyboard_step_vy
             self.vy = min(self.vy, self.config.max_vy)
-            print(f"VY: {old_y:.1f} => {self.vy:.1f}")
+            print(f"VY: {old_y:.2f} => {self.vy:.2f}")
         if key == "d":
             old_y = self.vy
-            self.vy -= 0.1
+            self.vy -= self.config.keyboard_step_vy
             self.vy = max(self.vy, -self.config.max_vy)
-            print(f"VY: {old_y:.1f} => {self.vy:.1f}")
+            print(f"VY: {old_y:.2f} => {self.vy:.2f}")
         if key == "q":
             old_yaw = self.vyaw
-            self.vyaw += 0.1
+            self.vyaw += self.config.keyboard_step_vyaw
             self.vyaw = min(self.vyaw, self.config.max_vyaw)
-            print(f"VYaw: {old_yaw:.1f} => {self.vyaw:.1f}")
+            print(f"VYaw: {old_yaw:.2f} => {self.vyaw:.2f}")
         if key == "e":
             old_yaw = self.vyaw
-            self.vyaw -= 0.1
+            self.vyaw -= self.config.keyboard_step_vyaw
             self.vyaw = max(self.vyaw, -self.config.max_vyaw)
-            print(f"VYaw: {old_yaw:.1f} => {self.vyaw:.1f}")
+            print(f"VYaw: {old_yaw:.2f} => {self.vyaw:.2f}")
         if key == "space":
             self.vx = 0
             self.vy = 0

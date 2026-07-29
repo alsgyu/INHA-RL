@@ -36,18 +36,20 @@ policy:
   num_observations: 54
   gait_frequency: 0.0
   command_source: "remote"
-  command_slew_rate: 3.00
+  command_slew_rate: 1.00
   startup_hold_s: 0.2
   startup_action_ramp_s: 3.0
   zero_command_hold_prepare: true
   zero_command_hold_threshold: 0.035
   motion_start_hold_s: 0.2
-  motion_start_action_ramp_s: 3.0
+  motion_start_action_ramp_s: 5.0
+  deploy_action_clip: 0.30
+  deploy_action_scale: 0.50
 
   command_adapter:
     stand_command_threshold: 0.035
-    gait_frequency_min: 1.15
-    gait_frequency_max: 1.95
+    gait_frequency_min: 1.05
+    gait_frequency_max: 1.55
     gait_frequency_speed_min: 0.08
     gait_frequency_speed_max: 1.05
     max_yaw_speed_for_drive: 0.90
@@ -84,10 +86,13 @@ policy:
     decimation: 10
 
 remote_control:
-  max_vx: 0.50
+  max_vx: 0.20
   max_vy: 0.10
   max_vyaw: 0.30
   control_threshold: 0.035
+  keyboard_step_vx: 0.05
+  keyboard_step_vy: 0.05
+  keyboard_step_vyaw: 0.05
 
 mech:
   parallel_mech_indexes: [14, 15, 20, 21]
