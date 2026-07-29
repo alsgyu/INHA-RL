@@ -68,6 +68,29 @@ class Controller:
         except Exception:
             return "unknown"
 
+    def apply_prepare_overrides(self, args):
+        pitch_ids = {
+            "hip": [10, 16],
+            "knee": [13, 19],
+            "ankle": [14, 20],
+        }
+        for name, ids in pitch_ids.items():
+            value = getattr(args, f"prepare_{name}_pitch", None)
+            if value is None:
+                continue
+            for i in ids:
+                self.cfg["prepare"]["default_qpos"][i] = float(value)
+
+        ankle_kp = getattr(args, "prepare_ankle_kp", None)
+        if ankle_kp is not None:
+            for i in self.cfg.get("mech", {}).get("parallel_mech_indexes", []):
+                self.cfg["prepare"]["stiffness"][i] = float(ankle_kp)
+
+        ankle_kd = getattr(args, "prepare_ankle_kd", None)
+        if ankle_kd is not None:
+            for i in self.cfg.get("mech", {}).get("parallel_mech_indexes", []):
+                self.cfg["prepare"]["damping"][i] = float(ankle_kd)
+
     def print_startup_diagnostics(self, cfg_file):
         mech_indexes = self.cfg.get("mech", {}).get("parallel_mech_indexes", [])
         prepare_kp = [float(self.cfg["prepare"]["stiffness"][i]) for i in mech_indexes]
@@ -94,6 +117,16 @@ class Controller:
             f"mode=(prepare:{self._parallel_mech_mode('prepare')},rl:{self._parallel_mech_mode('rl')}) "
             f"prepare_kp={prepare_kp} prepare_kd={prepare_kd} "
             f"common_kp={common_kp} common_kd={common_kd}"
+        )
+        print(
+            "[deploy-startup] "
+            f"prepare_leg_pose="
+            f"L(hip={self.cfg['prepare']['default_qpos'][10]:+.3f},"
+            f"knee={self.cfg['prepare']['default_qpos'][13]:+.3f},"
+            f"ankle={self.cfg['prepare']['default_qpos'][14]:+.3f}) "
+            f"R(hip={self.cfg['prepare']['default_qpos'][16]:+.3f},"
+            f"knee={self.cfg['prepare']['default_qpos'][19]:+.3f},"
+            f"ankle={self.cfg['prepare']['default_qpos'][20]:+.3f})"
         )
 
     def _init_timer(self):
@@ -382,6 +415,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, type=str, help="Name of the configuration file.")
     parser.add_argument("--net", type=str, default="127.0.0.1", help="Network interface for SDK communication.")
+    parser.add_argument("--prepare_hip_pitch", type=float, default=None)
+    parser.add_argument("--prepare_knee_pitch", type=float, default=None)
+    parser.add_argument("--prepare_ankle_pitch", type=float, default=None)
+    parser.add_argument("--prepare_ankle_kp", type=float, default=None)
+    parser.add_argument("--prepare_ankle_kd", type=float, default=None)
     args = parser.parse_args()
     cfg_file = os.path.join("configs", args.config)
 
@@ -389,6 +427,7 @@ if __name__ == "__main__":
     ChannelFactory.Instance().Init(0, args.net)
 
     with Controller(cfg_file) as controller:
+        controller.apply_prepare_overrides(args)
         controller.print_startup_diagnostics(cfg_file)
         time.sleep(2)  # Wait for channels to initialize
         print("Initialization complete.")
