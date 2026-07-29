@@ -205,7 +205,7 @@ class Policy:
         )
         pitch_clip = adapter.get("body_pitch_target_clip", [-0.04, 0.12])
         body_pitch = np.clip(
-            vx * float(adapter.get("body_pitch_gain", 0.08)),
+            vx * float(adapter.get("body_pitch_gain", 0.08)) + float(adapter.get("body_pitch_offset", 0.0)),
             float(pitch_clip[0]),
             float(pitch_clip[1]),
         )

@@ -12,15 +12,15 @@ common:
     2, 2,
     5, 5, 5, 5,
     5, 5, 5, 5,
-    100, 100, 100, 100, 50, 50,
-    100, 100, 100, 100, 50, 50
+    100, 100, 100, 100, 70, 50,
+    100, 100, 100, 100, 70, 50
   ]
   damping: [
     0.2, 0.2,
     0.5, 0.5, 0.5, 0.5,
     0.5, 0.5, 0.5, 0.5,
-    2, 2, 2, 2, 1, 1,
-    2, 2, 2, 2, 1, 1
+    2, 2, 2, 2, 1.5, 1,
+    2, 2, 2, 2, 1.5, 1
   ]
   default_qpos: [
     0, 0,
@@ -82,7 +82,8 @@ policy:
     foot_yaw_from_yaw_gain: 0.12
     foot_yaw_target_clip: [-0.22, 0.22]
     body_pitch_gain: 0.08
-    body_pitch_target_clip: [-0.04, 0.12]
+    body_pitch_offset: -0.02
+    body_pitch_target_clip: [-0.04, 0.08]
     body_roll_gain: -0.08
     body_roll_target_clip: [-0.08, 0.08]
     heading_correction_enabled: false

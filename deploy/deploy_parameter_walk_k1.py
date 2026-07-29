@@ -200,6 +200,7 @@ class Controller:
             f"motion_ramp={self.cfg['policy'].get('motion_start_action_ramp_s', 'default')} "
             f"gait_min={adapter.get('gait_frequency_min', 'default')} "
             f"body_pitch_gain={adapter.get('body_pitch_gain', 'default')} "
+            f"body_pitch_offset={adapter.get('body_pitch_offset', 0.0)} "
             f"debug={self.cfg.get('debug', {}).get('enabled', False)}"
         )
         print(
