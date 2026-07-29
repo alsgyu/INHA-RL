@@ -316,6 +316,7 @@ class Controller:
             f"{self.policy.smoothed_commands[1]:+.2f},"
             f"{self.policy.smoothed_commands[2]:+.2f}) "
             f"gait={self.policy.gait_frequency:.2f} "
+            f"yaw_corr={getattr(self.policy, 'heading_correction_yaw', 0.0):+.2f} "
             f"alpha={self.motion_start_alpha:.2f} "
             f"stage={self.control_stage} "
             f"rpy=({self.base_rpy[0]:+.3f},{self.base_rpy[1]:+.3f},{self.base_rpy[2]:+.3f}) "
