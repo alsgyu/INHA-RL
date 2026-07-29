@@ -180,6 +180,7 @@ class Controller:
             f"deploy_action_scale={self.cfg['policy'].get('deploy_action_scale', 1.0)} "
             f"scale_actions_in_policy={self.cfg['policy'].get('deploy_scale_actions_in_policy', False)} "
             f"action_rate_limit={self.cfg['policy'].get('deploy_action_rate_limit', 'off')} "
+            f"action_rate_limit_by_index={self.cfg['policy'].get('deploy_action_rate_limit_by_index', 'off')} "
             f"target_filter_alpha={self.cfg['policy'].get('rl_target_filter_alpha', 0.2)} "
             f"motion_ramp={self.cfg['policy'].get('motion_start_action_ramp_s', 'default')} "
             f"gait_min={adapter.get('gait_frequency_min', 'default')} "

@@ -63,6 +63,7 @@ class Policy:
         self.leg_end_index = self.leg_start_index + self.cfg["policy"]["num_actions"]
         self._validate_action_vector("deploy_action_clip_by_index")
         self._validate_action_vector("deploy_action_scale_by_index")
+        self._validate_action_vector("deploy_action_rate_limit_by_index")
 
     def _validate_action_vector(self, key):
         values = self.cfg["policy"].get(key)
@@ -297,7 +298,11 @@ class Policy:
         if bool(self.cfg["policy"].get("deploy_scale_actions_in_policy", False)):
             desired_actions *= float(np.clip(action_scale_multiplier, 0.0, 1.0))
         action_rate_limit = self.cfg["policy"].get("deploy_action_rate_limit")
-        if action_rate_limit is None or float(action_rate_limit) <= 0.0:
+        action_rate_limit_by_index = self.cfg["policy"].get("deploy_action_rate_limit_by_index")
+        if action_rate_limit_by_index is not None:
+            max_delta = np.asarray(action_rate_limit_by_index, dtype=np.float32) * self.policy_interval
+            self.actions[:] += np.clip(desired_actions - self.actions, -max_delta, max_delta)
+        elif action_rate_limit is None or float(action_rate_limit) <= 0.0:
             self.actions[:] = desired_actions
         else:
             max_delta = float(action_rate_limit) * self.policy_interval
