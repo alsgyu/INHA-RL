@@ -58,6 +58,7 @@ class Controller:
         self.rl_start_target = None
         self.rl_motion_start_time = None
         self.motion_start_alpha = 0.0
+        self.motion_command_alpha = 0.0
         self.last_debug_print_time = 0.0
         self.control_stage = "idle"
 
@@ -162,6 +163,10 @@ class Controller:
         if motion_ramp is not None:
             self.cfg["policy"]["motion_start_action_ramp_s"] = float(motion_ramp)
 
+        motion_command_ramp = getattr(args, "motion_start_command_ramp_s", None)
+        if motion_command_ramp is not None:
+            self.cfg["policy"]["motion_start_command_ramp_s"] = float(motion_command_ramp)
+
         if reload_policy:
             self.policy = Policy(cfg=self.cfg)
 
@@ -203,7 +208,9 @@ class Controller:
             f"obs_dof_vel_scale={self.cfg['policy']['normalization'].get('dof_vel', 'default')} "
             f"control_action_scale={self.cfg['policy']['control'].get('action_scale', 'default')} "
             f"control_decimation={self.cfg['policy']['control'].get('decimation', 'default')} "
+            f"motion_hold={self.cfg['policy'].get('motion_start_hold_s', 'default')} "
             f"motion_ramp={self.cfg['policy'].get('motion_start_action_ramp_s', 'default')} "
+            f"motion_cmd_ramp={self.cfg['policy'].get('motion_start_command_ramp_s', 'default')} "
             f"gait_min={adapter.get('gait_frequency_min', 'default')} "
             f"body_pitch_gain={adapter.get('body_pitch_gain', 'default')} "
             f"body_pitch_offset={adapter.get('body_pitch_offset', 0.0)} "
@@ -491,6 +498,7 @@ class Controller:
             f"vx_corr={getattr(self.policy, 'balance_vx_correction', 0.0):+.2f} "
             f"yaw_corr={getattr(self.policy, 'heading_correction_yaw', 0.0):+.2f} "
             f"alpha={self.motion_start_alpha:.2f} "
+            f"cmd_alpha={self.motion_command_alpha:.2f} "
             f"stage={self.control_stage} "
             f"rpy=({self.base_rpy[0]:+.3f},{self.base_rpy[1]:+.3f},{self.base_rpy[2]:+.3f}) "
             f"grav=({self.projected_gravity[0]:+.3f},{self.projected_gravity[1]:+.3f},{self.projected_gravity[2]:+.3f}) "
@@ -522,6 +530,11 @@ class Controller:
             self.low_state_subscriber.CloseChannel()
         if hasattr(self, "publish_runner") and getattr(self, "publish_runner") != None:
             self.publish_runner.join(timeout=1.0)
+
+    @staticmethod
+    def _smoothstep(alpha):
+        alpha = float(np.clip(alpha, 0.0, 1.0))
+        return alpha * alpha * (3.0 - 2.0 * alpha)
 
     def start_custom_mode_conditionally(self):
         print(f"{self.remoteControlService.get_custom_mode_operation_hint()}")
@@ -572,6 +585,7 @@ class Controller:
             self.rl_start_time = self.timer.get_time()
             self.next_inference_time = self.rl_start_time
             self.rl_motion_start_time = None
+            self.motion_command_alpha = 0.0
             self.control_stage = "rl_hold"
         self._start_publish_thread()
         print("[deploy-rl] RL gait armed; holding stable prepare target until movement command")
@@ -598,6 +612,7 @@ class Controller:
                 self.control_stage = "rl_hold"
                 self.rl_motion_start_time = None
                 self.motion_start_alpha = 0.0
+                self.motion_command_alpha = 0.0
                 self.policy.reset_runtime_state()
                 self._reset_policy_dof_vel()
                 self.dof_target[:] = self.rl_start_target
@@ -609,6 +624,7 @@ class Controller:
                 self.control_stage = "rl"
                 self.rl_motion_start_time = time_now
                 self.motion_start_alpha = 0.0
+                self.motion_command_alpha = 0.0
                 self.rl_start_target = np.copy(self.filtered_dof_target)
                 self.dof_target[:] = self.rl_start_target
                 self._set_joint_gains("common")
@@ -629,14 +645,21 @@ class Controller:
                 self.rl_start_target = np.copy(self.filtered_dof_target)
             self.dof_target[:] = self.rl_start_target
             self.motion_start_alpha = 0.0
+            self.motion_command_alpha = 0.0
             self.policy.reset_runtime_state()
             time.sleep(0.001)
             return
         if ramp_s > 1.0e-6:
-            action_scale_multiplier = min(max((elapsed - hold_s) / ramp_s, 0.0), 1.0)
+            action_scale_multiplier = self._smoothstep((elapsed - hold_s) / ramp_s)
         else:
             action_scale_multiplier = 1.0
         self.motion_start_alpha = action_scale_multiplier
+        command_ramp_s = float(self.cfg["policy"].get("motion_start_command_ramp_s", ramp_s))
+        if command_ramp_s > 1.0e-6:
+            command_scale_multiplier = self._smoothstep((elapsed - hold_s) / command_ramp_s)
+        else:
+            command_scale_multiplier = 1.0
+        self.motion_command_alpha = command_scale_multiplier
         self._update_policy_dof_vel()
 
         policy_target = self.policy.inference(
@@ -645,9 +668,9 @@ class Controller:
             dof_vel=self.policy_dof_vel,
             base_ang_vel=self.base_ang_vel,
             projected_gravity=self.projected_gravity,
-            vx=self.remoteControlService.get_vx_cmd(),
-            vy=self.remoteControlService.get_vy_cmd(),
-            vyaw=self.remoteControlService.get_vyaw_cmd(),
+            vx=self.remoteControlService.get_vx_cmd() * command_scale_multiplier,
+            vy=self.remoteControlService.get_vy_cmd() * command_scale_multiplier,
+            vyaw=self.remoteControlService.get_vyaw_cmd() * command_scale_multiplier,
             action_scale_multiplier=action_scale_multiplier,
         )
         if action_scale_multiplier < 1.0 and self.rl_start_target is not None:
@@ -735,6 +758,7 @@ if __name__ == "__main__":
         help="Publish RL targets continuously or once per policy step like Booster Deploy.",
     )
     parser.add_argument("--motion_start_action_ramp_s", type=float, default=None)
+    parser.add_argument("--motion_start_command_ramp_s", type=float, default=None)
     args = parser.parse_args()
     cfg_file = os.path.join("configs", args.config)
 
