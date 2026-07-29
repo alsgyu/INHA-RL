@@ -53,9 +53,9 @@ policy:
   zero_command_hold_prepare: true
   zero_command_hold_threshold: 0.035
   rl_stance_transition_s: 2.0
-  motion_start_hold_s: 0.35
+  motion_start_hold_s: 0.50
   motion_start_action_ramp_s: 3.0
-  motion_start_command_ramp_s: 1.5
+  motion_start_command_ramp_s: 2.5
   deploy_action_clip: 0.85
   deploy_action_scale: 1.0
   deploy_default_qpos_source: "common"
@@ -84,23 +84,23 @@ policy:
     max_yaw_speed_for_drive: 0.90
     foot_yaw_from_yaw_gain: 0.12
     foot_yaw_target_clip: [-0.22, 0.22]
-    body_pitch_gain: 0.08
-    body_pitch_offset: -0.065
-    body_pitch_target_clip: [-0.085, 0.040]
+    body_pitch_gain: 0.0
+    body_pitch_offset: 0.0
+    body_pitch_target_clip: [-0.030, 0.030]
     body_roll_gain: -0.08
     body_roll_target_clip: [-0.08, 0.08]
     forward_pitch_vx_comp_enabled: true
     forward_pitch_vx_comp_deadband: 0.035
     forward_pitch_vx_comp_gain: 0.90
     forward_pitch_vx_comp_max: 0.085
-    forward_pitch_vx_comp_min_vx: 0.045
-    heading_correction_enabled: false
-    heading_correction_min_abs_vx: 0.08
+    forward_pitch_vx_comp_min_vx: 0.038
+    heading_correction_enabled: true
+    heading_correction_min_abs_vx: 0.04
     heading_correction_max_abs_vy_command: 0.04
     heading_correction_max_abs_yaw_command: 0.08
-    heading_correction_gain: 0.20
-    heading_correction_deadband: 0.030
-    heading_correction_max_yaw_rate: 0.08
+    heading_correction_gain: 0.08
+    heading_correction_deadband: 0.025
+    heading_correction_max_yaw_rate: 0.025
 
   normalization:
     gravity: 1.0

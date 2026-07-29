@@ -180,7 +180,11 @@ class Policy:
             return
         min_vx = float(adapter.get("forward_pitch_vx_comp_min_vx", 0.04))
         original_vx = float(self.policy_commands[0])
-        self.policy_commands[0] = max(min_vx, original_vx - correction)
+        compensated_vx = max(min_vx, original_vx - correction)
+        # The floor is only meant to avoid dropping an already-active walk below
+        # stand threshold. During startup ramp it must not promote tiny commands
+        # into a full walking gait.
+        self.policy_commands[0] = min(original_vx, compensated_vx)
         self.balance_vx_correction = original_vx - float(self.policy_commands[0])
 
     def _resolve_command_block(self):

@@ -215,6 +215,8 @@ class Controller:
             f"body_pitch_gain={adapter.get('body_pitch_gain', 'default')} "
             f"body_pitch_offset={adapter.get('body_pitch_offset', 0.0)} "
             f"forward_pitch_vx_comp={adapter.get('forward_pitch_vx_comp_enabled', False)} "
+            f"forward_pitch_min_vx={adapter.get('forward_pitch_vx_comp_min_vx', 'default')} "
+            f"heading_correction={adapter.get('heading_correction_enabled', False)} "
             f"debug={self.cfg.get('debug', {}).get('enabled', False)}"
         )
         print(
