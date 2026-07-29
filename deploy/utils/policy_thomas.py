@@ -42,6 +42,7 @@ class Policy:
 
         self.commands = np.zeros(3, dtype=np.float32)
         self.smoothed_commands = np.zeros(3, dtype=np.float32)
+        self.command_block = np.zeros(10, dtype=np.float32)
 
         self.command_adapter = self.cfg["policy"].get("command_adapter")
         self.command_source = str(self.cfg["policy"].get("command_source", "remote")).lower()
@@ -76,6 +77,7 @@ class Policy:
     def reset_runtime_state(self):
         self.commands[:] = 0.0
         self.smoothed_commands[:] = 0.0
+        self.command_block[:] = 0.0
         self.gait_frequency = 0.0
         self.gait_process = 0.0
         self.estimated_yaw = 0.0
@@ -239,6 +241,7 @@ class Policy:
         clip_range = (-clip_delta, clip_delta)
         self.smoothed_commands += np.clip(self.commands - self.smoothed_commands, *clip_range)
         command_block = self._resolve_command_block()
+        self.command_block[:] = command_block
         moving = self.gait_frequency > 1.0e-8
         self.gait_process = np.fmod(self.gait_process + self.policy_interval * self.gait_frequency, 1.0) if moving else 0.0
 

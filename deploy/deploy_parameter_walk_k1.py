@@ -73,6 +73,19 @@ class Controller:
         except Exception:
             return "unknown"
 
+    def _policy_sha1(self):
+        policy_path = self.cfg["policy"]["policy_path"]
+        if not os.path.isabs(policy_path):
+            policy_path = os.path.abspath(policy_path)
+        try:
+            return subprocess.check_output(
+                ["git", "hash-object", policy_path],
+                stderr=subprocess.DEVNULL,
+                text=True,
+            ).strip()
+        except Exception:
+            return "unknown"
+
     def apply_prepare_overrides(self, args):
         pitch_ids = {
             "hip": [10, 16],
@@ -125,6 +138,7 @@ class Controller:
         print(
             "[deploy-startup] "
             f"policy={self.cfg['policy']['policy_path']} "
+            f"policy_sha1={self._policy_sha1()} "
             f"command_source={self.cfg['policy'].get('command_source', 'remote')} "
             f"prepare_publish=continuous "
             f"zero_hold={self.cfg['policy'].get('zero_command_hold_prepare', False)} "
@@ -298,6 +312,10 @@ class Controller:
         kp = [float(self.low_cmd.motor_cmd[i].kp) for i in leg_ids]
         kd = [float(self.low_cmd.motor_cmd[i].kd) for i in leg_ids]
         tau = [float(self.low_cmd.motor_cmd[i].tau) for i in leg_ids]
+        leg_target = self.filtered_dof_target[self.policy.leg_start_index : self.policy.leg_end_index]
+        leg_actual = self.dof_pos_latest[self.policy.leg_start_index : self.policy.leg_end_index]
+        leg_error_abs_max = float(np.max(np.abs(leg_target - leg_actual)))
+        leg_vel_abs_max = float(np.max(np.abs(self.dof_vel[self.policy.leg_start_index : self.policy.leg_end_index])))
         action_abs_max = float(np.max(np.abs(self.policy.actions))) if self.policy.actions.size else 0.0
         raw_action_abs_max = float(np.max(np.abs(getattr(self.policy, "raw_actions", self.policy.actions))))
         lateral_action_ids = [1, 2, 5, 7, 8, 11]
@@ -306,7 +324,14 @@ class Controller:
             if self.policy.actions.size > max(lateral_action_ids)
             else 0.0
         )
+        raw_actions = getattr(self.policy, "raw_actions", self.policy.actions)
+        raw_lateral_action_abs_max = (
+            float(np.max(np.abs(raw_actions[lateral_action_ids])))
+            if raw_actions.size > max(lateral_action_ids)
+            else 0.0
+        )
         action_sample = [float(x) for x in self.policy.actions]
+        command_block = [float(x) for x in getattr(self.policy, "command_block", [])]
         print(
             "[deploy-debug] "
             f"cmd=({self.remoteControlService.get_vx_cmd():+.2f},"
@@ -315,18 +340,24 @@ class Controller:
             f"policy_cmd=({self.policy.smoothed_commands[0]:+.2f},"
             f"{self.policy.smoothed_commands[1]:+.2f},"
             f"{self.policy.smoothed_commands[2]:+.2f}) "
+            f"cmd10={[round(x, 3) for x in command_block]} "
             f"gait={self.policy.gait_frequency:.2f} "
             f"yaw_corr={getattr(self.policy, 'heading_correction_yaw', 0.0):+.2f} "
             f"alpha={self.motion_start_alpha:.2f} "
             f"stage={self.control_stage} "
             f"rpy=({self.base_rpy[0]:+.3f},{self.base_rpy[1]:+.3f},{self.base_rpy[2]:+.3f}) "
+            f"grav=({self.projected_gravity[0]:+.3f},{self.projected_gravity[1]:+.3f},{self.projected_gravity[2]:+.3f}) "
+            f"gyro=({self.base_ang_vel[0]:+.3f},{self.base_ang_vel[1]:+.3f},{self.base_ang_vel[2]:+.3f}) "
             f"mech=(prepare:{self._parallel_mech_mode('prepare')},rl:{self._parallel_mech_mode('rl')}) "
             f"actual[{leg_ids}]={[round(x, 3) for x in actual]} "
             f"target[{leg_ids}]={[round(x, 3) for x in target]} "
             f"err={[round(x, 3) for x in error]} "
+            f"leg_err_max={leg_error_abs_max:.3f} "
+            f"leg_vel_max={leg_vel_abs_max:.3f} "
             f"act_max={action_abs_max:.3f} "
             f"raw_act_max={raw_action_abs_max:.3f} "
             f"lat_act_max={lateral_action_abs_max:.3f} "
+            f"raw_lat_act_max={raw_lateral_action_abs_max:.3f} "
             f"act={[round(x, 3) for x in action_sample]} "
             f"kp={[round(x, 1) for x in kp]} "
             f"kd={[round(x, 1) for x in kd]} "

@@ -44,19 +44,15 @@ policy:
   rl_stance_transition_s: 2.0
   motion_start_hold_s: 0.0
   motion_start_action_ramp_s: 1.5
-  deploy_action_clip: 0.65
+  deploy_action_clip: 1.0
   deploy_action_scale: 1.0
   deploy_default_qpos_source: "common"
-  deploy_scale_actions_in_policy: false
-  deploy_action_rate_limit: 1.2
-  # Action order: L hip pitch/roll/yaw, L knee, L ankle pitch/roll,
-  #               R hip pitch/roll/yaw, R knee, R ankle pitch/roll.
-  deploy_action_clip_by_index: [0.65, 0.20, 0.12, 0.65, 0.35, 0.18, 0.65, 0.20, 0.12, 0.65, 0.35, 0.18]
-  deploy_action_scale_by_index: [1.00, 0.35, 0.25, 1.00, 0.45, 0.25, 1.00, 0.35, 0.25, 1.00, 0.45, 0.25]
+  deploy_scale_actions_in_policy: true
+  deploy_action_rate_limit: 0.0
 
   command_adapter:
     stand_command_threshold: 0.035
-    gait_frequency_min: 1.30
+    gait_frequency_min: 1.15
     gait_frequency_max: 1.95
     gait_frequency_speed_min: 0.08
     gait_frequency_speed_max: 1.05
@@ -67,7 +63,7 @@ policy:
     body_pitch_target_clip: [-0.04, 0.12]
     body_roll_gain: -0.08
     body_roll_target_clip: [-0.08, 0.08]
-    heading_correction_enabled: true
+    heading_correction_enabled: false
     heading_correction_min_abs_vx: 0.08
     heading_correction_max_abs_vy_command: 0.04
     heading_correction_max_abs_yaw_command: 0.08
