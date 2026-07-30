@@ -1,6 +1,7 @@
 import argparse
 import glob
 import os
+import sys
 import time
 
 import numpy as np
@@ -455,6 +456,10 @@ def apply_walk_cli_overrides(cfg, args):
         cfg["walk_policy"].setdefault("velocity_command_adapter", {})["enabled"] = False
 
 
+def cli_flag_was_provided(name):
+    return any(arg == name or arg.startswith(f"{name}=") for arg in sys.argv[1:])
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="deploy/configs/Walk_GetUp_k1.yaml")
@@ -623,6 +628,8 @@ def main():
     )
     if target_pose is None:
         print(f"[mujoco] walk command vx={args.vx:.3f} vy={args.vy:.3f} vyaw={args.vyaw:.3f} getup_enabled={enable_getup}")
+        if not cli_flag_was_provided("--vx"):
+            print("[mujoco] note: --vx was not provided; using default 0.200. Check shell line continuations if another speed was intended.")
     else:
         print(
             f"[mujoco] robot pose x={args.robot_x:.3f} y={args.robot_y:.3f} theta={args.robot_theta:.3f} "
