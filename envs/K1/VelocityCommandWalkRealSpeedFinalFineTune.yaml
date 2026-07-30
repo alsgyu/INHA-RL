@@ -4,8 +4,8 @@ basic:
   task: "K1/Velocity_Command_Walk_K1"
   log_task: "K1/VelocityCommandWalkSIRLRealSpeedFinalFineTune"
   checkpoint: "logs/K1/K1/VelocityCommandWalkSIRLRealSpeedRestartFineTune/2026-07-30-18-44-57/nn/model_24000.pth"
-  max_iterations: 22000
-  description: "Conservative final speed/stop fine-tune from the strong restart checkpoint. Preserve the current leg gait with high teacher blend while slowly opening straight vx to 1.5 m/s and rewarding clean transitions back to zero command."
+  max_iterations: 30000
+  description: "Upright-preserving final speed/stop fine-tune from the strong restart checkpoint. Keep the current leg gait under a strong teacher guard, penalize forward trunk pitch explicitly, and expose 1.5 m/s only in the final curriculum phase."
 
 runner:
   save_interval: 1000
@@ -13,32 +13,32 @@ runner:
 
 algorithm:
   sirl_worldmodel:
-    actor_lr: 5.0e-7
-    critic_lr: 6.0e-6
-    collect_noise_std: 0.0005
-    teacher_collect_iterations: 22000
-    teacher_collect_decay_iterations: 22000
+    actor_lr: 3.0e-7
+    critic_lr: 5.0e-6
+    collect_noise_std: 0.0003
+    teacher_collect_iterations: 30000
+    teacher_collect_decay_iterations: 30000
     teacher_collect_start_blend: 1.0
-    teacher_collect_end_blend: 0.93
-    teacher_distill_iterations: 22000
+    teacher_collect_end_blend: 0.97
+    teacher_distill_iterations: 30000
     teacher_distill_steps_per_iter: 3
-    teacher_distill_replay_fraction: 0.78
-    teacher_bc_coef: 42.0
-    teacher_bc_decay_iterations: 22000
-    teacher_bc_min_coef: 18.0
-    teacher_bc_low_speed_vx: 0.55
-    teacher_bc_high_speed_vx: 1.10
-    teacher_bc_low_speed_weight: 20.0
-    teacher_guard_max_mse: 0.0045
-    teacher_guard_max_increase: 0.00035
-    sirl_fall_penalty: 8.5
-    actor_rl_coef: 0.0008
-    actor_rl_start_iteration: 7000
-    actor_rl_warmup_iterations: 16000
-    actor_mean_l2_coef: 0.045
-    actor_action_l2_coef: 0.028
-    actor_symmetry_coef: 0.130
-    actor_symmetry_warmup_iterations: 12000
+    teacher_distill_replay_fraction: 0.85
+    teacher_bc_coef: 70.0
+    teacher_bc_decay_iterations: 30000
+    teacher_bc_min_coef: 35.0
+    teacher_bc_low_speed_vx: 0.80
+    teacher_bc_high_speed_vx: 1.30
+    teacher_bc_low_speed_weight: 30.0
+    teacher_guard_max_mse: 0.0035
+    teacher_guard_max_increase: 0.00025
+    sirl_fall_penalty: 10.0
+    actor_rl_coef: 0.00035
+    actor_rl_start_iteration: 10000
+    actor_rl_warmup_iterations: 20000
+    actor_mean_l2_coef: 0.060
+    actor_action_l2_coef: 0.040
+    actor_symmetry_coef: 0.150
+    actor_symmetry_warmup_iterations: 16000
     sirl_metric_penalties:
       velocity_error: 2.8
       low_speed_overspeed: 6.0
@@ -48,20 +48,21 @@ algorithm:
       swing_pitch_asymmetry: 4.0
       contact_duty_asymmetry: 5.0
       right_contact_duty_excess: 5.5
+      forward_pitch_excess: 9.0
       feet_slip: 1.2
       swing_clearance_deficit: 0.8
-      base_tilt: 2.8
+      base_tilt: 3.2
       low_height: 0.9
-      stand_drift: 2.4
-      stop_transition_drift: 5.0
+      stand_drift: 2.8
+      stop_transition_drift: 6.0
 
 commands:
-  command_slew_rate: 1.8
-  still_proportion: 0.46
+  command_slew_rate: 2.0
+  still_proportion: 0.48
   straight_proportion: 1.00
-  high_speed_proportion: 0.10
+  high_speed_proportion: 0.05
   high_speed:
-    lin_vel_x: [1.25, 1.50]
+    lin_vel_x: [1.30, 1.50]
     lin_vel_y: 0.0
     ang_vel_yaw: 0.0
   lin_vel_x: [0.0, 1.50]
@@ -88,61 +89,61 @@ commands:
     - start_iteration: 0
       disturbance_scale: 0.00
       command_slew_rate: 2.0
-      still_proportion: 0.50
+      still_proportion: 0.52
       straight_proportion: 1.00
       high_speed_proportion: 0.00
-      resampling_time_s: [4.0, 7.0]
-      lin_vel_x: [0.04, 0.80]
+      resampling_time_s: [4.5, 8.0]
+      lin_vel_x: [0.04, 0.95]
       lin_vel_y: [0.0, 0.0]
       ang_vel_yaw: [0.0, 0.0]
       adapter:
-        gait_frequency_max: 1.80
-        gait_frequency_speed_max: 0.80
-    - start_iteration: 5000
+        gait_frequency_max: 1.90
+        gait_frequency_speed_max: 1.00
+    - start_iteration: 8000
+      disturbance_scale: 0.00
+      command_slew_rate: 2.0
+      still_proportion: 0.50
+      straight_proportion: 1.00
+      high_speed_proportion: 0.02
+      high_speed:
+        lin_vel_x: [0.95, 1.10]
+        lin_vel_y: 0.0
+        ang_vel_yaw: 0.0
+      resampling_time_s: [4.5, 8.0]
+      lin_vel_x: [0.05, 1.10]
+      lin_vel_y: [0.0, 0.0]
+      ang_vel_yaw: [0.0, 0.0]
+      adapter:
+        gait_frequency_max: 1.98
+        gait_frequency_speed_max: 1.10
+    - start_iteration: 16000
       disturbance_scale: 0.00
       command_slew_rate: 1.9
       still_proportion: 0.48
       straight_proportion: 1.00
-      high_speed_proportion: 0.04
+      high_speed_proportion: 0.03
       high_speed:
-        lin_vel_x: [0.85, 1.00]
+        lin_vel_x: [1.10, 1.30]
         lin_vel_y: 0.0
         ang_vel_yaw: 0.0
-      resampling_time_s: [4.0, 7.0]
-      lin_vel_x: [0.05, 1.00]
+      resampling_time_s: [4.5, 8.0]
+      lin_vel_x: [0.06, 1.30]
       lin_vel_y: [0.0, 0.0]
       ang_vel_yaw: [0.0, 0.0]
       adapter:
-        gait_frequency_max: 1.92
-        gait_frequency_speed_max: 1.00
-    - start_iteration: 11000
+        gait_frequency_max: 2.08
+        gait_frequency_speed_max: 1.30
+    - start_iteration: 24000
       disturbance_scale: 0.00
       command_slew_rate: 1.8
       still_proportion: 0.46
       straight_proportion: 1.00
-      high_speed_proportion: 0.07
+      high_speed_proportion: 0.05
       high_speed:
-        lin_vel_x: [1.05, 1.25]
+        lin_vel_x: [1.30, 1.50]
         lin_vel_y: 0.0
         ang_vel_yaw: 0.0
-      resampling_time_s: [4.0, 7.0]
-      lin_vel_x: [0.06, 1.25]
-      lin_vel_y: [0.0, 0.0]
-      ang_vel_yaw: [0.0, 0.0]
-      adapter:
-        gait_frequency_max: 2.05
-        gait_frequency_speed_max: 1.25
-    - start_iteration: 17000
-      disturbance_scale: 0.00
-      command_slew_rate: 1.8
-      still_proportion: 0.44
-      straight_proportion: 1.00
-      high_speed_proportion: 0.10
-      high_speed:
-        lin_vel_x: [1.25, 1.50]
-        lin_vel_y: 0.0
-        ang_vel_yaw: 0.0
-      resampling_time_s: [4.0, 7.0]
+      resampling_time_s: [4.5, 8.0]
       lin_vel_x: [0.06, 1.50]
       lin_vel_y: [0.0, 0.0]
       ang_vel_yaw: [0.0, 0.0]
@@ -154,18 +155,20 @@ rewards:
   scales:
     tracking_lin_vel_x: 3.6
     lin_vel_x_error: -1.8
-    reactive_lin_vel_x_error: -1.2
-    reactive_lin_vel_x_underspeed: -1.2
-    lin_vel_x_overspeed: -16.0
-    orientation: -112.0
-    ang_vel_xy: -0.85
-    action_rate: -8.0
+    reactive_lin_vel_x_error: -0.8
+    reactive_lin_vel_x_underspeed: -0.8
+    lin_vel_x_overspeed: -18.0
+    orientation: -130.0
+    ang_vel_xy: -1.05
+    action_rate: -9.0
     command_stand_still: -55.0
     command_stand_action: -6.0
     command_stand_default_pose: -12.0
     command_stand_feet_slip: -12.0
-    stop_transition_drift: -32.0
-    stop_transition_action: -4.5
+    stop_transition_drift: -38.0
+    stop_transition_action: -5.0
+    straight_forward_pitch_excess: -110.0
+    straight_forward_pitch_rate: -5.0
     straight_path_lateral: -7.0
     straight_heading: -6.5
     straight_lateral_vel: -22.0
@@ -179,6 +182,8 @@ rewards:
   stop_transition_yaw_vel_clip: 3.0
   stop_transition_yaw_weight: 0.35
   stop_transition_tilt_weight: 1.25
+  straight_forward_pitch_threshold: 0.105
+  straight_forward_pitch_rate_clip: 3.0
 
 metadata:
   policy_name: "velocity_command_walk_k1_real_speed_final_ft"

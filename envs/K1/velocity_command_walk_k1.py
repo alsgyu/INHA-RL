@@ -507,6 +507,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         swing_pitch_asymmetry = self._straight_swing_pitch_asymmetry_value()
         contact_duty_asymmetry = self._straight_contact_duty_asymmetry_value()
         right_contact_duty_excess = self._straight_right_contact_duty_excess_value()
+        forward_pitch_excess = self._straight_forward_pitch_excess_value()
 
         base_tilt = torch.sum(torch.square(self.projected_gravity[:, :2]), dim=-1)
         base_height = self.base_pos[:, 2] - self.terrain.terrain_heights(self.base_pos)
@@ -546,6 +547,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             "swing_pitch_asymmetry": swing_pitch_asymmetry,
             "contact_duty_asymmetry": contact_duty_asymmetry,
             "right_contact_duty_excess": right_contact_duty_excess,
+            "forward_pitch_excess": forward_pitch_excess,
             "base_tilt": base_tilt,
             "low_height": low_height,
             "stand_drift": stand_drift,
@@ -642,6 +644,19 @@ class VelocityCommandWalkK1(ParameterWalkK1):
 
     def _reward_straight_roll_tilt(self):
         return torch.square(self.projected_gravity[:, 1]) * self._straight_walk_mask()
+
+    def _straight_forward_pitch_excess_value(self):
+        threshold = float(self.cfg["rewards"].get("straight_forward_pitch_threshold", 0.10))
+        excess = torch.clamp(self.projected_gravity[:, 0] - threshold, min=0.0)
+        return torch.square(excess) * self._straight_walk_mask()
+
+    def _reward_straight_forward_pitch_excess(self):
+        return self._straight_forward_pitch_excess_value()
+
+    def _reward_straight_forward_pitch_rate(self):
+        clip = float(self.cfg["rewards"].get("straight_forward_pitch_rate_clip", 3.0))
+        pitch_rate = torch.clamp(self.filtered_ang_vel[:, 1], min=-clip, max=clip)
+        return torch.square(pitch_rate) * self._straight_walk_mask()
 
     def _reward_straight_swing_flat_contact(self):
         if not hasattr(self, "feet_edge_contact") or self.feet_edge_contact.shape[-1] < 4:
