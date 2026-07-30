@@ -157,6 +157,21 @@ class VelocityCommandWalkK1(ParameterWalkK1):
     def _moving_mask(self):
         return 1.0 - self._stand_mask()
 
+    def _public_command_norm(self, values):
+        return torch.sqrt(torch.sum(torch.square(values[:, 0:2]), dim=-1) + torch.square(values[:, 2]))
+
+    def _stop_transition_mask(self):
+        threshold = self._adapter_value("stand_command_threshold", 0.04)
+        target_norm = self._public_command_norm(self.public_command_targets)
+        command_norm = self._public_command_norm(self.commands[:, : len(self.PUBLIC_COMMAND_KEYS)])
+        window_s = float(self.cfg["rewards"].get("stop_transition_window_s", 1.4))
+        min_command_norm = float(self.cfg["rewards"].get("stop_transition_min_command_norm", threshold))
+        return (
+            (target_norm <= threshold)
+            & (command_norm > min_command_norm)
+            & (self.public_command_age <= window_s)
+        ).float()
+
     def _straight_walk_mask(self):
         min_speed = float(self.cfg["rewards"].get("straight_min_speed", 0.035))
         max_lateral_command = float(self.cfg["rewards"].get("straight_max_abs_y_command", 0.035))
@@ -368,6 +383,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             self.cmd_resample_time[env_ids] += self._sample_resample_steps(len(env_ids))
             return
 
+        previous_targets = self.public_command_targets[env_ids].clone()
         self.public_command_targets[env_ids, :] = 0.0
         self._sample_public_commands(env_ids)
 
@@ -380,6 +396,10 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         straight_envs = remaining_envs[:straight_count]
         self._apply_straight_commands(straight_envs)
         self._apply_high_speed_commands(straight_envs)
+        changed = torch.norm(self.public_command_targets[env_ids] - previous_targets, dim=-1) > float(
+            self.cfg["commands"].get("command_change_threshold", 1.0e-4)
+        )
+        self.public_command_age[env_ids[changed]] = 0.0
 
         self.cmd_resample_time[env_ids] += self._sample_resample_steps(len(env_ids))
 
@@ -497,6 +517,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             torch.sum(torch.square(self.filtered_lin_vel[:, :2]), dim=-1)
             + 0.5 * torch.square(self.filtered_ang_vel[:, 2])
         ) * stand_mask
+        stop_transition_drift = self._stop_transition_drift_value()
         low_speed_mask = self._low_speed_straight_mask()
         low_speed_margin = float(
             self.cfg["rewards"].get(
@@ -528,6 +549,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             "base_tilt": base_tilt,
             "low_height": low_height,
             "stand_drift": stand_drift,
+            "stop_transition_drift": stop_transition_drift,
         }
 
     def _reward_lin_vel_y_error(self):
@@ -586,6 +608,23 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         aligned_speed = self.filtered_lin_vel[:, 0] * direction
         lag = torch.clamp(torch.abs(target_vx) - aligned_speed, min=0.0)
         return torch.square(lag) * weight
+
+    def _stop_transition_drift_value(self):
+        mask = self._stop_transition_mask()
+        lin_clip = float(self.cfg["rewards"].get("stop_transition_lin_vel_clip", 1.8))
+        yaw_clip = float(self.cfg["rewards"].get("stop_transition_yaw_vel_clip", 3.0))
+        yaw_weight = float(self.cfg["rewards"].get("stop_transition_yaw_weight", 0.35))
+        tilt_weight = float(self.cfg["rewards"].get("stop_transition_tilt_weight", 1.2))
+        lin_xy = torch.sum(torch.square(torch.clamp(self.filtered_lin_vel[:, :2], min=-lin_clip, max=lin_clip)), dim=-1)
+        yaw = torch.square(torch.clamp(self.filtered_ang_vel[:, 2], min=-yaw_clip, max=yaw_clip))
+        tilt = torch.sum(torch.square(self.projected_gravity[:, :2]), dim=-1)
+        return (lin_xy + yaw_weight * yaw + tilt_weight * tilt) * mask
+
+    def _reward_stop_transition_drift(self):
+        return self._stop_transition_drift_value()
+
+    def _reward_stop_transition_action(self):
+        return torch.sum(torch.square(self.actions), dim=-1) * self._stop_transition_mask()
 
     def _straight_swing_mask(self):
         left_swing, right_swing = self._swing_masks()

@@ -18,6 +18,7 @@ SIRL_METRIC_KEYS = (
     "base_tilt",
     "low_height",
     "stand_drift",
+    "stop_transition_drift",
 )
 
 
