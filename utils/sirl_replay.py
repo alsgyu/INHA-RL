@@ -15,6 +15,8 @@ SIRL_METRIC_KEYS = (
     "swing_pitch_asymmetry",
     "contact_duty_asymmetry",
     "right_contact_duty_excess",
+    "forward_push_asymmetry",
+    "right_forward_push_excess",
     "forward_pitch_excess",
     "base_tilt",
     "low_height",

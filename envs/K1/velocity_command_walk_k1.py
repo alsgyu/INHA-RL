@@ -507,6 +507,8 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         swing_pitch_asymmetry = self._straight_swing_pitch_asymmetry_value()
         contact_duty_asymmetry = self._straight_contact_duty_asymmetry_value()
         right_contact_duty_excess = self._straight_right_contact_duty_excess_value()
+        forward_push_asymmetry = self._straight_forward_push_asymmetry_value()
+        right_forward_push_excess = self._straight_right_forward_push_excess_value()
         forward_pitch_excess = self._straight_forward_pitch_excess_value()
 
         base_tilt = torch.sum(torch.square(self.projected_gravity[:, :2]), dim=-1)
@@ -547,6 +549,8 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             "swing_pitch_asymmetry": swing_pitch_asymmetry,
             "contact_duty_asymmetry": contact_duty_asymmetry,
             "right_contact_duty_excess": right_contact_duty_excess,
+            "forward_push_asymmetry": forward_push_asymmetry,
+            "right_forward_push_excess": right_forward_push_excess,
             "forward_pitch_excess": forward_pitch_excess,
             "base_tilt": base_tilt,
             "low_height": low_height,
@@ -720,6 +724,44 @@ class VelocityCommandWalkK1(ParameterWalkK1):
 
     def _reward_straight_right_contact_duty_excess(self):
         return self._straight_right_contact_duty_excess_value()
+
+    def _straight_forward_push(self):
+        foot_force = self.contact_forces[:, self.feet_indices, :]
+        _, _, base_yaw = get_euler_xyz(self.base_quat)
+        forward_force = (
+            torch.cos(base_yaw).unsqueeze(-1) * foot_force[:, :, 0]
+            + torch.sin(base_yaw).unsqueeze(-1) * foot_force[:, :, 1]
+        )
+        force_clip = float(self.cfg["rewards"].get("forward_push_force_clip", 180.0))
+        force_norm = max(float(self.cfg["rewards"].get("forward_push_force_norm", 120.0)), 1.0e-6)
+        min_vertical = float(self.cfg["rewards"].get("forward_push_min_vertical_force", 5.0))
+        contact = (torch.clamp(foot_force[:, :, 2], min=0.0) > min_vertical).float()
+        contact = torch.maximum(contact, self.feet_contact.float())
+        forward_force = torch.clamp(forward_force, min=-force_clip, max=force_clip)
+        return torch.clamp(forward_force, min=0.0) * contact / force_norm
+
+    def _straight_forward_push_asymmetry_value(self):
+        deadband = float(self.cfg["rewards"].get("forward_push_asymmetry_deadband", 0.08))
+        push = self._straight_forward_push()
+        diff = torch.clamp(torch.abs(push[:, 1] - push[:, 0]) - deadband, min=0.0)
+        return torch.square(diff) * self._straight_walk_mask()
+
+    def _straight_right_forward_push_excess_value(self):
+        deadband = float(
+            self.cfg["rewards"].get(
+                "right_forward_push_deadband",
+                self.cfg["rewards"].get("forward_push_asymmetry_deadband", 0.08),
+            )
+        )
+        push = self._straight_forward_push()
+        excess = torch.clamp(push[:, 1] - push[:, 0] - deadband, min=0.0)
+        return torch.square(excess) * self._straight_walk_mask()
+
+    def _reward_straight_forward_push_balance(self):
+        return self._straight_forward_push_asymmetry_value()
+
+    def _reward_straight_right_forward_push_excess(self):
+        return self._straight_right_forward_push_excess_value()
 
     def _straight_swing_edge_contact_value(self):
         if not hasattr(self, "feet_edge_contact") or self.feet_edge_contact.shape[-1] < 4:
