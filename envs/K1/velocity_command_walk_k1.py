@@ -458,10 +458,18 @@ class VelocityCommandWalkK1(ParameterWalkK1):
 
         left_swing, right_swing = self._swing_masks()
         swing_mask = torch.stack((left_swing, right_swing), dim=-1).float()
+        side_weights = torch.as_tensor(
+            self.cfg["rewards"].get("swing_clearance_side_weights", [1.0, 1.0]),
+            dtype=torch.float,
+            device=self.device,
+        ).view(1, -1)
+        swing_weight = swing_mask * side_weights
         swing_count = torch.clamp(swing_mask.sum(dim=-1), min=1.0)
         clearance = self._foot_clearance()
         clearance_target = float(self.cfg["rewards"].get("swing_clearance_target", 0.10))
-        swing_clearance_deficit = torch.sum(torch.clamp(clearance_target - clearance, min=0.0) * swing_mask, dim=-1) / swing_count
+        swing_clearance_deficit = torch.sum(torch.clamp(clearance_target - clearance, min=0.0) * swing_weight, dim=-1) / torch.clamp(
+            swing_weight.sum(dim=-1), min=1.0
+        )
 
         base_tilt = torch.sum(torch.square(self.projected_gravity[:, :2]), dim=-1)
         base_height = self.base_pos[:, 2] - self.terrain.terrain_heights(self.base_pos)
@@ -519,6 +527,19 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         left_swing, right_swing = self._swing_masks()
         return torch.stack((left_swing, right_swing), dim=-1).float() * self._straight_walk_mask().unsqueeze(-1)
 
+    def _reward_straight_phase_contact(self):
+        left_swing, right_swing = self._swing_masks()
+        straight = self._straight_walk_mask()
+        left_contact = self.feet_contact[:, 0].float()
+        right_contact = self.feet_contact[:, 1].float()
+        left_phase = left_swing.float() * ((1.0 - left_contact) + right_contact)
+        right_phase = right_swing.float() * ((1.0 - right_contact) + left_contact)
+        phase_count = torch.clamp(left_swing.float() + right_swing.float(), min=1.0)
+        return (left_phase + right_phase) / phase_count * straight
+
+    def _reward_straight_roll_tilt(self):
+        return torch.square(self.projected_gravity[:, 1]) * self._straight_walk_mask()
+
     def _reward_straight_swing_foot_yaw(self):
         swing_mask = self._straight_swing_mask()
         swing_count = torch.clamp(swing_mask.sum(dim=-1), min=1.0)
@@ -543,20 +564,30 @@ class VelocityCommandWalkK1(ParameterWalkK1):
     def _reward_swing_clearance(self):
         left_swing, right_swing = self._swing_masks()
         swing_mask = torch.stack((left_swing, right_swing), dim=-1).float()
-        swing_count = torch.clamp(swing_mask.sum(dim=-1), min=1.0)
+        side_weights = torch.as_tensor(
+            self.cfg["rewards"].get("swing_clearance_side_weights", [1.0, 1.0]),
+            dtype=torch.float,
+            device=self.device,
+        ).view(1, -1)
+        swing_weight = swing_mask * side_weights
         clearance = self._foot_clearance()
         target = float(self.cfg["rewards"].get("swing_clearance_target", 0.10))
         sigma = max(float(self.cfg["rewards"].get("swing_clearance_sigma", 0.015)), 1.0e-6)
         clearance_reward = torch.exp(-torch.square(clearance - target) / sigma)
-        return torch.sum(clearance_reward * swing_mask, dim=-1) / swing_count
+        return torch.sum(clearance_reward * swing_weight, dim=-1) / torch.clamp(swing_weight.sum(dim=-1), min=1.0)
 
     def _reward_scuff_clearance(self):
         left_swing, right_swing = self._swing_masks()
         swing_mask = torch.stack((left_swing, right_swing), dim=-1).float()
-        swing_count = torch.clamp(swing_mask.sum(dim=-1), min=1.0)
+        side_weights = torch.as_tensor(
+            self.cfg["rewards"].get("scuff_clearance_side_weights", self.cfg["rewards"].get("swing_clearance_side_weights", [1.0, 1.0])),
+            dtype=torch.float,
+            device=self.device,
+        ).view(1, -1)
+        swing_weight = swing_mask * side_weights
         clearance = self._foot_clearance()
         threshold = float(self.cfg["rewards"].get("scuff_clearance_threshold", 0.045))
-        return torch.sum(torch.clamp(threshold - clearance, min=0.0) * swing_mask, dim=-1) / swing_count
+        return torch.sum(torch.clamp(threshold - clearance, min=0.0) * swing_weight, dim=-1) / torch.clamp(swing_weight.sum(dim=-1), min=1.0)
 
     def _reward_command_stand_still(self):
         stand_mask = self._stand_mask()
