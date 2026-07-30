@@ -477,7 +477,10 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             swing_weight.sum(dim=-1), min=1.0
         )
         swing_edge_contact = self._straight_swing_edge_contact_value()
+        swing_contact = self._straight_swing_contact_value()
         swing_pitch_asymmetry = self._straight_swing_pitch_asymmetry_value()
+        contact_duty_asymmetry = self._straight_contact_duty_asymmetry_value()
+        right_contact_duty_excess = self._straight_right_contact_duty_excess_value()
 
         base_tilt = torch.sum(torch.square(self.projected_gravity[:, :2]), dim=-1)
         base_height = self.base_pos[:, 2] - self.terrain.terrain_heights(self.base_pos)
@@ -512,7 +515,10 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             "low_speed_overspeed": low_speed_overspeed * low_speed_mask,
             "low_speed_lateral_instability": low_speed_lateral_instability * low_speed_mask,
             "swing_edge_contact": swing_edge_contact,
+            "swing_contact": swing_contact,
             "swing_pitch_asymmetry": swing_pitch_asymmetry,
+            "contact_duty_asymmetry": contact_duty_asymmetry,
+            "right_contact_duty_excess": right_contact_duty_excess,
             "base_tilt": base_tilt,
             "low_height": low_height,
             "stand_drift": stand_drift,
@@ -610,11 +616,50 @@ class VelocityCommandWalkK1(ParameterWalkK1):
     def _reward_straight_swing_pitch_balance(self):
         return self._straight_swing_pitch_asymmetry_value()
 
+    def _straight_swing_contact_value(self):
+        swing_mask = self._straight_swing_mask()
+        side_weights = torch.as_tensor(
+            self.cfg["rewards"].get("swing_contact_side_weights", [1.0, 1.0]),
+            dtype=torch.float,
+            device=self.device,
+        ).view(1, -1)
+        contact = self.feet_contact.float() * swing_mask * side_weights
+        return torch.sum(contact, dim=-1) / torch.clamp(torch.sum(swing_mask * side_weights, dim=-1), min=1.0)
+
+    def _reward_straight_swing_contact(self):
+        return self._straight_swing_contact_value()
+
     def _straight_swing_pitch_asymmetry_value(self):
         swing_mask = self._straight_swing_mask()
         active = (torch.sum(swing_mask, dim=-1) > 0.0).float()
         pitch_mag = torch.abs(self.feet_pitch)
         return torch.square(pitch_mag[:, 0] - pitch_mag[:, 1]) * active
+
+    def _contact_duty_diff(self):
+        if not hasattr(self, "feet_contact_duty_ema") or self.feet_contact_duty_ema.shape[-1] < 2:
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        return self.feet_contact_duty_ema[:, 1] - self.feet_contact_duty_ema[:, 0]
+
+    def _straight_contact_duty_asymmetry_value(self):
+        deadband = float(self.cfg["rewards"].get("contact_duty_deadband", 0.04))
+        diff = torch.clamp(torch.abs(self._contact_duty_diff()) - deadband, min=0.0)
+        return torch.square(diff) * self._straight_walk_mask()
+
+    def _straight_right_contact_duty_excess_value(self):
+        deadband = float(
+            self.cfg["rewards"].get(
+                "right_contact_duty_deadband",
+                self.cfg["rewards"].get("contact_duty_deadband", 0.04),
+            )
+        )
+        excess = torch.clamp(self._contact_duty_diff() - deadband, min=0.0)
+        return torch.square(excess) * self._straight_walk_mask()
+
+    def _reward_straight_contact_duty_balance(self):
+        return self._straight_contact_duty_asymmetry_value()
+
+    def _reward_straight_right_contact_duty_excess(self):
+        return self._straight_right_contact_duty_excess_value()
 
     def _straight_swing_edge_contact_value(self):
         if not hasattr(self, "feet_edge_contact") or self.feet_edge_contact.shape[-1] < 4:

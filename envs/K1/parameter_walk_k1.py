@@ -301,6 +301,7 @@ class ParameterWalkK1(BaseTask):
         self.feet_pitch = torch.zeros(self.num_envs, len(self.feet_indices), dtype=torch.float, device=self.device)
         self.last_feet_pos = torch.zeros_like(self.feet_pos)
         self.feet_contact = torch.zeros(self.num_envs, len(self.feet_indices), dtype=torch.bool, device=self.device)
+        self.feet_contact_duty_ema = torch.zeros(self.num_envs, len(self.feet_indices), dtype=torch.float, device=self.device)
         feet_edge_count = len(self.cfg["asset"].get("feet_edge_pos", []))
         self.feet_edge_height = torch.zeros(self.num_envs, len(self.feet_indices), feet_edge_count, dtype=torch.float, device=self.device)
         self.feet_edge_contact = torch.zeros(self.num_envs, len(self.feet_indices), feet_edge_count, dtype=torch.bool, device=self.device)
@@ -487,6 +488,7 @@ class ParameterWalkK1(BaseTask):
         self.episode_length_buf[env_ids] = 0
         self.filtered_lin_vel[env_ids] = 0.0
         self.filtered_ang_vel[env_ids] = 0.0
+        self.feet_contact_duty_ema[env_ids] = 0.0
         self.cmd_resample_time[env_ids] = 0
 
         self.delay_steps[env_ids] = torch.randint(0, self.cfg["control"]["decimation"], (len(env_ids),), device=self.device)
@@ -906,6 +908,9 @@ class ParameterWalkK1(BaseTask):
         self.feet_edge_height[:] = edge_height
         self.feet_edge_contact[:] = edge_height < edge_contact_threshold
         self.feet_contact[:] = torch.any(self.feet_edge_contact, dim=2)
+        duty_tau_s = max(float(self.cfg["rewards"].get("feet_contact_duty_tau_s", 0.45)), self.dt)
+        duty_alpha = min(self.dt / duty_tau_s, 1.0)
+        self.feet_contact_duty_ema[:] = self.feet_contact_duty_ema * (1.0 - duty_alpha) + self.feet_contact.float() * duty_alpha
 
     def _check_termination(self):
         """Check if environments need to be reset"""
