@@ -167,6 +167,12 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             & (torch.abs(self.commands[:, 2]) < max_yaw_command)
         ).float()
 
+    def _low_speed_straight_mask(self):
+        min_vx = float(self.cfg["rewards"].get("low_speed_guard_min_vx", 0.04))
+        max_vx = float(self.cfg["rewards"].get("low_speed_guard_max_vx", 0.36))
+        in_range = (self.commands[:, 0] >= min_vx) & (self.commands[:, 0] <= max_vx)
+        return self._straight_walk_mask() * in_range.float()
+
     def _resolve_internal_commands(self, env_ids=None):
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self.device)
@@ -480,10 +486,29 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             torch.sum(torch.square(self.filtered_lin_vel[:, :2]), dim=-1)
             + 0.5 * torch.square(self.filtered_ang_vel[:, 2])
         ) * stand_mask
+        low_speed_mask = self._low_speed_straight_mask()
+        low_speed_margin = float(
+            self.cfg["rewards"].get(
+                "low_speed_overspeed_margin",
+                self.cfg["rewards"].get("lin_vel_x_overspeed_margin", 0.06),
+            )
+        )
+        low_speed_overspeed = torch.square(
+            torch.clamp(self.filtered_lin_vel[:, 0] - self.commands[:, 0] - low_speed_margin, min=0.0)
+        )
+        lateral_clip = float(self.cfg["rewards"].get("low_speed_lateral_vel_clip", 0.8))
+        yaw_clip = float(self.cfg["rewards"].get("low_speed_yaw_vel_clip", 2.5))
+        lateral_vel = torch.clamp(self.filtered_lin_vel[:, 1], min=-lateral_clip, max=lateral_clip)
+        yaw_vel = torch.clamp(self.filtered_ang_vel[:, 2], min=-yaw_clip, max=yaw_clip)
+        low_speed_lateral_instability = torch.square(lateral_vel) + 0.35 * torch.square(yaw_vel) + 0.60 * torch.square(
+            self.projected_gravity[:, 1]
+        )
         return {
             "velocity_error": velocity_error,
             "feet_slip": feet_slip,
             "swing_clearance_deficit": swing_clearance_deficit,
+            "low_speed_overspeed": low_speed_overspeed * low_speed_mask,
+            "low_speed_lateral_instability": low_speed_lateral_instability * low_speed_mask,
             "base_tilt": base_tilt,
             "low_height": low_height,
             "stand_drift": stand_drift,
@@ -502,6 +527,29 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         margin = float(self.cfg["rewards"].get("lin_vel_x_overspeed_margin", 0.08))
         overspeed = torch.clamp(self.filtered_lin_vel[:, 0] - self.commands[:, 0] - margin, min=0.0)
         return torch.square(overspeed) * moving_forward
+
+    def _reward_straight_low_speed_overspeed(self):
+        margin = float(
+            self.cfg["rewards"].get(
+                "low_speed_overspeed_margin",
+                self.cfg["rewards"].get("lin_vel_x_overspeed_margin", 0.06),
+            )
+        )
+        overspeed = torch.clamp(self.filtered_lin_vel[:, 0] - self.commands[:, 0] - margin, min=0.0)
+        return torch.square(overspeed) * self._low_speed_straight_mask()
+
+    def _reward_straight_low_speed_lateral_instability(self):
+        lateral_clip = float(self.cfg["rewards"].get("low_speed_lateral_vel_clip", 0.8))
+        yaw_clip = float(self.cfg["rewards"].get("low_speed_yaw_vel_clip", 2.5))
+        yaw_weight = float(self.cfg["rewards"].get("low_speed_lateral_yaw_weight", 0.35))
+        roll_weight = float(self.cfg["rewards"].get("low_speed_lateral_roll_weight", 0.60))
+        lateral_vel = torch.clamp(self.filtered_lin_vel[:, 1], min=-lateral_clip, max=lateral_clip)
+        yaw_vel = torch.clamp(self.filtered_ang_vel[:, 2], min=-yaw_clip, max=yaw_clip)
+        return (
+            torch.square(lateral_vel)
+            + yaw_weight * torch.square(yaw_vel)
+            + roll_weight * torch.square(self.projected_gravity[:, 1])
+        ) * self._low_speed_straight_mask()
 
     def _command_response_weight(self):
         window_s = float(self.cfg["rewards"].get("command_response_window_s", 1.0))

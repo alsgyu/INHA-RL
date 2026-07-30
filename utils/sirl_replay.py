@@ -8,6 +8,8 @@ SIRL_METRIC_KEYS = (
     "velocity_error",
     "feet_slip",
     "swing_clearance_deficit",
+    "low_speed_overspeed",
+    "low_speed_lateral_instability",
     "base_tilt",
     "low_height",
     "stand_drift",
