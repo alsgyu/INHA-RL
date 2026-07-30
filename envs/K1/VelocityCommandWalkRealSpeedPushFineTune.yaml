@@ -2,10 +2,10 @@ extends: VelocityCommandWalkRealSpeedLongFineTune.yaml
 
 basic:
   task: "K1/Velocity_Command_Walk_K1"
-  log_task: "K1/VelocityCommandWalkSIRLRealSpeedBalancedFineTune"
+  log_task: "K1/VelocityCommandWalkSIRLRealSpeedBalancedV2FineTune"
   checkpoint: "logs/K1/K1/VelocityCommandWalkSIRLRealSpeedLongFineTune/2026-07-30-02-07-39/nn/model_30000.pth"
-  max_iterations: 30000
-  description: "Balanced speed expansion from the stable long checkpoint. Keep the 0.2 m/s gait anchored while opening speed slowly and weighting right swing/phase-contact quality."
+  max_iterations: 18000
+  description: "Balanced V2 speed expansion from the stable long checkpoint. First fix the 0.5 m/s wall and left-foot flat contact before reopening high speed."
 
 runner:
   save_interval: 1000
@@ -16,7 +16,7 @@ algorithm:
     learning_starts: 8192
     updates_per_iter: 1
     batch_size: 512
-    actor_lr: 1.2e-6
+    actor_lr: 1.0e-6
     critic_lr: 1.0e-5
     collect_noise_std: 0.001
     load_optimizer_state: false
@@ -26,34 +26,34 @@ algorithm:
     teacher_enabled: true
     teacher_policy_path: "__checkpoint__"
     teacher_action_clip: 1.0
-    teacher_collect_iterations: 26000
-    teacher_collect_decay_iterations: 26000
+    teacher_collect_iterations: 18000
+    teacher_collect_decay_iterations: 18000
     teacher_collect_start_blend: 1.0
-    teacher_collect_end_blend: 0.88
-    teacher_distill_iterations: 26000
+    teacher_collect_end_blend: 0.92
+    teacher_distill_iterations: 18000
     teacher_distill_steps_per_iter: 3
     teacher_distill_batch_size: 4096
     teacher_distill_replay_fraction: 0.65
     teacher_bc_coef: 22.0
-    teacher_bc_decay_iterations: 26000
-    teacher_bc_min_coef: 8.0
+    teacher_bc_decay_iterations: 18000
+    teacher_bc_min_coef: 10.0
     teacher_bc_low_speed_vx: 0.34
     teacher_bc_high_speed_vx: 0.70
     teacher_bc_low_speed_weight: 14.0
-    teacher_bc_action_weights: [0.60, 1.6, 1.8, 0.60, 0.50, 1.6, 0.60, 1.8, 2.0, 0.60, 0.50, 1.8]
-    teacher_distill_action_weights: [0.70, 1.6, 1.8, 0.70, 0.60, 1.6, 0.70, 1.8, 2.0, 0.70, 0.60, 1.8]
+    teacher_bc_action_weights: [0.60, 1.8, 2.0, 0.60, 0.50, 1.8, 0.60, 1.8, 2.0, 0.60, 0.50, 1.8]
+    teacher_distill_action_weights: [0.70, 1.8, 2.0, 0.70, 0.60, 1.8, 0.70, 1.8, 2.0, 0.70, 0.60, 1.8]
     teacher_guard_enabled: true
-    teacher_guard_action_weights: [0.45, 1.8, 2.0, 0.45, 0.40, 1.8, 0.45, 2.0, 2.2, 0.45, 0.40, 2.0]
+    teacher_guard_action_weights: [0.45, 2.0, 2.2, 0.45, 0.40, 2.0, 0.45, 2.0, 2.2, 0.45, 0.40, 2.0]
     teacher_guard_max_mse: 0.008
     teacher_guard_max_increase: 0.0008
-    actor_rl_coef: 0.0025
+    actor_rl_coef: 0.0020
     actor_rl_start_iteration: 6000
     actor_rl_warmup_iterations: 14000
     actor_mean_l2_coef: 0.025
     actor_action_l2_coef: 0.014
-    actor_symmetry_coef: 0.025
-    actor_symmetry_start_iteration: 3000
-    actor_symmetry_warmup_iterations: 10000
+    actor_symmetry_coef: 0.060
+    actor_symmetry_start_iteration: 0
+    actor_symmetry_warmup_iterations: 9000
     actor_symmetry_min_abs_vx: 0.04
     actor_symmetry_max_abs_vy: 0.030
     actor_symmetry_max_abs_yaw: 0.045
@@ -69,11 +69,11 @@ algorithm:
       stand_drift: 1.6
 
 control:
-  action_clip_by_index: [0.80, 0.24, 0.040, 0.90, 0.64, 0.18, 0.80, 0.26, 0.040, 0.92, 0.66, 0.20]
-  action_scale_by_index: [0.94, 0.52, 0.09, 0.94, 0.86, 0.52, 0.94, 0.56, 0.09, 0.96, 0.90, 0.56]
-  action_lower_by_index: [-0.70, -0.20, -0.025, -0.34, -0.52, -0.16, -0.70, -0.22, -0.025, -0.34, -0.54, -0.18]
-  action_upper_by_index: [0.50, 0.20, 0.025, 0.78, 0.26, 0.16, 0.50, 0.22, 0.025, 0.82, 0.30, 0.18]
-  action_rate_limit_by_index: [4.2, 1.6, 0.25, 5.6, 4.2, 1.6, 4.2, 1.8, 0.25, 6.0, 4.5, 1.8]
+  action_clip_by_index: [0.82, 0.25, 0.040, 0.92, 0.68, 0.19, 0.82, 0.25, 0.040, 0.92, 0.68, 0.19]
+  action_scale_by_index: [0.96, 0.54, 0.09, 0.96, 0.90, 0.54, 0.96, 0.54, 0.09, 0.96, 0.90, 0.54]
+  action_lower_by_index: [-0.72, -0.21, -0.025, -0.34, -0.54, -0.17, -0.72, -0.21, -0.025, -0.34, -0.54, -0.17]
+  action_upper_by_index: [0.52, 0.21, 0.025, 0.82, 0.30, 0.17, 0.52, 0.21, 0.025, 0.82, 0.30, 0.17]
+  action_rate_limit_by_index: [4.4, 1.7, 0.25, 5.8, 4.4, 1.7, 4.4, 1.7, 0.25, 5.8, 4.4, 1.7]
 
 commands:
   command_slew_rate: 2.5
@@ -81,21 +81,21 @@ commands:
   straight_proportion: 1.00
   high_speed_proportion: 0.00
   high_speed:
-    lin_vel_x: [0.45, 0.60]
+    lin_vel_x: [0.42, 0.56]
     lin_vel_y: 0.0
     ang_vel_yaw: 0.0
   lin_vel_x: [0.0, 1.05]
   lin_vel_y: [-0.030, 0.030]
   ang_vel_yaw: [-0.06, 0.06]
   straight:
-    lin_vel_x: [0.04, 0.65]
+    lin_vel_x: [0.04, 0.58]
     lin_vel_y: 0.0
     ang_vel_yaw: 0.0
   adapter:
     gait_frequency_min: 1.15
-    gait_frequency_max: 1.88
+    gait_frequency_max: 1.68
     gait_frequency_speed_min: 0.08
-    gait_frequency_speed_max: 0.88
+    gait_frequency_speed_max: 0.66
     body_pitch_gain: 0.0
     body_pitch_offset: 0.0
     body_pitch_target_clip: [-0.030, 0.030]
@@ -117,70 +117,38 @@ commands:
       adapter:
         gait_frequency_max: 1.46
         gait_frequency_speed_max: 0.40
-    - start_iteration: 8000
+    - start_iteration: 7000
       disturbance_scale: 0.00
       still_proportion: 0.42
       straight_proportion: 1.00
       high_speed_proportion: 0.02
       high_speed:
-        lin_vel_x: [0.34, 0.44]
+        lin_vel_x: [0.32, 0.42]
         lin_vel_y: 0.0
         ang_vel_yaw: 0.0
       resampling_time_s: [5.0, 8.0]
-      lin_vel_x: [0.04, 0.42]
+      lin_vel_x: [0.04, 0.40]
       lin_vel_y: [0.0, 0.0]
       ang_vel_yaw: [0.0, 0.0]
       adapter:
         gait_frequency_max: 1.55
         gait_frequency_speed_max: 0.50
-    - start_iteration: 15000
-      disturbance_scale: 0.015
-      still_proportion: 0.36
+    - start_iteration: 12000
+      disturbance_scale: 0.005
+      still_proportion: 0.38
       straight_proportion: 1.00
       high_speed_proportion: 0.06
       high_speed:
-        lin_vel_x: [0.48, 0.62]
+        lin_vel_x: [0.44, 0.56]
         lin_vel_y: 0.0
         ang_vel_yaw: 0.0
       resampling_time_s: [5.0, 8.0]
-      lin_vel_x: [0.05, 0.58]
+      lin_vel_x: [0.05, 0.54]
       lin_vel_y: [0.0, 0.0]
       ang_vel_yaw: [0.0, 0.0]
       adapter:
         gait_frequency_max: 1.68
-        gait_frequency_speed_max: 0.65
-    - start_iteration: 23000
-      disturbance_scale: 0.025
-      still_proportion: 0.30
-      straight_proportion: 0.99
-      high_speed_proportion: 0.10
-      high_speed:
-        lin_vel_x: [0.68, 0.90]
-        lin_vel_y: 0.0
-        ang_vel_yaw: 0.0
-      resampling_time_s: [5.0, 8.0]
-      lin_vel_x: [0.06, 0.88]
-      lin_vel_y: [-0.015, 0.015]
-      ang_vel_yaw: [-0.04, 0.04]
-      adapter:
-        gait_frequency_max: 1.82
-        gait_frequency_speed_max: 0.82
-    - start_iteration: 28000
-      disturbance_scale: 0.035
-      still_proportion: 0.26
-      straight_proportion: 0.98
-      high_speed_proportion: 0.12
-      high_speed:
-        lin_vel_x: [0.82, 1.05]
-        lin_vel_y: 0.0
-        ang_vel_yaw: 0.0
-      resampling_time_s: [5.0, 8.0]
-      lin_vel_x: [0.08, 1.05]
-      lin_vel_y: [-0.025, 0.025]
-      ang_vel_yaw: [-0.05, 0.05]
-      adapter:
-        gait_frequency_max: 1.88
-        gait_frequency_speed_max: 0.88
+        gait_frequency_speed_max: 0.62
 
 rewards:
   scales:
@@ -197,8 +165,10 @@ rewards:
     feet_swing: 2.2
     swing_clearance: 4.6
     scuff_clearance: -42.0
-    straight_phase_contact: 1.2
-    straight_roll_tilt: -7.0
+    straight_phase_contact: 1.5
+    straight_roll_tilt: -8.0
+    straight_swing_flat_contact: -4.0
+    straight_swing_pitch_balance: -0.6
     feet_slip: -5.2
     fast_stance_feet_xy_vel: -2.0
     stance_feet_yaw: -0.25
@@ -213,9 +183,11 @@ rewards:
     straight_swing_roll_yaw_action: -0.24
   swing_clearance_target: 0.132
   swing_clearance_sigma: 0.015
-  swing_clearance_side_weights: [1.0, 1.6]
+  swing_clearance_side_weights: [1.7, 1.2]
   scuff_clearance_threshold: 0.072
-  scuff_clearance_side_weights: [1.0, 1.8]
+  scuff_clearance_side_weights: [1.9, 1.3]
+  swing_flat_contact_side_weights: [1.8, 1.2]
+  feet_edge_contact_threshold: 0.010
   lin_vel_x_overspeed_margin: 0.06
   command_response_window_s: 1.2
   command_response_tau_s: 0.45
@@ -223,4 +195,4 @@ rewards:
   straight_swing_lateral_vel_clip: 1.0
 
 metadata:
-  policy_name: "velocity_command_walk_k1_real_speed_balanced_ft"
+  policy_name: "velocity_command_walk_k1_real_speed_balanced_v2_ft"

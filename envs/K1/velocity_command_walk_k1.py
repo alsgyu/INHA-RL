@@ -540,6 +540,27 @@ class VelocityCommandWalkK1(ParameterWalkK1):
     def _reward_straight_roll_tilt(self):
         return torch.square(self.projected_gravity[:, 1]) * self._straight_walk_mask()
 
+    def _reward_straight_swing_flat_contact(self):
+        if not hasattr(self, "feet_edge_contact") or self.feet_edge_contact.shape[-1] < 4:
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        swing_mask = self._straight_swing_mask()
+        front_contact = torch.any(self.feet_edge_contact[:, :, 0:2], dim=-1).float()
+        rear_contact = torch.any(self.feet_edge_contact[:, :, 2:4], dim=-1).float()
+        flat_contact = front_contact * rear_contact
+        side_weights = torch.as_tensor(
+            self.cfg["rewards"].get("swing_flat_contact_side_weights", [1.0, 1.0]),
+            dtype=torch.float,
+            device=self.device,
+        ).view(1, -1)
+        weighted = flat_contact * swing_mask * side_weights
+        return torch.sum(weighted, dim=-1) / torch.clamp(torch.sum(swing_mask * side_weights, dim=-1), min=1.0)
+
+    def _reward_straight_swing_pitch_balance(self):
+        swing_mask = self._straight_swing_mask()
+        active = (torch.sum(swing_mask, dim=-1) > 0.0).float()
+        pitch_mag = torch.abs(self.feet_pitch)
+        return torch.square(pitch_mag[:, 0] - pitch_mag[:, 1]) * active
+
     def _reward_straight_swing_foot_yaw(self):
         swing_mask = self._straight_swing_mask()
         swing_count = torch.clamp(swing_mask.sum(dim=-1), min=1.0)

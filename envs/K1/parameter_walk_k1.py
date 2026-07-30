@@ -301,6 +301,9 @@ class ParameterWalkK1(BaseTask):
         self.feet_pitch = torch.zeros(self.num_envs, len(self.feet_indices), dtype=torch.float, device=self.device)
         self.last_feet_pos = torch.zeros_like(self.feet_pos)
         self.feet_contact = torch.zeros(self.num_envs, len(self.feet_indices), dtype=torch.bool, device=self.device)
+        feet_edge_count = len(self.cfg["asset"].get("feet_edge_pos", []))
+        self.feet_edge_height = torch.zeros(self.num_envs, len(self.feet_indices), feet_edge_count, dtype=torch.float, device=self.device)
+        self.feet_edge_contact = torch.zeros(self.num_envs, len(self.feet_indices), feet_edge_count, dtype=torch.bool, device=self.device)
         self.dof_pos_ref = torch.zeros(self.num_envs, self.num_dofs, dtype=torch.float, device=self.device)
         self.default_dof_pos = torch.zeros(1, self.num_dofs, dtype=torch.float, device=self.device)
         for i in range(self.num_dofs):
@@ -896,12 +899,13 @@ class ParameterWalkK1(BaseTask):
         expanded_feet_pos = self.feet_pos.unsqueeze(2).expand(-1, -1, feet_edge_relative_pos.shape[2], -1).reshape(-1, 3)
         expanded_feet_quat = self.feet_quat.unsqueeze(2).expand(-1, -1, feet_edge_relative_pos.shape[2], -1).reshape(-1, 4)
         feet_edge_pos = expanded_feet_pos + quat_rotate(expanded_feet_quat, feet_edge_relative_pos.reshape(-1, 3))
-        self.feet_contact[:] = torch.any(
-            (feet_edge_pos[:, 2] - self.terrain.terrain_heights(feet_edge_pos) < 0.01).reshape(
-                self.num_envs, len(self.feet_indices), feet_edge_relative_pos.shape[2]
-            ),
-            dim=2,
+        edge_height = (feet_edge_pos[:, 2] - self.terrain.terrain_heights(feet_edge_pos)).reshape(
+            self.num_envs, len(self.feet_indices), feet_edge_relative_pos.shape[2]
         )
+        edge_contact_threshold = float(self.cfg["rewards"].get("feet_edge_contact_threshold", 0.01))
+        self.feet_edge_height[:] = edge_height
+        self.feet_edge_contact[:] = edge_height < edge_contact_threshold
+        self.feet_contact[:] = torch.any(self.feet_edge_contact, dim=2)
 
     def _check_termination(self):
         """Check if environments need to be reset"""
