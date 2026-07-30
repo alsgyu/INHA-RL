@@ -540,6 +540,33 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         right_lateral = torch.sum(torch.square(self.actions[:, [7, 8, 11]]), dim=-1)
         return left_lateral * swing_mask[:, 0] + right_lateral * swing_mask[:, 1]
 
+    def _reward_straight_action_symmetry(self):
+        if self.actions.shape[-1] != 12:
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        if not hasattr(self, "_straight_action_symmetry_indices"):
+            self._straight_action_symmetry_indices = torch.tensor(
+                [6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5],
+                dtype=torch.long,
+                device=self.device,
+            )
+            self._straight_action_symmetry_signs = torch.tensor(
+                [1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0],
+                dtype=self.actions.dtype,
+                device=self.device,
+            )
+            self._straight_action_symmetry_weights = torch.tensor(
+                self.cfg["rewards"].get(
+                    "straight_action_symmetry_weights",
+                    [1.0, 1.4, 1.6, 1.0, 1.0, 1.4, 1.0, 1.4, 1.6, 1.0, 1.0, 1.4],
+                ),
+                dtype=self.actions.dtype,
+                device=self.device,
+            )
+        mirrored = self.actions.index_select(1, self._straight_action_symmetry_indices) * self._straight_action_symmetry_signs
+        weights = self._straight_action_symmetry_weights
+        symmetry_error = torch.sum(torch.square(self.actions - mirrored) * weights, dim=-1) / torch.clamp(weights.sum(), min=1.0e-6)
+        return symmetry_error * self._straight_walk_mask()
+
     def _reward_swing_clearance(self):
         left_swing, right_swing = self._swing_masks()
         swing_mask = torch.stack((left_swing, right_swing), dim=-1).float()
