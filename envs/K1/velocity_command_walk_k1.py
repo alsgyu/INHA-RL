@@ -210,6 +210,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         stand_threshold = float(adapter.get("stand_command_threshold", 0.04))
         command_norm = torch.sqrt(torch.square(vx) + torch.square(vy) + torch.square(yaw))
         moving = command_norm > stand_threshold
+        was_standing = self.gait_frequency[env_ids] <= 1.0e-8
 
         gait_min = float(adapter.get("gait_frequency_min", 1.15))
         gait_max = float(adapter.get("gait_frequency_max", 1.95))
@@ -249,9 +250,14 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         self.commands[env_ids, 8] = 0.0
         self.commands[env_ids, 9] = 0.0
         self.gait_frequency[env_ids] = gait_frequency
+        next_gait_process = self.gait_process[env_ids]
+        if bool(self.cfg["commands"].get("randomize_gait_phase_on_start", False)):
+            start_moving = moving & was_standing
+            random_phase = torch.rand_like(next_gait_process)
+            next_gait_process = torch.where(start_moving, random_phase, next_gait_process)
         self.gait_process[env_ids] = torch.where(
             moving,
-            self.gait_process[env_ids],
+            next_gait_process,
             torch.zeros_like(self.gait_process[env_ids]),
         )
 
