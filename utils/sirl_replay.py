@@ -10,6 +10,8 @@ SIRL_METRIC_KEYS = (
     "swing_clearance_deficit",
     "low_speed_overspeed",
     "low_speed_lateral_instability",
+    "swing_edge_contact",
+    "swing_pitch_asymmetry",
     "base_tilt",
     "low_height",
     "stand_drift",
