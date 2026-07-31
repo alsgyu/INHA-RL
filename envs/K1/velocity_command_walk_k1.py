@@ -194,6 +194,21 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             & (torch.abs(self.commands[:, 2]) < max_yaw_command)
         ).float()
 
+    def _straight_sustain_mask(self):
+        min_vx = float(self.cfg["rewards"].get("sustain_min_vx", 0.85))
+        max_vx = float(self.cfg["rewards"].get("sustain_max_vx", 1.15))
+        min_age_s = float(self.cfg["rewards"].get("sustain_min_command_age_s", 2.0))
+        max_target_vy = float(self.cfg["rewards"].get("sustain_max_abs_target_vy", 0.035))
+        max_target_yaw = float(self.cfg["rewards"].get("sustain_max_abs_target_yaw", 0.06))
+        target = self.public_command_targets
+        target_mask = (
+            (target[:, 0] >= min_vx)
+            & (target[:, 0] <= max_vx)
+            & (torch.abs(target[:, 1]) < max_target_vy)
+            & (torch.abs(target[:, 2]) < max_target_yaw)
+        )
+        return self._straight_walk_mask() * target_mask.float() * (self.public_command_age >= min_age_s).float()
+
     def _low_speed_straight_mask(self):
         min_vx = float(self.cfg["rewards"].get("low_speed_guard_min_vx", 0.04))
         max_vx = float(self.cfg["rewards"].get("low_speed_guard_max_vx", 0.36))
@@ -527,6 +542,12 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         move_start_forward_pitch = self._move_start_forward_pitch_value()
         move_start_ankle_tracking = self._move_start_ankle_pitch_tracking_value()
         move_start_yaw_drift = self._move_start_yaw_drift_value()
+        sustain_forward_pitch = self._sustain_forward_pitch_value()
+        sustain_forward_pitch_rate = self._sustain_forward_pitch_rate_value()
+        sustain_right_forward_push = self._sustain_right_forward_push_excess_value()
+        sustain_right_forward_pitch_push = self._sustain_right_forward_pitch_push_value()
+        sustain_ankle_tracking = self._sustain_ankle_pitch_tracking_value()
+        sustain_yaw_drift = self._sustain_yaw_drift_value()
 
         base_tilt = torch.sum(torch.square(self.projected_gravity[:, :2]), dim=-1)
         base_height = self.base_pos[:, 2] - self.terrain.terrain_heights(self.base_pos)
@@ -574,6 +595,12 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             "move_start_forward_pitch": move_start_forward_pitch,
             "move_start_ankle_tracking": move_start_ankle_tracking,
             "move_start_yaw_drift": move_start_yaw_drift,
+            "sustain_forward_pitch": sustain_forward_pitch,
+            "sustain_forward_pitch_rate": sustain_forward_pitch_rate,
+            "sustain_right_forward_push": sustain_right_forward_push,
+            "sustain_right_forward_pitch_push": sustain_right_forward_pitch_push,
+            "sustain_ankle_tracking": sustain_ankle_tracking,
+            "sustain_yaw_drift": sustain_yaw_drift,
             "base_tilt": base_tilt,
             "low_height": low_height,
             "stand_drift": stand_drift,
@@ -692,6 +719,59 @@ class VelocityCommandWalkK1(ParameterWalkK1):
 
     def _reward_straight_ankle_pitch_tracking(self):
         return self._ankle_pitch_tracking_error_value() * self._straight_walk_mask()
+
+    def _sustain_forward_pitch_value(self):
+        threshold = float(self.cfg["rewards"].get("sustain_forward_pitch_threshold", 0.040))
+        forward_pitch = torch.clamp(self.projected_gravity[:, 0] - threshold, min=0.0)
+        return torch.square(forward_pitch) * self._straight_sustain_mask()
+
+    def _sustain_forward_pitch_rate_value(self):
+        clip = float(self.cfg["rewards"].get("sustain_forward_pitch_rate_clip", 2.5))
+        pitch_rate = torch.clamp(self.filtered_ang_vel[:, 1], min=-clip, max=clip)
+        return torch.square(pitch_rate) * self._straight_sustain_mask()
+
+    def _sustain_right_forward_push_excess_value(self):
+        deadband = float(
+            self.cfg["rewards"].get(
+                "sustain_right_forward_push_deadband",
+                self.cfg["rewards"].get("right_forward_push_deadband", 0.05),
+            )
+        )
+        push = self._straight_forward_push()
+        right_excess = torch.clamp(push[:, 1] - push[:, 0] - deadband, min=0.0)
+        return torch.square(right_excess) * self._straight_sustain_mask()
+
+    def _sustain_right_forward_pitch_push_value(self):
+        threshold = float(self.cfg["rewards"].get("sustain_forward_pitch_push_threshold", 0.030))
+        forward_pitch = torch.clamp(self.projected_gravity[:, 0] - threshold, min=0.0)
+        right_excess = torch.sqrt(torch.clamp(self._sustain_right_forward_push_excess_value(), min=0.0))
+        return forward_pitch * right_excess * self._straight_sustain_mask()
+
+    def _sustain_ankle_pitch_tracking_value(self):
+        return self._ankle_pitch_tracking_error_value() * self._straight_sustain_mask()
+
+    def _sustain_yaw_drift_value(self):
+        yaw_clip = float(self.cfg["rewards"].get("sustain_yaw_vel_clip", 2.5))
+        yaw_vel = torch.clamp(self.filtered_ang_vel[:, 2], min=-yaw_clip, max=yaw_clip)
+        return torch.square(yaw_vel) * self._straight_sustain_mask()
+
+    def _reward_sustain_forward_pitch(self):
+        return self._sustain_forward_pitch_value()
+
+    def _reward_sustain_forward_pitch_rate(self):
+        return self._sustain_forward_pitch_rate_value()
+
+    def _reward_sustain_right_forward_push_excess(self):
+        return self._sustain_right_forward_push_excess_value()
+
+    def _reward_sustain_right_forward_pitch_push(self):
+        return self._sustain_right_forward_pitch_push_value()
+
+    def _reward_sustain_ankle_pitch_tracking(self):
+        return self._sustain_ankle_pitch_tracking_value()
+
+    def _reward_sustain_yaw_drift(self):
+        return self._sustain_yaw_drift_value()
 
     def _straight_swing_mask(self):
         left_swing, right_swing = self._swing_masks()
