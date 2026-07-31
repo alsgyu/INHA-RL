@@ -1,0 +1,307 @@
+{
+  "policy_name": "velocity_command_walk_k1_real_speed_low_guard_ft",
+  "public_command_order": [
+    "lin_vel_x",
+    "lin_vel_y",
+    "ang_vel_yaw"
+  ],
+  "internal_command_order": [
+    "lin_vel_x",
+    "lin_vel_y",
+    "ang_vel_yaw",
+    "gait_frequency",
+    "foot_yaw_L",
+    "foot_yaw_R",
+    "body_pitch_target",
+    "body_roll_target",
+    "feet_offset_x_target",
+    "feet_offset_y_target"
+  ],
+  "zero_command_behavior": "stand still with gait_frequency=0 and zero phase features",
+  "task": "K1/VelocityCommandWalkRealSpeedPushFineTune",
+  "checkpoint_path": "logs/K1/K1/VelocityCommandWalkSIRLRealSpeedFinalFineTune/2026-07-31-00-03-33/nn/model_40000.pth",
+  "checkpoint_sha1": "7a9e5a87dd8ffa68747323978a2a273e55836c2e",
+  "exported_policy_path": "logs/K1/K1/VelocityCommandWalkSIRLRealSpeedFinalFineTune/2026-07-31-00-03-33/nn/model_40000.pt",
+  "exported_policy_sha1": "2ff91b02e6afc4f3a87935a41092f03bd2cb6232",
+  "model_class": "BaseActorCritic",
+  "num_actions": 12,
+  "num_observations": 54,
+  "num_privileged_obs": 14,
+  "normalization": {
+    "gravity": 1.0,
+    "lin_vel": 1.0,
+    "ang_vel": 1.0,
+    "gait_frequency": 1.0,
+    "foot_yaw": 1.0,
+    "body_pitch_target": 1.0,
+    "body_roll_target": 1.0,
+    "feet_offset_x_target": 1.0,
+    "feet_offset_y_target": 1.0,
+    "dof_pos": 1.0,
+    "dof_vel": 0.1,
+    "filter_weight": 0.1,
+    "push_force": 0.1,
+    "push_torque": 0.5,
+    "clip_actions": 1.0
+  },
+  "commands": {
+    "num_commands": 10,
+    "command_order": [
+      "lin_vel_x",
+      "lin_vel_y",
+      "ang_vel_yaw",
+      "gait_frequency",
+      "foot_yaw_L",
+      "foot_yaw_R",
+      "body_pitch_target",
+      "body_roll_target",
+      "feet_offset_x_target",
+      "feet_offset_y_target"
+    ],
+    "training_mode": "sampled",
+    "fixed": {
+      "lin_vel_x": 0.0,
+      "lin_vel_y": 0.0,
+      "ang_vel_yaw": 0.0,
+      "gait_frequency": 1.5,
+      "foot_yaw_L": 0.0,
+      "foot_yaw_R": 0.0,
+      "body_pitch_target": 0.0,
+      "body_roll_target": 0.0,
+      "feet_offset_x_target": 0.0,
+      "feet_offset_y_target": 0.0
+    },
+    "play": {
+      "lin_vel_x": 0.0,
+      "lin_vel_y": 0.0,
+      "ang_vel_yaw": 0.0,
+      "gait_frequency": 1.5,
+      "foot_yaw_L": 0.0,
+      "foot_yaw_R": 0.0,
+      "body_pitch_target": 0.0,
+      "body_roll_target": 0.0,
+      "feet_offset_x_target": 0.0,
+      "feet_offset_y_target": 0.0,
+      "fixed_yaw": true,
+      "no_disturbance": true
+    },
+    "still_proportion": 0.46,
+    "straight_proportion": 1.0,
+    "straight": {
+      "lin_vel_x": [
+        0.04,
+        0.44
+      ],
+      "lin_vel_y": 0.0,
+      "ang_vel_yaw": 0.0,
+      "gait_frequency": [
+        1.1,
+        1.9
+      ],
+      "foot_yaw_L": 0.0,
+      "foot_yaw_R": 0.0,
+      "body_pitch_target": 0.0,
+      "body_roll_target": 0.0,
+      "feet_offset_x_target": 0.0,
+      "feet_offset_y_target": 0.0
+    },
+    "lin_vel_x": [
+      0.0,
+      0.48
+    ],
+    "lin_vel_y": [
+      -0.02,
+      0.02
+    ],
+    "ang_vel_yaw": [
+      -0.04,
+      0.04
+    ],
+    "gait_frequency": [
+      0.0,
+      0.0
+    ],
+    "foot_yaw_L": [
+      0.0,
+      0.0
+    ],
+    "foot_yaw_R": [
+      0.0,
+      0.0
+    ],
+    "body_pitch_target": [
+      0.0,
+      0.0
+    ],
+    "body_roll_target": [
+      0.0,
+      0.0
+    ],
+    "feet_offset_x_target": [
+      0.0,
+      0.0
+    ],
+    "feet_offset_y_target": [
+      0.0,
+      0.0
+    ],
+    "resampling_time_s": [
+      4.0,
+      8.0
+    ],
+    "training_phases": [
+      {
+        "start_iteration": 0,
+        "disturbance_scale": 0.0,
+        "still_proportion": 0.5,
+        "straight_proportion": 1.0,
+        "high_speed_proportion": 0.0,
+        "resampling_time_s": [
+          5.0,
+          8.0
+        ],
+        "lin_vel_x": [
+          0.04,
+          0.26
+        ],
+        "lin_vel_y": [
+          0.0,
+          0.0
+        ],
+        "ang_vel_yaw": [
+          0.0,
+          0.0
+        ],
+        "adapter": {
+          "gait_frequency_max": 1.38,
+          "gait_frequency_speed_max": 0.34
+        }
+      },
+      {
+        "start_iteration": 5000,
+        "disturbance_scale": 0.0,
+        "still_proportion": 0.46,
+        "straight_proportion": 1.0,
+        "high_speed_proportion": 0.0,
+        "resampling_time_s": [
+          5.0,
+          8.0
+        ],
+        "lin_vel_x": [
+          0.04,
+          0.34
+        ],
+        "lin_vel_y": [
+          0.0,
+          0.0
+        ],
+        "ang_vel_yaw": [
+          0.0,
+          0.0
+        ],
+        "adapter": {
+          "gait_frequency_max": 1.48,
+          "gait_frequency_speed_max": 0.42
+        }
+      },
+      {
+        "start_iteration": 10000,
+        "disturbance_scale": 0.0,
+        "still_proportion": 0.42,
+        "straight_proportion": 1.0,
+        "high_speed_proportion": 0.02,
+        "high_speed": {
+          "lin_vel_x": [
+            0.36,
+            0.46
+          ],
+          "lin_vel_y": 0.0,
+          "ang_vel_yaw": 0.0
+        },
+        "resampling_time_s": [
+          5.0,
+          8.0
+        ],
+        "lin_vel_x": [
+          0.05,
+          0.44
+        ],
+        "lin_vel_y": [
+          0.0,
+          0.0
+        ],
+        "ang_vel_yaw": [
+          0.0,
+          0.0
+        ],
+        "adapter": {
+          "gait_frequency_max": 1.58,
+          "gait_frequency_speed_max": 0.52
+        }
+      }
+    ],
+    "curriculum": false,
+    "update_rate": 0.1,
+    "lin_vel_levels": 10,
+    "ang_vel_levels": 10,
+    "lin_vel_x_resolution": 0.2,
+    "lin_vel_y_resolution": 0.1,
+    "ang_vel_resolution": 0.2,
+    "episode_length_toler": 0.1,
+    "lin_vel_x_toler": 0.4,
+    "lin_vel_y_toler": 0.2,
+    "ang_vel_yaw_toler": 0.2,
+    "num_public_commands": 3,
+    "public_command_order": [
+      "lin_vel_x",
+      "lin_vel_y",
+      "ang_vel_yaw"
+    ],
+    "command_slew_rate": 2.0,
+    "adapter": {
+      "stand_command_threshold": 0.035,
+      "gait_frequency_min": 1.15,
+      "gait_frequency_max": 1.68,
+      "gait_frequency_speed_min": 0.08,
+      "gait_frequency_speed_max": 0.66,
+      "max_yaw_speed_for_drive": 0.9,
+      "foot_yaw_from_yaw_gain": 0.12,
+      "foot_yaw_target_clip": [
+        -0.22,
+        0.22
+      ],
+      "body_pitch_gain": 0.0,
+      "body_pitch_target_clip": [
+        -0.03,
+        0.03
+      ],
+      "body_roll_gain": -0.08,
+      "body_roll_target_clip": [
+        -0.08,
+        0.08
+      ],
+      "body_pitch_offset": 0.0,
+      "forward_pitch_vx_comp_enabled": true,
+      "forward_pitch_vx_comp_deadband": 0.035,
+      "forward_pitch_vx_comp_gain": 0.9,
+      "forward_pitch_vx_comp_max": 0.085,
+      "forward_pitch_vx_comp_min_vx": 0.038,
+      "heading_correction_enabled": true,
+      "heading_correction_min_abs_vx": 0.08,
+      "heading_correction_max_abs_vy_command": 0.04,
+      "heading_correction_max_abs_yaw_command": 0.08,
+      "heading_correction_gain": 0.1,
+      "heading_correction_deadband": 0.035,
+      "heading_correction_max_yaw_rate": 0.025
+    },
+    "high_speed_proportion": 0.0,
+    "high_speed": {
+      "lin_vel_x": [
+        0.36,
+        0.46
+      ],
+      "lin_vel_y": 0.0,
+      "ang_vel_yaw": 0.0
+    }
+  }
+}
