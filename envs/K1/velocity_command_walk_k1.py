@@ -569,6 +569,27 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         denom = torch.clamp(torch.sum(swing_mask * side_weights, dim=-1), min=1.0)
         return torch.sum(weighted, dim=-1) / denom * mask
 
+    def _root_feet_lateral_diff_value(self, mask):
+        _, _, base_yaw = get_euler_xyz(self.base_quat)
+        feet_center = torch.mean(self.feet_pos[:, :, :2], dim=1)
+        root_to_feet = self.base_pos[:, :2] - feet_center
+        lateral_offset = -torch.sin(base_yaw) * root_to_feet[:, 0] + torch.cos(base_yaw) * root_to_feet[:, 1]
+
+        base_deadzone = float(self.cfg["rewards"].get("root_feet_lateral_deadzone", 0.02))
+        vy_gain = float(self.cfg["rewards"].get("root_feet_lateral_vy_deadzone_gain", 0.04))
+        yaw_gain = float(self.cfg["rewards"].get("root_feet_lateral_yaw_deadzone_gain", 0.03))
+        max_vy = max(float(self.cfg["rewards"].get("root_feet_lateral_max_vy", 1.5)), 1.0e-6)
+        max_yaw = max(float(self.cfg["rewards"].get("root_feet_lateral_max_yaw", 1.6)), 1.0e-6)
+        vy_ratio = torch.clamp(torch.abs(self.commands[:, 1]) / max_vy, max=1.0)
+        yaw_ratio = torch.clamp(torch.abs(self.commands[:, 2]) / max_yaw, max=1.0)
+        allowed_offset = base_deadzone + vy_gain * vy_ratio + yaw_gain * yaw_ratio
+        error = torch.clamp(torch.abs(lateral_offset) - allowed_offset, min=0.0)
+
+        contact_count = torch.sum(self.feet_contact.float(), dim=-1)
+        min_contacts = float(self.cfg["rewards"].get("root_feet_lateral_min_contacts", 2.0))
+        double_support = (contact_count >= min_contacts).float()
+        return torch.square(error) * double_support * mask
+
     def _compute_sirl_info(self):
         straight_mask = self._straight_walk_mask()
         lateral_weight = 0.75 + 1.25 * straight_mask
@@ -602,6 +623,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         support_front_lag = self._straight_support_front_lag_value()
         support_front_pitch_lag = self._straight_support_front_pitch_lag_value()
         swing_foot_forward_lag = self._straight_swing_foot_forward_lag_value()
+        root_feet_lateral_diff = self._straight_root_feet_lateral_diff_value()
         swing_edge_contact = self._straight_swing_edge_contact_value()
         swing_contact = self._straight_swing_contact_value()
         swing_pitch_asymmetry = self._straight_swing_pitch_asymmetry_value()
@@ -627,6 +649,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         sustain_support_front_lag = self._sustain_support_front_lag_value()
         sustain_support_front_pitch_lag = self._sustain_support_front_pitch_lag_value()
         sustain_swing_foot_forward_lag = self._sustain_swing_foot_forward_lag_value()
+        sustain_root_feet_lateral_diff = self._sustain_root_feet_lateral_diff_value()
 
         base_tilt = torch.sum(torch.square(self.projected_gravity[:, :2]), dim=-1)
         base_height = self.base_pos[:, 2] - self.terrain.terrain_heights(self.base_pos)
@@ -664,6 +687,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             "support_front_lag": support_front_lag,
             "support_front_pitch_lag": support_front_pitch_lag,
             "swing_foot_forward_lag": swing_foot_forward_lag,
+            "root_feet_lateral_diff": root_feet_lateral_diff,
             "low_speed_overspeed": low_speed_overspeed * low_speed_mask,
             "low_speed_lateral_instability": low_speed_lateral_instability * low_speed_mask,
             "swing_edge_contact": swing_edge_contact,
@@ -691,6 +715,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             "sustain_support_front_lag": sustain_support_front_lag,
             "sustain_support_front_pitch_lag": sustain_support_front_pitch_lag,
             "sustain_swing_foot_forward_lag": sustain_swing_foot_forward_lag,
+            "sustain_root_feet_lateral_diff": sustain_root_feet_lateral_diff,
             "base_tilt": base_tilt,
             "low_height": low_height,
             "stand_drift": stand_drift,
@@ -844,6 +869,9 @@ class VelocityCommandWalkK1(ParameterWalkK1):
     def _straight_swing_foot_forward_lag_value(self):
         return self._swing_foot_forward_lag_value(self._straight_walk_mask())
 
+    def _straight_root_feet_lateral_diff_value(self):
+        return self._root_feet_lateral_diff_value(self._straight_walk_mask())
+
     def _reward_straight_swing_clearance_excess(self):
         return self._straight_swing_clearance_excess_value()
 
@@ -858,6 +886,9 @@ class VelocityCommandWalkK1(ParameterWalkK1):
 
     def _reward_straight_swing_foot_forward_lag(self):
         return self._straight_swing_foot_forward_lag_value()
+
+    def _reward_straight_root_feet_lateral_diff(self):
+        return self._straight_root_feet_lateral_diff_value()
 
     def _sustain_forward_pitch_value(self):
         threshold = float(self.cfg["rewards"].get("sustain_forward_pitch_threshold", 0.040))
@@ -913,6 +944,9 @@ class VelocityCommandWalkK1(ParameterWalkK1):
     def _sustain_swing_foot_forward_lag_value(self):
         return self._swing_foot_forward_lag_value(self._straight_sustain_mask(), "sustain_swing_foot_forward_min_x")
 
+    def _sustain_root_feet_lateral_diff_value(self):
+        return self._root_feet_lateral_diff_value(self._straight_sustain_mask())
+
     def _move_start_support_front_lag_value(self):
         return self._support_front_lag_value(self._move_start_transition_mask(), "move_start_support_front_min_x")
 
@@ -948,6 +982,9 @@ class VelocityCommandWalkK1(ParameterWalkK1):
 
     def _reward_sustain_swing_foot_forward_lag(self):
         return self._sustain_swing_foot_forward_lag_value()
+
+    def _reward_sustain_root_feet_lateral_diff(self):
+        return self._sustain_root_feet_lateral_diff_value()
 
     def _reward_move_start_support_front_lag(self):
         return self._move_start_support_front_lag_value()

@@ -1,0 +1,336 @@
+extends: VelocityCommandWalkRealOneSpeedGroundedFineTune.yaml
+
+basic:
+  task: "K1/Velocity_Command_Walk_K1"
+  log_task: "K1/VelocityCommandWalkSIRLRealOneSpeedBalanceFineTune"
+  checkpoint: "logs/K1/K1/VelocityCommandWalkSIRLRealSpeedRestartFineTune/2026-07-30-18-44-57/nn/model_24000.pth"
+  max_iterations: 18000
+  description: "JY-inspired low-cadence restart from the best natural RestartFineTune checkpoint. Keep stand phase exact, avoid high swing-height shaping, hold 1.0 m/s near 1.5 Hz cadence, and use support/root-foot catch-up rewards for forward pitch and left drift."
+
+env:
+  num_envs: 256
+
+runner:
+  save_interval: 500
+  progress_interval: 10
+
+algorithm:
+  sirl_worldmodel:
+    collect_steps_per_iter: 192
+    updates_per_iter: 1
+    batch_size: 512
+    actor_lr: 7.5e-8
+    critic_lr: 2.0e-6
+    collect_noise_std: 0.00010
+    teacher_collect_iterations: 18000
+    teacher_collect_decay_iterations: 18000
+    teacher_collect_start_blend: 1.0
+    teacher_collect_end_blend: 0.985
+    teacher_collect_command_blend_enabled: true
+    teacher_collect_low_speed_vx: 0.72
+    teacher_collect_high_speed_vx: 1.06
+    teacher_collect_high_speed_blend: 0.88
+    teacher_distill_iterations: 18000
+    teacher_distill_steps_per_iter: 4
+    teacher_distill_replay_fraction: 0.97
+    teacher_bc_coef: 150.0
+    teacher_bc_decay_iterations: 18000
+    teacher_bc_min_coef: 105.0
+    teacher_bc_low_speed_vx: 0.72
+    teacher_bc_high_speed_vx: 1.06
+    teacher_bc_low_speed_weight: 100.0
+    teacher_guard_max_mse: 0.0009
+    teacher_guard_max_increase: 0.00004
+    sirl_top_fraction: 0.08
+    sirl_min_return_percentile: 62
+    sirl_return_alpha: 1.3
+    sirl_actor_coef: 0.004
+    sirl_actor_start_iteration: 4500
+    sirl_actor_warmup_iterations: 8000
+    sirl_q_coef: 0.012
+    sirl_fall_penalty: 35.0
+    actor_rl_coef: 0.00006
+    actor_rl_start_iteration: 4500
+    actor_rl_warmup_iterations: 12000
+    actor_mean_l2_coef: 0.140
+    actor_action_l2_coef: 0.100
+    actor_symmetry_coef: 0.010
+    actor_symmetry_min_abs_vx: 1.25
+    actor_symmetry_include_stand: true
+    actor_symmetry_warmup_iterations: 12000
+    sirl_metric_penalties:
+      velocity_error: 2.6
+      low_speed_overspeed: 7.0
+      low_speed_lateral_instability: 5.5
+      swing_clearance_deficit: 0.2
+      swing_clearance_excess: 8.0
+      no_foot_contact: 10.0
+      support_front_lag: 9.0
+      support_front_pitch_lag: 14.0
+      swing_foot_forward_lag: 5.0
+      root_feet_lateral_diff: 8.0
+      swing_contact: 2.5
+      swing_edge_contact: 2.4
+      swing_pitch_asymmetry: 1.2
+      contact_duty_asymmetry: 1.8
+      right_contact_duty_excess: 5.0
+      forward_push_asymmetry: 1.5
+      right_forward_push_excess: 7.0
+      forward_pitch_push: 10.0
+      right_forward_pitch_push: 8.0
+      forward_pitch_excess: 16.0
+      move_start_forward_pitch: 12.0
+      move_start_ankle_tracking: 8.0
+      move_start_yaw_drift: 6.0
+      move_start_support_front_lag: 12.0
+      sustain_forward_pitch: 18.0
+      sustain_forward_pitch_rate: 8.0
+      sustain_right_forward_push: 9.0
+      sustain_right_forward_pitch_push: 10.0
+      sustain_ankle_tracking: 10.0
+      sustain_yaw_drift: 8.0
+      sustain_swing_clearance_excess: 11.0
+      sustain_no_foot_contact: 14.0
+      sustain_support_front_lag: 15.0
+      sustain_support_front_pitch_lag: 20.0
+      sustain_swing_foot_forward_lag: 9.0
+      sustain_root_feet_lateral_diff: 12.0
+      feet_slip: 1.2
+      base_tilt: 5.2
+      low_height: 1.2
+      stand_drift: 3.4
+      stop_transition_drift: 6.0
+
+control:
+  target_lag_alpha_by_index: [0.70, 0.62, 0.55, 0.70, 0.42, 0.52, 0.70, 0.62, 0.55, 0.70, 0.34, 0.48]
+
+commands:
+  randomize_gait_phase_on_start: false
+  command_slew_rate: 1.6
+  still_proportion: 0.40
+  straight_proportion: 1.00
+  high_speed_proportion: 0.04
+  high_speed:
+    lin_vel_x: [0.96, 1.08]
+    lin_vel_y: 0.0
+    ang_vel_yaw: 0.0
+  lin_vel_x: [0.0, 1.10]
+  lin_vel_y: [-0.008, 0.008]
+  ang_vel_yaw: [-0.018, 0.018]
+  straight:
+    lin_vel_x: [0.04, 1.06]
+    lin_vel_y: 0.0
+    ang_vel_yaw: 0.0
+  resampling_time_s: [8.0, 12.0]
+  adapter:
+    stand_command_threshold: 0.035
+    gait_frequency_min: 1.15
+    gait_frequency_max: 1.58
+    gait_frequency_speed_min: 0.08
+    gait_frequency_speed_max: 1.05
+    max_yaw_speed_for_drive: 0.90
+    foot_yaw_from_yaw_gain: 0.12
+    foot_yaw_target_clip: [-0.22, 0.22]
+    body_pitch_gain: 0.0
+    body_pitch_offset: 0.0
+    body_pitch_target_clip: [-0.030, 0.030]
+    body_roll_gain: -0.08
+    body_roll_target_clip: [-0.08, 0.08]
+    forward_pitch_vx_comp_enabled: true
+    forward_pitch_vx_comp_deadband: 0.035
+    forward_pitch_vx_comp_gain: 0.90
+    forward_pitch_vx_comp_max: 0.085
+    forward_pitch_vx_comp_min_vx: 0.038
+    heading_correction_enabled: true
+    heading_correction_min_abs_vx: 0.08
+    heading_correction_max_abs_vy_command: 0.04
+    heading_correction_max_abs_yaw_command: 0.08
+    heading_correction_gain: 0.05
+    heading_correction_deadband: 0.035
+    heading_correction_max_yaw_rate: 0.015
+  training_phases:
+    - start_iteration: 0
+      disturbance_scale: 0.00
+      command_slew_rate: 1.6
+      still_proportion: 0.44
+      straight_proportion: 1.00
+      high_speed_proportion: 0.00
+      resampling_time_s: [8.0, 12.0]
+      lin_vel_x: [0.04, 0.78]
+      lin_vel_y: [0.0, 0.0]
+      ang_vel_yaw: [0.0, 0.0]
+      adapter:
+        gait_frequency_max: 1.46
+        gait_frequency_speed_max: 0.82
+    - start_iteration: 5000
+      disturbance_scale: 0.00
+      command_slew_rate: 1.6
+      still_proportion: 0.40
+      straight_proportion: 1.00
+      high_speed_proportion: 0.02
+      high_speed:
+        lin_vel_x: [0.84, 0.96]
+        lin_vel_y: 0.0
+        ang_vel_yaw: 0.0
+      resampling_time_s: [8.0, 12.0]
+      lin_vel_x: [0.05, 0.96]
+      lin_vel_y: [0.0, 0.0]
+      ang_vel_yaw: [0.0, 0.0]
+      adapter:
+        gait_frequency_max: 1.52
+        gait_frequency_speed_max: 1.00
+    - start_iteration: 11000
+      disturbance_scale: 0.00
+      command_slew_rate: 1.6
+      still_proportion: 0.38
+      straight_proportion: 1.00
+      high_speed_proportion: 0.04
+      high_speed:
+        lin_vel_x: [0.96, 1.08]
+        lin_vel_y: 0.0
+        ang_vel_yaw: 0.0
+      resampling_time_s: [8.0, 12.0]
+      lin_vel_x: [0.05, 1.08]
+      lin_vel_y: [0.0, 0.0]
+      ang_vel_yaw: [0.0, 0.0]
+      adapter:
+        gait_frequency_max: 1.58
+        gait_frequency_speed_max: 1.05
+    - start_iteration: 15500
+      disturbance_scale: 0.00
+      command_slew_rate: 1.6
+      still_proportion: 0.36
+      straight_proportion: 1.00
+      high_speed_proportion: 0.04
+      high_speed:
+        lin_vel_x: [1.04, 1.16]
+        lin_vel_y: 0.0
+        ang_vel_yaw: 0.0
+      resampling_time_s: [9.0, 13.0]
+      lin_vel_x: [0.05, 1.16]
+      lin_vel_y: [0.0, 0.0]
+      ang_vel_yaw: [0.0, 0.0]
+      adapter:
+        gait_frequency_max: 1.62
+        gait_frequency_speed_max: 1.12
+
+randomization:
+  dof_stiffness:
+    range: [1.0, 1.0]
+    operation: "scaling"
+    distribution: "uniform"
+  dof_damping:
+    range: [1.0, 1.0]
+    operation: "scaling"
+    distribution: "uniform"
+  dof_friction:
+    range: [0.0, 0.0]
+    operation: "additive"
+    distribution: "uniform"
+  base_com:
+    range: [0.0, 0.0]
+    operation: "additive"
+    distribution: "uniform"
+  base_mass:
+    range: [1.0, 1.0]
+    operation: "scaling"
+    distribution: "uniform"
+
+rewards:
+  scales:
+    tracking_lin_vel_x: 2.1
+    lin_vel_x_error: -2.2
+    reactive_lin_vel_x_error: -0.18
+    reactive_lin_vel_x_underspeed: -0.05
+    lin_vel_x_overspeed: -32.0
+    orientation: -220.0
+    ang_vel_xy: -1.50
+    action_rate: -16.0
+    feet_swing: 1.6
+    swing_clearance: 0.0
+    scuff_clearance: -8.0
+    straight_swing_clearance_excess: -120.0
+    straight_no_foot_contact: -8.0
+    straight_support_front_lag: -180.0
+    straight_support_front_pitch_lag: -200.0
+    straight_swing_foot_forward_lag: -60.0
+    straight_root_feet_lateral_diff: -180.0
+    move_start_forward_pitch: -380.0
+    move_start_ankle_pitch_tracking: -62.0
+    move_start_yaw_drift: -12.0
+    move_start_support_front_lag: -240.0
+    straight_ankle_pitch_tracking: -18.0
+    straight_forward_pitch_excess: -380.0
+    straight_forward_pitch_rate: -16.0
+    straight_forward_push_balance: -3.0
+    straight_right_forward_push_excess: -22.0
+    straight_forward_pitch_push: -30.0
+    straight_right_forward_pitch_push: -22.0
+    sustain_forward_pitch: -560.0
+    sustain_forward_pitch_rate: -20.0
+    sustain_right_forward_push_excess: -34.0
+    sustain_right_forward_pitch_push: -32.0
+    sustain_ankle_pitch_tracking: -24.0
+    sustain_yaw_drift: -24.0
+    sustain_swing_clearance_excess: -200.0
+    sustain_no_foot_contact: -12.0
+    sustain_support_front_lag: -260.0
+    sustain_support_front_pitch_lag: -280.0
+    sustain_swing_foot_forward_lag: -100.0
+    sustain_root_feet_lateral_diff: -240.0
+    straight_path_lateral: -18.0
+    straight_heading: -16.0
+    straight_lateral_vel: -34.0
+    straight_yaw_vel: -52.0
+    straight_contact_duty_balance: -2.0
+    straight_right_contact_duty_excess: -7.0
+    straight_swing_pitch_balance: -1.2
+    feet_slip: -6.0
+    fast_stance_feet_xy_vel: -2.4
+  swing_period: 0.20
+  swing_clearance_target: 0.080
+  swing_clearance_max: 0.105
+  swing_clearance_sigma: 0.010
+  swing_clearance_side_weights: [1.0, 1.0]
+  support_front_min_abs_vx: 0.04
+  support_front_min_x: 0.010
+  move_start_support_front_min_x: 0.010
+  sustain_support_front_min_x: 0.020
+  support_front_pitch_threshold: 0.026
+  sustain_support_front_pitch_threshold: 0.024
+  swing_foot_forward_min_x: -0.030
+  sustain_swing_foot_forward_min_x: -0.010
+  swing_foot_forward_side_weights: [1.0, 1.0]
+  root_feet_lateral_deadzone: 0.020
+  root_feet_lateral_vy_deadzone_gain: 0.04
+  root_feet_lateral_yaw_deadzone_gain: 0.03
+  root_feet_lateral_max_vy: 1.5
+  root_feet_lateral_max_yaw: 1.6
+  root_feet_lateral_min_contacts: 2.0
+  scuff_clearance_threshold: 0.040
+  scuff_clearance_side_weights: [1.0, 1.0]
+  swing_flat_contact_side_weights: [0.9, 0.9]
+  straight_min_speed: 0.035
+  straight_path_lateral_error_clip: 0.45
+  straight_forward_pitch_threshold: 0.038
+  straight_forward_pitch_rate_clip: 2.3
+  forward_pitch_push_threshold: 0.026
+  forward_push_asymmetry_deadband: 0.140
+  right_forward_push_deadband: 0.040
+  right_forward_pitch_push_deadband: 0.040
+  sustain_min_vx: 0.86
+  sustain_max_vx: 1.12
+  sustain_min_command_age_s: 2.0
+  sustain_forward_pitch_threshold: 0.030
+  sustain_forward_pitch_rate_clip: 2.1
+  sustain_forward_pitch_push_threshold: 0.024
+  sustain_right_forward_push_deadband: 0.030
+  sustain_yaw_vel_clip: 2.1
+  min_stance_foot_contacts: 1.0
+  contact_duty_deadband: 0.090
+  right_contact_duty_deadband: 0.055
+  ankle_pitch_tracking_error_clip: 0.24
+  ankle_pitch_tracking_side_weights: [1.0, 1.30]
+
+metadata:
+  policy_name: "velocity_command_walk_k1_real_one_speed_balance_ft"
