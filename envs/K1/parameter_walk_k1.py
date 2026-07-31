@@ -247,9 +247,11 @@ class ParameterWalkK1(BaseTask):
         self.action_lower_by_index = self._control_action_tensor("action_lower_by_index")
         self.action_upper_by_index = self._control_action_tensor("action_upper_by_index")
         self.action_rate_limit_by_index = self._control_action_tensor("action_rate_limit_by_index")
+        self.target_lag_alpha_by_index = self._control_action_tensor("target_lag_alpha_by_index")
         self.last_dof_vel = torch.zeros_like(self.dof_vel)
         self.last_root_vel = torch.zeros_like(self.root_states[:, 7:13])
         self.last_dof_targets = torch.zeros(self.num_envs, self.num_dofs, dtype=torch.float, device=self.device)
+        self.lagged_dof_targets = torch.zeros(self.num_envs, self.num_dofs, dtype=torch.float, device=self.device)
         self.delay_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.torques = torch.zeros(self.num_envs, self.num_dofs, dtype=torch.float, device=self.device)
         self.commands = torch.zeros(self.num_envs, self.cfg["commands"]["num_commands"], dtype=torch.float, device=self.device)
@@ -313,6 +315,7 @@ class ParameterWalkK1(BaseTask):
                 self.default_dof_pos[:, i] = self.cfg["init_state"]["default_joint_angles"]["default"]
             else:
                 self.default_dof_pos[:, i] = self.cfg["init_state"]["default_joint_angles"][name]
+        self.lagged_dof_targets[:] = self.default_dof_pos
 
     def _control_action_tensor(self, name):
         values = self.cfg["control"].get(name)
@@ -484,6 +487,7 @@ class ParameterWalkK1(BaseTask):
         self._reset_command_targets(env_ids)
 
         self.last_dof_targets[env_ids] = self.dof_pos[env_ids]
+        self.lagged_dof_targets[env_ids] = self.dof_pos[env_ids]
         self.last_root_vel[env_ids] = self.root_states[env_ids, 7:13]
         self.episode_length_buf[env_ids] = 0
         self.filtered_lin_vel[env_ids] = 0.0
@@ -766,6 +770,11 @@ class ParameterWalkK1(BaseTask):
 
         self.actions[:] = processed_actions
         dof_targets = self.default_dof_pos + self.cfg["control"]["action_scale"] * self.actions
+        if self.target_lag_alpha_by_index is not None:
+            self.lagged_dof_targets[:] = self.lagged_dof_targets + self.target_lag_alpha_by_index * (
+                dof_targets - self.lagged_dof_targets
+            )
+            dof_targets = self.lagged_dof_targets
         
         # Log actions for first environment only
         if hasattr(self, 'actions_csv_writer'):

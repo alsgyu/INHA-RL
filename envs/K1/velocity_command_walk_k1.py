@@ -172,6 +172,18 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             & (self.public_command_age <= window_s)
         ).float()
 
+    def _move_start_transition_mask(self):
+        threshold = self._adapter_value("stand_command_threshold", 0.04)
+        target_norm = self._public_command_norm(self.public_command_targets)
+        command_norm = self._public_command_norm(self.commands[:, : len(self.PUBLIC_COMMAND_KEYS)])
+        window_s = float(self.cfg["rewards"].get("move_start_window_s", 1.6))
+        min_target_norm = float(self.cfg["rewards"].get("move_start_min_target_norm", threshold))
+        return (
+            (target_norm > min_target_norm)
+            & (command_norm > threshold)
+            & (self.public_command_age <= window_s)
+        ).float()
+
     def _straight_walk_mask(self):
         min_speed = float(self.cfg["rewards"].get("straight_min_speed", 0.035))
         max_lateral_command = float(self.cfg["rewards"].get("straight_max_abs_y_command", 0.035))
@@ -512,6 +524,9 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         forward_pitch_push = self._straight_forward_pitch_push_value()
         right_forward_pitch_push = self._straight_right_forward_pitch_push_value()
         forward_pitch_excess = self._straight_forward_pitch_excess_value()
+        move_start_forward_pitch = self._move_start_forward_pitch_value()
+        move_start_ankle_tracking = self._move_start_ankle_pitch_tracking_value()
+        move_start_yaw_drift = self._move_start_yaw_drift_value()
 
         base_tilt = torch.sum(torch.square(self.projected_gravity[:, :2]), dim=-1)
         base_height = self.base_pos[:, 2] - self.terrain.terrain_heights(self.base_pos)
@@ -556,6 +571,9 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             "forward_pitch_push": forward_pitch_push,
             "right_forward_pitch_push": right_forward_pitch_push,
             "forward_pitch_excess": forward_pitch_excess,
+            "move_start_forward_pitch": move_start_forward_pitch,
+            "move_start_ankle_tracking": move_start_ankle_tracking,
+            "move_start_yaw_drift": move_start_yaw_drift,
             "base_tilt": base_tilt,
             "low_height": low_height,
             "stand_drift": stand_drift,
@@ -635,6 +653,45 @@ class VelocityCommandWalkK1(ParameterWalkK1):
 
     def _reward_stop_transition_action(self):
         return torch.sum(torch.square(self.actions), dim=-1) * self._stop_transition_mask()
+
+    def _ankle_pitch_tracking_error_value(self):
+        if self.num_actions < 11:
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        ankle_pitch_idx = torch.as_tensor([4, 10], dtype=torch.long, device=self.device)
+        err = self.last_dof_targets[:, ankle_pitch_idx] - self.dof_pos[:, ankle_pitch_idx]
+        clip = float(self.cfg["rewards"].get("ankle_pitch_tracking_error_clip", 0.22))
+        err = torch.clamp(err, min=-clip, max=clip)
+        side_weights = torch.as_tensor(
+            self.cfg["rewards"].get("ankle_pitch_tracking_side_weights", [1.0, 1.15]),
+            dtype=torch.float,
+            device=self.device,
+        ).view(1, -1)
+        return torch.sum(torch.square(err) * side_weights, dim=-1) / torch.clamp(side_weights.sum(), min=1.0e-6)
+
+    def _move_start_forward_pitch_value(self):
+        threshold = float(self.cfg["rewards"].get("move_start_forward_pitch_threshold", 0.035))
+        forward_pitch = torch.clamp(self.projected_gravity[:, 0] - threshold, min=0.0)
+        return torch.square(forward_pitch) * self._move_start_transition_mask()
+
+    def _move_start_ankle_pitch_tracking_value(self):
+        return self._ankle_pitch_tracking_error_value() * self._move_start_transition_mask()
+
+    def _move_start_yaw_drift_value(self):
+        yaw_clip = float(self.cfg["rewards"].get("move_start_yaw_vel_clip", 2.5))
+        yaw_vel = torch.clamp(self.filtered_ang_vel[:, 2], min=-yaw_clip, max=yaw_clip)
+        return torch.square(yaw_vel) * self._move_start_transition_mask()
+
+    def _reward_move_start_forward_pitch(self):
+        return self._move_start_forward_pitch_value()
+
+    def _reward_move_start_ankle_pitch_tracking(self):
+        return self._move_start_ankle_pitch_tracking_value()
+
+    def _reward_move_start_yaw_drift(self):
+        return self._move_start_yaw_drift_value()
+
+    def _reward_straight_ankle_pitch_tracking(self):
+        return self._ankle_pitch_tracking_error_value() * self._straight_walk_mask()
 
     def _straight_swing_mask(self):
         left_swing, right_swing = self._swing_masks()
