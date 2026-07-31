@@ -509,6 +509,8 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         right_contact_duty_excess = self._straight_right_contact_duty_excess_value()
         forward_push_asymmetry = self._straight_forward_push_asymmetry_value()
         right_forward_push_excess = self._straight_right_forward_push_excess_value()
+        forward_pitch_push = self._straight_forward_pitch_push_value()
+        right_forward_pitch_push = self._straight_right_forward_pitch_push_value()
         forward_pitch_excess = self._straight_forward_pitch_excess_value()
 
         base_tilt = torch.sum(torch.square(self.projected_gravity[:, :2]), dim=-1)
@@ -551,6 +553,8 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             "right_contact_duty_excess": right_contact_duty_excess,
             "forward_push_asymmetry": forward_push_asymmetry,
             "right_forward_push_excess": right_forward_push_excess,
+            "forward_pitch_push": forward_pitch_push,
+            "right_forward_pitch_push": right_forward_pitch_push,
             "forward_pitch_excess": forward_pitch_excess,
             "base_tilt": base_tilt,
             "low_height": low_height,
@@ -757,11 +761,36 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         excess = torch.clamp(push[:, 1] - push[:, 0] - deadband, min=0.0)
         return torch.square(excess) * self._straight_walk_mask()
 
+    def _straight_forward_pitch_push_value(self):
+        threshold = float(self.cfg["rewards"].get("forward_pitch_push_threshold", 0.05))
+        forward_pitch = torch.clamp(self.projected_gravity[:, 0] - threshold, min=0.0)
+        push = torch.mean(self._straight_forward_push(), dim=-1)
+        return forward_pitch * push * self._straight_walk_mask()
+
+    def _straight_right_forward_pitch_push_value(self):
+        threshold = float(self.cfg["rewards"].get("forward_pitch_push_threshold", 0.05))
+        deadband = float(
+            self.cfg["rewards"].get(
+                "right_forward_pitch_push_deadband",
+                self.cfg["rewards"].get("right_forward_push_deadband", 0.06),
+            )
+        )
+        forward_pitch = torch.clamp(self.projected_gravity[:, 0] - threshold, min=0.0)
+        push = self._straight_forward_push()
+        right_excess = torch.clamp(push[:, 1] - push[:, 0] - deadband, min=0.0)
+        return forward_pitch * right_excess * self._straight_walk_mask()
+
     def _reward_straight_forward_push_balance(self):
         return self._straight_forward_push_asymmetry_value()
 
     def _reward_straight_right_forward_push_excess(self):
         return self._straight_right_forward_push_excess_value()
+
+    def _reward_straight_forward_pitch_push(self):
+        return self._straight_forward_pitch_push_value()
+
+    def _reward_straight_right_forward_pitch_push(self):
+        return self._straight_right_forward_pitch_push_value()
 
     def _straight_swing_edge_contact_value(self):
         if not hasattr(self, "feet_edge_contact") or self.feet_edge_contact.shape[-1] < 4:

@@ -423,6 +423,25 @@ class SIRLWorldModelRunner:
         mix = min(max(iteration / decay, 0.0), 1.0)
         return max(end, start + mix * (end - start))
 
+    def _teacher_collect_blend_for_obs(self, obs, iteration):
+        base_blend = self._teacher_collect_blend(iteration)
+        if base_blend <= 0.0 or not bool(self.wm_cfg.get("teacher_collect_command_blend_enabled", False)):
+            return base_blend
+        if obs is None or obs.shape[-1] < 7:
+            return base_blend
+
+        scale = torch.clamp(self._obs_public_command_scales[0].to(obs.device, dtype=obs.dtype), min=1.0e-6)
+        abs_vx = torch.abs(obs[..., 6] / scale)
+        low_vx = float(self.wm_cfg.get("teacher_collect_low_speed_vx", self.wm_cfg.get("teacher_bc_low_speed_vx", 1.05)))
+        high_vx = max(
+            float(self.wm_cfg.get("teacher_collect_high_speed_vx", self.wm_cfg.get("teacher_bc_high_speed_vx", 1.35))),
+            low_vx + 1.0e-6,
+        )
+        high_blend = float(self.wm_cfg.get("teacher_collect_high_speed_blend", base_blend))
+        speed_mix = torch.clamp((abs_vx - low_vx) / (high_vx - low_vx), min=0.0, max=1.0)
+        blend = base_blend + speed_mix * (high_blend - base_blend)
+        return torch.clamp(blend, min=0.0, max=1.0).unsqueeze(-1)
+
     def _teacher_bc_coef(self):
         if self.teacher_policy is None:
             return 0.0
@@ -667,9 +686,13 @@ class SIRLWorldModelRunner:
             if self.collect_noise_std > 0.0:
                 action = action + self.collect_noise_std * torch.randn_like(action)
         teacher_action = self._teacher_action(obs)
-        teacher_blend = self._teacher_collect_blend(iteration)
-        if teacher_action is not None and teacher_blend > 0.0:
-            action = teacher_blend * teacher_action + (1.0 - teacher_blend) * action
+        teacher_blend = self._teacher_collect_blend_for_obs(obs, iteration)
+        if teacher_action is not None:
+            if torch.is_tensor(teacher_blend):
+                if float(torch.max(teacher_blend).detach().item()) > 0.0:
+                    action = teacher_blend * teacher_action + (1.0 - teacher_blend) * action
+            elif teacher_blend > 0.0:
+                action = teacher_blend * teacher_action + (1.0 - teacher_blend) * action
         if self.collect_action_clip is not None:
             action = torch.clamp(action, -float(self.collect_action_clip), float(self.collect_action_clip))
         return action
