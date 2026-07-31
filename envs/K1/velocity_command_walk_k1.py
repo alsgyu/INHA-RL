@@ -529,6 +529,8 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         swing_clearance_deficit = torch.sum(torch.clamp(clearance_target - clearance, min=0.0) * swing_weight, dim=-1) / torch.clamp(
             swing_weight.sum(dim=-1), min=1.0
         )
+        swing_clearance_excess = self._straight_swing_clearance_excess_value()
+        no_foot_contact = self._straight_no_foot_contact_value()
         swing_edge_contact = self._straight_swing_edge_contact_value()
         swing_contact = self._straight_swing_contact_value()
         swing_pitch_asymmetry = self._straight_swing_pitch_asymmetry_value()
@@ -548,6 +550,8 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         sustain_right_forward_pitch_push = self._sustain_right_forward_pitch_push_value()
         sustain_ankle_tracking = self._sustain_ankle_pitch_tracking_value()
         sustain_yaw_drift = self._sustain_yaw_drift_value()
+        sustain_swing_clearance_excess = self._sustain_swing_clearance_excess_value()
+        sustain_no_foot_contact = self._sustain_no_foot_contact_value()
 
         base_tilt = torch.sum(torch.square(self.projected_gravity[:, :2]), dim=-1)
         base_height = self.base_pos[:, 2] - self.terrain.terrain_heights(self.base_pos)
@@ -580,6 +584,8 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             "velocity_error": velocity_error,
             "feet_slip": feet_slip,
             "swing_clearance_deficit": swing_clearance_deficit,
+            "swing_clearance_excess": swing_clearance_excess,
+            "no_foot_contact": no_foot_contact,
             "low_speed_overspeed": low_speed_overspeed * low_speed_mask,
             "low_speed_lateral_instability": low_speed_lateral_instability * low_speed_mask,
             "swing_edge_contact": swing_edge_contact,
@@ -601,6 +607,8 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             "sustain_right_forward_pitch_push": sustain_right_forward_pitch_push,
             "sustain_ankle_tracking": sustain_ankle_tracking,
             "sustain_yaw_drift": sustain_yaw_drift,
+            "sustain_swing_clearance_excess": sustain_swing_clearance_excess,
+            "sustain_no_foot_contact": sustain_no_foot_contact,
             "base_tilt": base_tilt,
             "low_height": low_height,
             "stand_drift": stand_drift,
@@ -720,6 +728,37 @@ class VelocityCommandWalkK1(ParameterWalkK1):
     def _reward_straight_ankle_pitch_tracking(self):
         return self._ankle_pitch_tracking_error_value() * self._straight_walk_mask()
 
+    def _swing_clearance_excess_value(self, mask):
+        left_swing, right_swing = self._swing_masks()
+        swing_mask = torch.stack((left_swing, right_swing), dim=-1).float()
+        side_weights = torch.as_tensor(
+            self.cfg["rewards"].get("swing_clearance_side_weights", [1.0, 1.0]),
+            dtype=torch.float,
+            device=self.device,
+        ).view(1, -1)
+        max_clearance = float(self.cfg["rewards"].get("swing_clearance_max", 0.115))
+        excess = torch.clamp(self._foot_clearance() - max_clearance, min=0.0)
+        weighted = torch.square(excess) * swing_mask * side_weights
+        denom = torch.clamp(torch.sum(swing_mask * side_weights, dim=-1), min=1.0)
+        return torch.sum(weighted, dim=-1) / denom * mask
+
+    def _no_foot_contact_value(self, mask):
+        min_contacts = float(self.cfg["rewards"].get("min_stance_foot_contacts", 1.0))
+        contact_count = torch.sum(self.feet_contact.float(), dim=-1)
+        return (contact_count < min_contacts).float() * mask
+
+    def _straight_swing_clearance_excess_value(self):
+        return self._swing_clearance_excess_value(self._straight_walk_mask())
+
+    def _straight_no_foot_contact_value(self):
+        return self._no_foot_contact_value(self._straight_walk_mask())
+
+    def _reward_straight_swing_clearance_excess(self):
+        return self._straight_swing_clearance_excess_value()
+
+    def _reward_straight_no_foot_contact(self):
+        return self._straight_no_foot_contact_value()
+
     def _sustain_forward_pitch_value(self):
         threshold = float(self.cfg["rewards"].get("sustain_forward_pitch_threshold", 0.040))
         forward_pitch = torch.clamp(self.projected_gravity[:, 0] - threshold, min=0.0)
@@ -755,6 +794,12 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         yaw_vel = torch.clamp(self.filtered_ang_vel[:, 2], min=-yaw_clip, max=yaw_clip)
         return torch.square(yaw_vel) * self._straight_sustain_mask()
 
+    def _sustain_swing_clearance_excess_value(self):
+        return self._swing_clearance_excess_value(self._straight_sustain_mask())
+
+    def _sustain_no_foot_contact_value(self):
+        return self._no_foot_contact_value(self._straight_sustain_mask())
+
     def _reward_sustain_forward_pitch(self):
         return self._sustain_forward_pitch_value()
 
@@ -772,6 +817,12 @@ class VelocityCommandWalkK1(ParameterWalkK1):
 
     def _reward_sustain_yaw_drift(self):
         return self._sustain_yaw_drift_value()
+
+    def _reward_sustain_swing_clearance_excess(self):
+        return self._sustain_swing_clearance_excess_value()
+
+    def _reward_sustain_no_foot_contact(self):
+        return self._sustain_no_foot_contact_value()
 
     def _straight_swing_mask(self):
         left_swing, right_swing = self._swing_masks()
