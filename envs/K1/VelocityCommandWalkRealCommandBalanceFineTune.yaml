@@ -195,7 +195,7 @@ commands:
     stop_gait_frequency: 1.50
     decel_gait_hold_enabled: true
     decel_gait_hold_s: 1.60
-    decel_gait_hold_min_drop: 0.18
+    decel_gait_hold_min_drop: 0.30
     decel_gait_hold_min_target_norm: 0.035
     decel_gait_hold_max_target_norm: 1.50
     decel_gait_hold_overspeed_margin: 0.06
