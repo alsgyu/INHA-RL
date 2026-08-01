@@ -1,7 +1,9 @@
 import argparse
 import glob
 import os
+import queue
 import sys
+import threading
 import time
 
 import numpy as np
@@ -38,6 +40,51 @@ K1_JOINT_NAMES = [
     "Right_Ankle_Pitch",
     "Right_Ankle_Roll",
 ]
+
+
+class StdinVelocityInput:
+    def __init__(self):
+        self.events = queue.Queue()
+        self.thread = None
+
+    def start(self):
+        if self.thread is not None and self.thread.is_alive():
+            return
+        self.thread = threading.Thread(target=self._read_loop)
+        self.thread.daemon = True
+        self.thread.start()
+        print("[mujoco-cmd] line mode: stop, q, or '<vx> <vy> <vyaw>' such as '0.7 0.2 0.2'")
+
+    def _read_loop(self):
+        while True:
+            try:
+                line = sys.stdin.readline()
+            except Exception as exc:
+                self.events.put(("error", str(exc)))
+                return
+            if line == "":
+                return
+            self.events.put(self._parse(line))
+
+    @staticmethod
+    def _parse(line):
+        text = line.strip()
+        if not text:
+            return ("noop", None)
+        lowered = text.lower()
+        if lowered in ("help", "h", "?"):
+            return ("help", None)
+        if lowered in ("stop", "space", "zero", "hold", "0"):
+            return ("cmd", (0.0, 0.0, 0.0))
+        if lowered in ("q", "quit", "exit"):
+            return ("quit", None)
+        parts = lowered.replace(",", " ").split()
+        if len(parts) != 3:
+            return ("error", f"expected '<vx> <vy> <vyaw>', got '{text}'")
+        try:
+            return ("cmd", tuple(float(part) for part in parts))
+        except ValueError:
+            return ("error", f"could not parse command '{text}'")
 
 
 class ClampedActor(torch.nn.Module):
@@ -484,6 +531,11 @@ def main():
     parser.add_argument("--vx", type=float, default=0.2)
     parser.add_argument("--vy", type=float, default=0.0)
     parser.add_argument("--vyaw", type=float, default=0.0)
+    parser.add_argument(
+        "--stdin_cmd",
+        action="store_true",
+        help="Read line-based velocity commands from stdin while MuJoCo is running.",
+    )
     parser.add_argument("--target_x", type=float, default=None)
     parser.add_argument("--target_y", type=float, default=None)
     parser.add_argument("--target_theta", type=float, default=None)
@@ -690,7 +742,49 @@ def main():
         f"base_z={default_base_height:.3f}"
     )
 
-    while data.time < args.duration_s:
+    stdin_cmd = StdinVelocityInput() if args.stdin_cmd and target_pose is None else None
+    if args.stdin_cmd and target_pose is not None:
+        print("[mujoco-cmd] ignored because target-pose mode is active")
+    if stdin_cmd is not None:
+        stdin_cmd.start()
+
+    quit_requested = False
+
+    def process_stdin_commands():
+        nonlocal start_xy, start_yaw, path_start_time, quit_requested
+        if stdin_cmd is None:
+            return
+        while True:
+            try:
+                kind, payload = stdin_cmd.events.get_nowait()
+            except queue.Empty:
+                return
+            if kind == "noop":
+                continue
+            if kind == "help":
+                print("[mujoco-cmd] use: stop | q | <vx> <vy> <vyaw>")
+                continue
+            if kind == "quit":
+                quit_requested = True
+                print("[mujoco-cmd] exiting")
+                continue
+            if kind == "error":
+                print(f"[mujoco-cmd] {payload}")
+                continue
+            if kind == "cmd":
+                args.vx, args.vy, args.vyaw = payload
+                start_xy = np.copy(data.qpos[0:2])
+                start_yaw = metric_yaw
+                path_start_time = float(data.time)
+                metrics.set_target_command((args.vx, args.vy, args.vyaw))
+                print(
+                    "[mujoco-cmd] "
+                    f"cmd=({args.vx:+.3f},{args.vy:+.3f},{args.vyaw:+.3f}) "
+                    f"reset_path_at_t={data.time:.2f}s"
+                )
+
+    while data.time < args.duration_s and not quit_requested:
+        process_stdin_commands()
         if enable_getup and args.force_fall_after_s >= 0.0 and (not forced_fall) and data.time >= args.force_fall_after_s:
             set_root_pose(data, data.qpos[0:3].copy(), 0.25, fallen_rpy(args.fall_pose))
             mujoco.mj_forward(model, data)

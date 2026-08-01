@@ -3,9 +3,11 @@ import time
 import yaml
 import logging
 import threading
+import queue
 import hashlib
 import os
 import subprocess
+import sys
 
 from booster_robotics_sdk_python import (
     ChannelFactory,
@@ -24,8 +26,57 @@ from utils.timer import TimerConfig, Timer
 from utils.policy_thomas import Policy
 
 
+class StdinCommandInput:
+    def __init__(self):
+        self.events = queue.Queue()
+        self.thread = None
+
+    def start(self):
+        if self.thread is not None and self.thread.is_alive():
+            return
+        self.thread = threading.Thread(target=self._read_loop)
+        self.thread.daemon = True
+        self.thread.start()
+        print("[cmd-input] line mode: b, r, stop, q, or '<vx> <vy> <vyaw>' such as '0.7 0.2 0.2'")
+
+    def _read_loop(self):
+        while True:
+            try:
+                line = sys.stdin.readline()
+            except Exception as exc:
+                self.events.put(("error", str(exc)))
+                return
+            if line == "":
+                return
+            self.events.put(self._parse(line))
+
+    @staticmethod
+    def _parse(line):
+        text = line.strip()
+        if not text:
+            return ("noop", None)
+        lowered = text.lower()
+        if lowered in ("help", "h", "?"):
+            return ("help", None)
+        if lowered in ("b", "custom", "prepare"):
+            return ("custom", None)
+        if lowered in ("r", "rl", "walk", "gait"):
+            return ("rl", None)
+        if lowered in ("stop", "space", "zero", "hold", "0"):
+            return ("cmd", (0.0, 0.0, 0.0))
+        if lowered in ("q", "quit", "exit"):
+            return ("quit", None)
+        parts = lowered.replace(",", " ").split()
+        if len(parts) != 3:
+            return ("error", f"expected '<vx> <vy> <vyaw>', got '{text}'")
+        try:
+            return ("cmd", tuple(float(part) for part in parts))
+        except ValueError:
+            return ("error", f"could not parse command '{text}'")
+
+
 class Controller:
-    def __init__(self, cfg_file) -> None:
+    def __init__(self, cfg_file, args=None) -> None:
         # Setup logging
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
@@ -36,15 +87,18 @@ class Controller:
 
         # Initialize components
         remote_cfg = self.cfg.get("remote_control", {})
+        args = args or object()
         self.remoteControlService = RemoteControlService(
             JoystickConfig(
-                max_vx=float(remote_cfg.get("max_vx", 0.5)),
-                max_vy=float(remote_cfg.get("max_vy", 0.5)),
-                max_vyaw=float(remote_cfg.get("max_vyaw", 0.5)),
+                max_vx=float(getattr(args, "cmd_max_vx", None) or remote_cfg.get("max_vx", 0.5)),
+                max_vy=float(getattr(args, "cmd_max_vy", None) or remote_cfg.get("max_vy", 0.5)),
+                max_vyaw=float(getattr(args, "cmd_max_vyaw", None) or remote_cfg.get("max_vyaw", 0.5)),
                 control_threshold=float(remote_cfg.get("control_threshold", 0.1)),
                 keyboard_step_vx=float(remote_cfg.get("keyboard_step_vx", 0.1)),
                 keyboard_step_vy=float(remote_cfg.get("keyboard_step_vy", 0.1)),
                 keyboard_step_vyaw=float(remote_cfg.get("keyboard_step_vyaw", 0.1)),
+                joystick_enabled=not bool(getattr(args, "stdin_cmd", False)),
+                keyboard_enabled=not bool(getattr(args, "stdin_cmd", False)),
             )
         )
         self.policy = Policy(cfg=self.cfg)
@@ -61,6 +115,7 @@ class Controller:
         self.motion_command_alpha = 0.0
         self.last_debug_print_time = 0.0
         self.control_stage = "idle"
+        self.stdin_cmd = StdinCommandInput() if bool(getattr(args, "stdin_cmd", False)) else None
 
         self.publish_lock = threading.Lock()
 
@@ -221,6 +276,13 @@ class Controller:
         )
         print(
             "[deploy-startup] "
+            f"cmd_limits=(vx={self.remoteControlService.config.max_vx:.2f},"
+            f"vy={self.remoteControlService.config.max_vy:.2f},"
+            f"vyaw={self.remoteControlService.config.max_vyaw:.2f}) "
+            f"stdin_cmd={self.stdin_cmd is not None}"
+        )
+        print(
+            "[deploy-startup] "
             f"action_dof_indexes={[int(i) for i in getattr(self.policy, 'action_dof_indexes', [])]} "
             f"policy_joint_names={getattr(self.policy, 'policy_joint_names', 'unknown')}"
         )
@@ -353,6 +415,54 @@ class Controller:
         vy = float(self.remoteControlService.get_vy_cmd())
         vyaw = float(self.remoteControlService.get_vyaw_cmd())
         return float(np.sqrt(vx * vx + vy * vy + vyaw * vyaw))
+
+    def start_stdin_command_input(self):
+        if self.stdin_cmd is not None:
+            self.stdin_cmd.start()
+
+    def _process_stdin_commands(self):
+        if self.stdin_cmd is None:
+            return
+        while True:
+            try:
+                kind, payload = self.stdin_cmd.events.get_nowait()
+            except queue.Empty:
+                return
+
+            if kind == "noop":
+                continue
+            if kind == "help":
+                print("[cmd-input] use: b | r | stop | q | <vx> <vy> <vyaw>")
+                continue
+            if kind == "custom":
+                self.remoteControlService.request_custom_mode()
+                print("[cmd-input] requested custom mode")
+                continue
+            if kind == "rl":
+                self.remoteControlService.request_rl_gait()
+                print("[cmd-input] requested RL gait")
+                continue
+            if kind == "quit":
+                self.remoteControlService.set_velocity_command(0.0, 0.0, 0.0)
+                self.running = False
+                print("[cmd-input] stop command sent; exiting")
+                continue
+            if kind == "error":
+                print(f"[cmd-input] {payload}")
+                continue
+            if kind == "cmd":
+                vx, vy, vyaw = payload
+                self.remoteControlService.set_velocity_command(vx, vy, vyaw)
+                actual = (
+                    self.remoteControlService.get_vx_cmd(),
+                    self.remoteControlService.get_vy_cmd(),
+                    self.remoteControlService.get_vyaw_cmd(),
+                )
+                clipped = "" if np.allclose(actual, payload, atol=1.0e-6) else " clipped"
+                print(
+                    "[cmd-input] "
+                    f"cmd=({actual[0]:+.2f},{actual[1]:+.2f},{actual[2]:+.2f}){clipped}"
+                )
 
     def _zero_command_hold_active(self):
         if not bool(self.cfg["policy"].get("zero_command_hold_prepare", False)):
@@ -541,10 +651,13 @@ class Controller:
 
     def start_custom_mode_conditionally(self):
         print(f"{self.remoteControlService.get_custom_mode_operation_hint()}")
-        while True:
+        while self.running:
+            self._process_stdin_commands()
             if self.remoteControlService.start_custom_mode():
                 break
             time.sleep(0.1)
+        if not self.running:
+            return
         start_time = time.perf_counter()
         prepare_target = np.array(self.cfg["prepare"]["default_qpos"], dtype=np.float32)
         start_target = np.copy(self.dof_pos_latest)
@@ -569,10 +682,13 @@ class Controller:
 
     def start_rl_gait_conditionally(self):
         print(f"{self.remoteControlService.get_rl_gait_operation_hint()}")
-        while True:
+        while self.running:
+            self._process_stdin_commands()
             if self.remoteControlService.start_rl_gait():
                 break
             time.sleep(0.1)
+        if not self.running:
+            return
         with self.publish_lock:
             self.policy.reset_runtime_state()
             self._reset_policy_dof_vel()
@@ -595,6 +711,9 @@ class Controller:
         print(f"{self.remoteControlService.get_operation_hint()}")
 
     def run(self):
+        self._process_stdin_commands()
+        if not self.running:
+            return
         time_now = self.timer.get_time()
         if time_now < self.next_inference_time:
             time.sleep(0.001)
@@ -762,19 +881,29 @@ if __name__ == "__main__":
     )
     parser.add_argument("--motion_start_action_ramp_s", type=float, default=None)
     parser.add_argument("--motion_start_command_ramp_s", type=float, default=None)
+    parser.add_argument(
+        "--stdin_cmd",
+        action="store_true",
+        help="Read line-based velocity commands from stdin: '<vx> <vy> <vyaw>', stop, b, r, q.",
+    )
+    parser.add_argument("--cmd_max_vx", type=float, default=None, help="Override stdin/keyboard vx command limit.")
+    parser.add_argument("--cmd_max_vy", type=float, default=None, help="Override stdin/keyboard vy command limit.")
+    parser.add_argument("--cmd_max_vyaw", type=float, default=None, help="Override stdin/keyboard vyaw command limit.")
     args = parser.parse_args()
     cfg_file = os.path.join("configs", args.config)
 
     print(f"Starting custom controller, connecting to {args.net} ...")
     ChannelFactory.Instance().Init(0, args.net)
 
-    with Controller(cfg_file) as controller:
+    with Controller(cfg_file, args=args) as controller:
         controller.apply_prepare_overrides(args)
         controller.print_startup_diagnostics(cfg_file)
+        controller.start_stdin_command_input()
         time.sleep(2)  # Wait for channels to initialize
         print("Initialization complete.")
         controller.start_custom_mode_conditionally()
-        controller.start_rl_gait_conditionally()
+        if controller.running:
+            controller.start_rl_gait_conditionally()
 
         try:
             while controller.running:

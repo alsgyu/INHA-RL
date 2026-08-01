@@ -15,6 +15,8 @@ class JoystickConfig:
     keyboard_step_vx: float = 0.1
     keyboard_step_vy: float = 0.1
     keyboard_step_vyaw: float = 0.1
+    joystick_enabled: bool = True
+    keyboard_enabled: bool = True
     # logitech
     custom_mode_button: evdev.ecodes = evdev.ecodes.BTN_C
     rl_gait_button: evdev.ecodes = evdev.ecodes.BTN_B
@@ -38,29 +40,44 @@ class RemoteControlService:
         self.config = config or JoystickConfig()
         self._lock = threading.Lock()
         self._running = True
-        try:
-            self._init_joystick()
-            self._start_joystick_thread()
-        except Exception as e:
-            print(f"{e}, downgrade to keyboard control")
-            self._init_keyboard_control()
-            self._start_keyboard_thread()
-
         self.vx = 0.0
         self.vy = 0.0
         self.vyaw = 0.0
+        if self.config.joystick_enabled:
+            try:
+                self._init_joystick()
+                self._start_joystick_thread()
+            except Exception as e:
+                print(f"{e}, downgrade to keyboard control")
+                self._init_keyboard_control()
+                if self.config.keyboard_enabled:
+                    self._start_keyboard_thread()
+                else:
+                    print("Keyboard control disabled; use stdin command input.")
+        else:
+            self._init_keyboard_control()
+            if self.config.keyboard_enabled:
+                self._start_keyboard_thread()
+            else:
+                print("Joystick/keyboard control disabled; use stdin command input.")
 
     def get_operation_hint(self) -> str:
+        if not self.config.joystick_enabled and not self.config.keyboard_enabled:
+            return "Type '<vx> <vy> <vyaw>' then Enter; type 'stop' for 0 0 0; type 'q' to quit."
         if hasattr(self, "joystick") and getattr(self, "joystick") != None:
             return "Left axis for forward/backward/left/right, right axis for rotation left/right"
         return "Press 'w'/'s' to increase/decrease vx; Press 'a'/'d' to increase/decrease vy; Press 'q'/'e' to increase/decrease vyaw, press 'Space' to stop."
 
     def get_custom_mode_operation_hint(self) -> str:
+        if not self.config.joystick_enabled and not self.config.keyboard_enabled:
+            return "Type 'b' then Enter to start custom mode."
         if hasattr(self, "joystick") and getattr(self, "joystick") != None:
             return "Press button B to start custom mode."
         return "Press 'b' to start custom mode."
 
     def get_rl_gait_operation_hint(self) -> str:
+        if not self.config.joystick_enabled and not self.config.keyboard_enabled:
+            return "Type 'r' then Enter to start rl Gait."
         if hasattr(self, "joystick") and getattr(self, "joystick") != None:
             return "Press button A to start rl Gait."
         return "Press 'r' to start rl Gait."
@@ -82,39 +99,31 @@ class RemoteControlService:
         if key == "r":
             self.keyboard_start_rl_gait = True
         if key == "w":
-            old_x = self.vx
-            self.vx += self.config.keyboard_step_vx
-            self.vx = min(self.vx, self.config.max_vx)
+            old_x = self.get_vx_cmd()
+            self.set_velocity_command(old_x + self.config.keyboard_step_vx, self.get_vy_cmd(), self.get_vyaw_cmd())
             print(f"VX: {old_x:.2f} => {self.vx:.2f}")
         if key == "s":
-            old_x = self.vx
-            self.vx -= self.config.keyboard_step_vx
-            self.vx = max(self.vx, -self.config.max_vx)
+            old_x = self.get_vx_cmd()
+            self.set_velocity_command(old_x - self.config.keyboard_step_vx, self.get_vy_cmd(), self.get_vyaw_cmd())
             print(f"VX: {old_x:.2f} => {self.vx:.2f}")
         if key == "a":
-            old_y = self.vy
-            self.vy += self.config.keyboard_step_vy
-            self.vy = min(self.vy, self.config.max_vy)
+            old_y = self.get_vy_cmd()
+            self.set_velocity_command(self.get_vx_cmd(), old_y + self.config.keyboard_step_vy, self.get_vyaw_cmd())
             print(f"VY: {old_y:.2f} => {self.vy:.2f}")
         if key == "d":
-            old_y = self.vy
-            self.vy -= self.config.keyboard_step_vy
-            self.vy = max(self.vy, -self.config.max_vy)
+            old_y = self.get_vy_cmd()
+            self.set_velocity_command(self.get_vx_cmd(), old_y - self.config.keyboard_step_vy, self.get_vyaw_cmd())
             print(f"VY: {old_y:.2f} => {self.vy:.2f}")
         if key == "q":
-            old_yaw = self.vyaw
-            self.vyaw += self.config.keyboard_step_vyaw
-            self.vyaw = min(self.vyaw, self.config.max_vyaw)
+            old_yaw = self.get_vyaw_cmd()
+            self.set_velocity_command(self.get_vx_cmd(), self.get_vy_cmd(), old_yaw + self.config.keyboard_step_vyaw)
             print(f"VYaw: {old_yaw:.2f} => {self.vyaw:.2f}")
         if key == "e":
-            old_yaw = self.vyaw
-            self.vyaw -= self.config.keyboard_step_vyaw
-            self.vyaw = max(self.vyaw, -self.config.max_vyaw)
+            old_yaw = self.get_vyaw_cmd()
+            self.set_velocity_command(self.get_vx_cmd(), self.get_vy_cmd(), old_yaw - self.config.keyboard_step_vyaw)
             print(f"VYaw: {old_yaw:.2f} => {self.vyaw:.2f}")
         if key == "space":
-            self.vx = 0
-            self.vy = 0
-            self.vyaw = 0
+            self.set_velocity_command(0.0, 0.0, 0.0)
             print(f"FULL STOP")
 
     def _init_joystick(self) -> None:
@@ -191,13 +200,16 @@ class RemoteControlService:
         try:
             """Handle axis events."""
             if code == self.config.x_axis:
-                self.vx = self._scale(value, self.config.max_vx, self.config.control_threshold, code)
+                vx = self._scale(value, self.config.max_vx, self.config.control_threshold, code)
+                self.set_velocity_command(vx, self.get_vy_cmd(), self.get_vyaw_cmd())
                 # print("value x:", self.vx)
             elif code == self.config.y_axis:
-                self.vy = self._scale(value, self.config.max_vy, self.config.control_threshold, code)
+                vy = self._scale(value, self.config.max_vy, self.config.control_threshold, code)
+                self.set_velocity_command(self.get_vx_cmd(), vy, self.get_vyaw_cmd())
                 # print("value y:", self.vy)
             elif code == self.config.yaw_axis:
-                self.vyaw = self._scale(value, self.config.max_vyaw, self.config.control_threshold, code)
+                vyaw = self._scale(value, self.config.max_vyaw, self.config.control_threshold, code)
+                self.set_velocity_command(self.get_vx_cmd(), self.get_vy_cmd(), vyaw)
                 # print("value yaw:", self.vyaw)
         except Exception:
             raise
@@ -229,6 +241,19 @@ class RemoteControlService:
         """Get yaw velocity command."""
         with self._lock:
             return self.vyaw
+
+    def set_velocity_command(self, vx: float, vy: float, vyaw: float):
+        """Set velocity command, clipped by configured command limits."""
+        with self._lock:
+            self.vx = float(max(min(vx, self.config.max_vx), -self.config.max_vx))
+            self.vy = float(max(min(vy, self.config.max_vy), -self.config.max_vy))
+            self.vyaw = float(max(min(vyaw, self.config.max_vyaw), -self.config.max_vyaw))
+
+    def request_custom_mode(self):
+        self.keyboard_start_custom_mode = True
+
+    def request_rl_gait(self):
+        self.keyboard_start_rl_gait = True
 
     def close(self):
         """Clean up resources."""

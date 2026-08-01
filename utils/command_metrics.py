@@ -67,6 +67,13 @@ class CommandVelocityMetrics:
     def reset_window(self):
         self.window_rows.clear()
 
+    def set_target_command(self, target_command, reset_totals=True):
+        self.target_command = np.asarray(target_command, dtype=np.float64)
+        self.reset_window()
+        if reset_totals:
+            self.total_count = 0
+            self.total_abs_error[:] = 0.0
+
     def update(self, time_s, mode, actual_velocity, policy_command=None, tracked=True):
         actual = np.asarray(actual_velocity, dtype=np.float64)
         policy = self.target_command if policy_command is None else np.asarray(policy_command, dtype=np.float64)
