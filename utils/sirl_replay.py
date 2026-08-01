@@ -10,6 +10,8 @@ SIRL_METRIC_KEYS = (
     "swing_clearance_deficit",
     "swing_clearance_excess",
     "no_foot_contact",
+    "low_speed_no_foot_contact",
+    "low_speed_support_contact_loss",
     "support_front_lag",
     "support_front_pitch_lag",
     "swing_foot_forward_lag",
@@ -45,7 +47,10 @@ SIRL_METRIC_KEYS = (
     "base_tilt",
     "low_height",
     "stand_drift",
+    "stand_forward_pitch",
     "stop_transition_drift",
+    "stop_transition_forward_pitch",
+    "stop_transition_no_foot_contact",
 )
 
 

@@ -166,6 +166,11 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         command_norm = self._public_command_norm(self.commands[:, : len(self.PUBLIC_COMMAND_KEYS)])
         window_s = float(self.cfg["rewards"].get("stop_transition_window_s", 1.4))
         min_command_norm = float(self.cfg["rewards"].get("stop_transition_min_command_norm", threshold))
+        if bool(self.cfg["rewards"].get("stop_transition_hold_after_command_zero", False)):
+            return (
+                (target_norm <= threshold)
+                & (self.public_command_age <= window_s)
+            ).float()
         return (
             (target_norm <= threshold)
             & (command_norm > min_command_norm)
@@ -678,12 +683,19 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         low_speed_lateral_instability = torch.square(lateral_vel) + 0.35 * torch.square(yaw_vel) + 0.60 * torch.square(
             self.projected_gravity[:, 1]
         )
+        low_speed_no_foot_contact = self._low_speed_no_foot_contact_value()
+        low_speed_support_contact_loss = self._low_speed_support_contact_loss_value()
+        stand_forward_pitch = self._command_stand_forward_pitch_value()
+        stop_transition_forward_pitch = self._stop_transition_forward_pitch_value()
+        stop_transition_no_foot_contact = self._stop_transition_no_foot_contact_value()
         return {
             "velocity_error": velocity_error,
             "feet_slip": feet_slip,
             "swing_clearance_deficit": swing_clearance_deficit,
             "swing_clearance_excess": swing_clearance_excess,
             "no_foot_contact": no_foot_contact,
+            "low_speed_no_foot_contact": low_speed_no_foot_contact,
+            "low_speed_support_contact_loss": low_speed_support_contact_loss,
             "support_front_lag": support_front_lag,
             "support_front_pitch_lag": support_front_pitch_lag,
             "swing_foot_forward_lag": swing_foot_forward_lag,
@@ -719,7 +731,10 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             "base_tilt": base_tilt,
             "low_height": low_height,
             "stand_drift": stand_drift,
+            "stand_forward_pitch": stand_forward_pitch,
             "stop_transition_drift": stop_transition_drift,
+            "stop_transition_forward_pitch": stop_transition_forward_pitch,
+            "stop_transition_no_foot_contact": stop_transition_no_foot_contact,
         }
 
     def _reward_lin_vel_y_error(self):
@@ -796,6 +811,20 @@ class VelocityCommandWalkK1(ParameterWalkK1):
     def _reward_stop_transition_action(self):
         return torch.sum(torch.square(self.actions), dim=-1) * self._stop_transition_mask()
 
+    def _stop_transition_forward_pitch_value(self):
+        threshold = float(self.cfg["rewards"].get("stop_transition_forward_pitch_threshold", 0.020))
+        forward_pitch = torch.clamp(self.projected_gravity[:, 0] - threshold, min=0.0)
+        return torch.square(forward_pitch) * self._stop_transition_mask()
+
+    def _reward_stop_transition_forward_pitch(self):
+        return self._stop_transition_forward_pitch_value()
+
+    def _stop_transition_no_foot_contact_value(self):
+        return self._no_foot_contact_value(self._stop_transition_mask())
+
+    def _reward_stop_transition_no_foot_contact(self):
+        return self._stop_transition_no_foot_contact_value()
+
     def _ankle_pitch_tracking_error_value(self):
         if self.num_actions < 11:
             return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
@@ -860,6 +889,24 @@ class VelocityCommandWalkK1(ParameterWalkK1):
     def _straight_no_foot_contact_value(self):
         return self._no_foot_contact_value(self._straight_walk_mask())
 
+    def _low_speed_no_foot_contact_value(self):
+        return self._no_foot_contact_value(self._low_speed_straight_mask())
+
+    def _support_contact_loss_value(self, mask):
+        left_swing, right_swing = self._swing_masks()
+        left_contact = self.feet_contact[:, 0].float()
+        right_contact = self.feet_contact[:, 1].float()
+        left_support_loss = left_swing.float() * (1.0 - right_contact)
+        right_support_loss = right_swing.float() * (1.0 - left_contact)
+        phase_count = torch.clamp(left_swing.float() + right_swing.float(), min=1.0)
+        return (left_support_loss + right_support_loss) / phase_count * mask
+
+    def _straight_support_contact_loss_value(self):
+        return self._support_contact_loss_value(self._straight_walk_mask())
+
+    def _low_speed_support_contact_loss_value(self):
+        return self._support_contact_loss_value(self._low_speed_straight_mask())
+
     def _straight_support_front_lag_value(self):
         return self._support_front_lag_value(self._straight_walk_mask())
 
@@ -877,6 +924,15 @@ class VelocityCommandWalkK1(ParameterWalkK1):
 
     def _reward_straight_no_foot_contact(self):
         return self._straight_no_foot_contact_value()
+
+    def _reward_low_speed_no_foot_contact(self):
+        return self._low_speed_no_foot_contact_value()
+
+    def _reward_straight_support_contact_loss(self):
+        return self._straight_support_contact_loss_value()
+
+    def _reward_low_speed_support_contact_loss(self):
+        return self._low_speed_support_contact_loss_value()
 
     def _reward_straight_support_front_lag(self):
         return self._straight_support_front_lag_value()
@@ -998,8 +1054,8 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         straight = self._straight_walk_mask()
         left_contact = self.feet_contact[:, 0].float()
         right_contact = self.feet_contact[:, 1].float()
-        left_phase = left_swing.float() * ((1.0 - left_contact) + right_contact)
-        right_phase = right_swing.float() * ((1.0 - right_contact) + left_contact)
+        left_phase = left_swing.float() * (1.0 - left_contact) * right_contact
+        right_phase = right_swing.float() * (1.0 - right_contact) * left_contact
         phase_count = torch.clamp(left_swing.float() + right_swing.float(), min=1.0)
         return (left_phase + right_phase) / phase_count * straight
 
@@ -1239,3 +1295,14 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         feet_vel = (self.last_feet_pos - self.feet_pos) / self.dt
         feet_xy_vel = torch.sum(torch.square(feet_vel[:, :, :2]), dim=-1)
         return torch.sum(feet_xy_vel * self.feet_contact.float(), dim=-1) * self._stand_mask()
+
+    def _command_stand_forward_pitch_value(self):
+        threshold = float(self.cfg["rewards"].get("command_stand_forward_pitch_threshold", 0.015))
+        forward_pitch = torch.clamp(self.projected_gravity[:, 0] - threshold, min=0.0)
+        return torch.square(forward_pitch) * self._stand_mask()
+
+    def _reward_command_stand_forward_pitch(self):
+        return self._command_stand_forward_pitch_value()
+
+    def _reward_command_stand_no_foot_contact(self):
+        return self._no_foot_contact_value(self._stand_mask())
