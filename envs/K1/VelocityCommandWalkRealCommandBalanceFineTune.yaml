@@ -193,6 +193,15 @@ commands:
     stop_gait_hold_min_filtered_speed: 0.08
     stop_gait_hold_drive: 0.20
     stop_gait_frequency: 1.50
+    decel_gait_hold_enabled: true
+    decel_gait_hold_s: 1.60
+    decel_gait_hold_min_drop: 0.18
+    decel_gait_hold_min_target_norm: 0.035
+    decel_gait_hold_max_target_norm: 1.50
+    decel_gait_hold_overspeed_margin: 0.06
+    decel_gait_hold_command_margin: 0.06
+    decel_gait_hold_drive: 0.22
+    decel_gait_frequency: 1.50
     foot_yaw_from_yaw_gain: 0.10
     foot_yaw_target_clip: [-0.18, 0.18]
     body_pitch_gain: 0.0

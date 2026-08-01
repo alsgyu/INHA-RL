@@ -244,6 +244,42 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         )
         return recent_stop & recovery_needed
 
+    def _decel_recovery_mask(self, env_ids=None, target_norm=None, command_norm=None):
+        adapter = self.current_adapter_config
+        if not bool(adapter.get("decel_gait_hold_enabled", False)):
+            if env_ids is None:
+                return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+            return torch.zeros(len(env_ids), dtype=torch.bool, device=self.device)
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+        if target_norm is None:
+            target_norm = self._public_command_norm(self.public_command_targets[env_ids])
+        if command_norm is None:
+            command_norm = self._public_command_norm(self.commands[env_ids, : len(self.PUBLIC_COMMAND_KEYS)])
+
+        threshold = float(adapter.get("stand_command_threshold", 0.04))
+        window_s = float(adapter.get("decel_gait_hold_s", self.cfg["rewards"].get("decel_transition_window_s", 1.8)))
+        min_drop = float(adapter.get("decel_gait_hold_min_drop", self.cfg["rewards"].get("decel_transition_min_speed_drop", 0.12)))
+        min_target_norm = float(adapter.get("decel_gait_hold_min_target_norm", threshold))
+        max_target_norm = float(adapter.get("decel_gait_hold_max_target_norm", 10.0))
+        overspeed_margin = float(
+            adapter.get(
+                "decel_gait_hold_overspeed_margin",
+                self.cfg["rewards"].get("decel_transition_overspeed_margin", 0.05),
+            )
+        )
+        command_margin = float(adapter.get("decel_gait_hold_command_margin", overspeed_margin))
+
+        target_speed = torch.sqrt(torch.sum(torch.square(self.public_command_targets[env_ids, :2]), dim=-1))
+        filtered_speed = torch.sqrt(torch.sum(torch.square(self.filtered_lin_vel[env_ids, :2]), dim=-1))
+        recent_decel = (self.public_command_speed_drop[env_ids] >= min_drop) & (self.public_command_age[env_ids] <= window_s)
+        target_in_range = (target_norm > min_target_norm) & (target_norm <= max_target_norm)
+        recovery_needed = (
+            (filtered_speed > target_speed + overspeed_margin)
+            | (command_norm > target_norm + command_margin)
+        )
+        return recent_decel & target_in_range & recovery_needed
+
     def _stop_transition_mask(self):
         threshold = self._adapter_value("stand_command_threshold", 0.04)
         target_norm = self._public_command_norm(self.public_command_targets)
@@ -342,14 +378,20 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         command_norm = torch.sqrt(torch.square(vx) + torch.square(vy) + torch.square(yaw))
         target_norm = self._public_command_norm(self.public_command_targets[env_ids])
         stop_recovery = self._stop_recovery_mask(env_ids, target_norm=target_norm, command_norm=command_norm)
+        decel_recovery = self._decel_recovery_mask(env_ids, target_norm=target_norm, command_norm=command_norm)
         stop_drive = float(adapter.get("stop_gait_hold_drive", 0.45))
+        decel_drive = float(adapter.get("decel_gait_hold_drive", stop_drive))
         drive = torch.where(stop_recovery, torch.maximum(drive, torch.full_like(drive, stop_drive)), drive)
-        moving = (command_norm > stand_threshold) | stop_recovery
+        drive = torch.where(decel_recovery, torch.maximum(drive, torch.full_like(drive, decel_drive)), drive)
+        moving = (command_norm > stand_threshold) | stop_recovery | decel_recovery
         was_standing = self.gait_frequency[env_ids] <= 1.0e-8
 
         gait_min = float(adapter.get("gait_frequency_min", 1.15))
         gait_max = float(adapter.get("gait_frequency_max", 1.95))
         gait_frequency = gait_min + drive * (gait_max - gait_min)
+        if "decel_gait_frequency" in adapter:
+            decel_frequency = torch.full_like(gait_frequency, float(adapter["decel_gait_frequency"]))
+            gait_frequency = torch.where(decel_recovery, decel_frequency, gait_frequency)
         if "stop_gait_frequency" in adapter:
             stop_frequency = torch.full_like(gait_frequency, float(adapter["stop_gait_frequency"]))
             gait_frequency = torch.where(stop_recovery, stop_frequency, gait_frequency)
