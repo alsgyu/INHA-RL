@@ -768,6 +768,10 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         support_front_pitch_lag = self._straight_support_front_pitch_lag_value()
         swing_foot_forward_lag = self._straight_swing_foot_forward_lag_value()
         root_feet_lateral_diff = self._straight_root_feet_lateral_diff_value()
+        straight_path_lateral = self._reward_straight_path_lateral()
+        straight_heading = self._reward_straight_heading()
+        straight_lateral_vel = self._reward_straight_lateral_vel()
+        straight_yaw_vel = self._reward_straight_yaw_vel()
         swing_edge_contact = self._straight_swing_edge_contact_value()
         swing_contact = self._straight_swing_contact_value()
         swing_pitch_asymmetry = self._straight_swing_pitch_asymmetry_value()
@@ -852,6 +856,10 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             "support_front_pitch_lag": support_front_pitch_lag,
             "swing_foot_forward_lag": swing_foot_forward_lag,
             "root_feet_lateral_diff": root_feet_lateral_diff,
+            "straight_path_lateral": straight_path_lateral,
+            "straight_heading": straight_heading,
+            "straight_lateral_vel": straight_lateral_vel,
+            "straight_yaw_vel": straight_yaw_vel,
             "low_speed_overspeed": low_speed_overspeed * low_speed_mask,
             "low_speed_lateral_instability": low_speed_lateral_instability * low_speed_mask,
             "swing_edge_contact": swing_edge_contact,

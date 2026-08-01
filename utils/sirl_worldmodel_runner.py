@@ -440,6 +440,19 @@ class SIRLWorldModelRunner:
         high_blend = float(self.wm_cfg.get("teacher_collect_high_speed_blend", base_blend))
         speed_mix = torch.clamp((abs_vx - low_vx) / (high_vx - low_vx), min=0.0, max=1.0)
         blend = base_blend + speed_mix * (high_blend - base_blend)
+        stand_blend = self.wm_cfg.get("teacher_collect_stand_blend", None)
+        if stand_blend is not None and obs.shape[-1] >= 9:
+            scales = self._obs_public_command_scales.to(obs.device, dtype=obs.dtype)
+            command = obs[..., 6:9] / torch.clamp(scales, min=1.0e-6)
+            command_norm = torch.sqrt(torch.sum(torch.square(command[..., 0:2]), dim=-1) + torch.square(command[..., 2]))
+            stand_threshold = float(
+                self.wm_cfg.get(
+                    "teacher_collect_stand_threshold",
+                    self.cfg["commands"].get("adapter", {}).get("stand_command_threshold", 0.04),
+                )
+            )
+            stand_value = torch.full_like(blend, float(stand_blend))
+            blend = torch.where(command_norm <= stand_threshold, torch.minimum(blend, stand_value), blend)
         return torch.clamp(blend, min=0.0, max=1.0).unsqueeze(-1)
 
     def _teacher_bc_coef(self):
@@ -493,7 +506,21 @@ class SIRLWorldModelRunner:
         low_vx = float(self.wm_cfg.get("teacher_bc_low_speed_vx", 0.35))
         high_vx = max(float(self.wm_cfg.get("teacher_bc_high_speed_vx", 0.80)), low_vx + 1.0e-6)
         blend = torch.clamp((high_vx - abs_vx) / (high_vx - low_vx), min=0.0, max=1.0)
-        return 1.0 + (low_weight - 1.0) * blend
+        sample_weight = 1.0 + (low_weight - 1.0) * blend
+        stand_weight = self.wm_cfg.get("teacher_bc_stand_weight", None)
+        if stand_weight is not None and obs.shape[-1] >= 9:
+            scales = self._obs_public_command_scales.to(obs.device, dtype=obs.dtype)
+            command = obs[..., 6:9] / torch.clamp(scales, min=1.0e-6)
+            command_norm = torch.sqrt(torch.sum(torch.square(command[..., 0:2]), dim=-1) + torch.square(command[..., 2]))
+            stand_threshold = float(
+                self.wm_cfg.get(
+                    "teacher_bc_stand_threshold",
+                    self.cfg["commands"].get("adapter", {}).get("stand_command_threshold", 0.04),
+                )
+            )
+            stand_value = torch.full_like(sample_weight, float(stand_weight))
+            sample_weight = torch.where(command_norm <= stand_threshold, stand_value, sample_weight)
+        return sample_weight
 
     def _scheduled_coef(self, coef_key, default, start_key=None, warmup_key=None):
         coef = float(self.wm_cfg.get(coef_key, default))
