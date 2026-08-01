@@ -32,6 +32,9 @@ SIRL_METRIC_KEYS = (
     "right_contact_duty_excess",
     "forward_push_asymmetry",
     "right_forward_push_excess",
+    "low_speed_forward_push_asymmetry",
+    "low_speed_right_forward_push_excess",
+    "low_speed_right_forward_pitch_push",
     "forward_pitch_push",
     "right_forward_pitch_push",
     "forward_pitch_excess",
@@ -63,11 +66,16 @@ SIRL_METRIC_KEYS = (
     "command_transition_forward_pitch",
     "command_transition_no_foot_contact",
     "command_transition_planted_contact_deficit",
+    "command_transition_forward_push_asymmetry",
+    "command_transition_right_forward_push_excess",
     "decel_transition_overspeed",
     "decel_transition_forward_pitch",
     "decel_transition_no_foot_contact",
     "decel_transition_support_contact_loss",
     "decel_transition_planted_contact_deficit",
+    "decel_transition_forward_push_asymmetry",
+    "decel_transition_right_forward_push_excess",
+    "decel_transition_right_forward_pitch_push",
 )
 
 

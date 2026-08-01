@@ -34,6 +34,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         self.current_straight_config = dict(self.cfg["commands"].get("straight", {}))
         self.current_high_speed_proportion = float(self.cfg["commands"].get("high_speed_proportion", 0.0))
         self.current_high_speed_config = dict(self.cfg["commands"].get("high_speed", {}))
+        self.current_transition_probe_config = dict(self.cfg["commands"].get("transition_probes", {}))
         self.current_still_proportion = float(self.cfg["commands"].get("still_proportion", 0.0))
         self.current_straight_proportion = float(self.cfg["commands"].get("straight_proportion", 0.0))
         self.current_command_slew_rate = float(self.cfg["commands"].get("command_slew_rate", 0.0))
@@ -54,6 +55,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         self.current_straight_config = dict(command_cfg.get("straight", {}))
         self.current_high_speed_proportion = float(command_cfg.get("high_speed_proportion", 0.0))
         self.current_high_speed_config = dict(command_cfg.get("high_speed", {}))
+        self.current_transition_probe_config = dict(command_cfg.get("transition_probes", {}))
         self.current_still_proportion = float(command_cfg.get("still_proportion", 0.0))
         self.current_straight_proportion = float(command_cfg.get("straight_proportion", 0.0))
         self.current_command_slew_rate = float(command_cfg.get("command_slew_rate", self.current_command_slew_rate))
@@ -89,6 +91,8 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             self.current_high_speed_proportion = float(phase["high_speed_proportion"])
         if "high_speed" in phase:
             self.current_high_speed_config.update(phase["high_speed"])
+        if "transition_probes" in phase:
+            self.current_transition_probe_config.update(phase["transition_probes"])
         self.current_command_slew_rate = float(phase.get("command_slew_rate", self.current_command_slew_rate))
         self.current_still_proportion = float(phase.get("still_proportion", self.current_still_proportion))
         self.current_straight_proportion = float(phase.get("straight_proportion", self.current_straight_proportion))
@@ -483,6 +487,65 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         self.public_command_targets[selected, 1] = float(high_speed_cfg.get("lin_vel_y", 0.0))
         self.public_command_targets[selected, 2] = float(high_speed_cfg.get("ang_vel_yaw", 0.0))
 
+    def _sample_probe_values(self, values, count):
+        if count <= 0 or not values:
+            return None
+        choices = torch.as_tensor(values, dtype=torch.float, device=self.device).flatten()
+        if choices.numel() == 0:
+            return None
+        indices = torch.randint(0, choices.numel(), (count,), device=self.device)
+        return choices[indices]
+
+    def _apply_transition_probe_commands(self, env_ids, previous_targets):
+        if len(env_ids) == 0:
+            return
+        probe_cfg = self.current_transition_probe_config
+        if not probe_cfg:
+            return
+
+        min_delta = float(probe_cfg.get("min_delta", 0.12))
+        straight_only = bool(probe_cfg.get("straight_only", True))
+
+        transition_count = int(float(probe_cfg.get("proportion", 0.0)) * len(env_ids))
+        if transition_count > 0:
+            local_ids = torch.randperm(len(env_ids), device=self.device)[:transition_count]
+            selected = env_ids[local_ids]
+            target_vx = self._sample_probe_values(probe_cfg.get("speeds", []), len(selected))
+            if target_vx is not None:
+                prev_vx = previous_targets[local_ids, 0]
+                too_close = torch.abs(target_vx - prev_vx) < min_delta
+                high_speed = float(max(probe_cfg.get("speeds", [0.0]) or [0.0]))
+                fallback = torch.where(
+                    prev_vx < 0.5 * high_speed,
+                    torch.full_like(target_vx, high_speed),
+                    torch.zeros_like(target_vx),
+                )
+                target_vx = torch.where(too_close, fallback, target_vx)
+                self.public_command_targets[selected, 0] = target_vx
+                if straight_only:
+                    self.public_command_targets[selected, 1] = 0.0
+                    self.public_command_targets[selected, 2] = 0.0
+
+        decel_count = int(float(probe_cfg.get("decel_proportion", 0.0)) * len(env_ids))
+        if decel_count <= 0:
+            return
+        source_min_vx = float(probe_cfg.get("decel_source_min_vx", 0.18))
+        previous_vx = previous_targets[:, 0]
+        eligible = (previous_vx >= source_min_vx).nonzero(as_tuple=False).flatten()
+        if len(eligible) == 0:
+            return
+        local_ids = eligible[torch.randperm(len(eligible), device=self.device)[: min(decel_count, len(eligible))]]
+        selected = env_ids[local_ids]
+        target_vx = self._sample_probe_values(probe_cfg.get("decel_targets", [0.0]), len(selected))
+        if target_vx is None:
+            target_vx = torch.zeros(len(selected), dtype=torch.float, device=self.device)
+        max_target = torch.clamp(previous_vx[local_ids] - min_delta, min=0.0)
+        target_vx = torch.minimum(target_vx, max_target)
+        self.public_command_targets[selected, 0] = target_vx
+        if straight_only:
+            self.public_command_targets[selected, 1] = 0.0
+            self.public_command_targets[selected, 2] = 0.0
+
     def _resample_commands(self):
         if getattr(self, "is_play", False):
             self._apply_fixed_command(self.cfg["commands"].get("play", {}))
@@ -515,6 +578,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         straight_envs = remaining_envs[:straight_count]
         self._apply_straight_commands(straight_envs)
         self._apply_high_speed_commands(straight_envs)
+        self._apply_transition_probe_commands(env_ids, previous_targets)
         self._record_public_command_change(env_ids, previous_targets, self.public_command_targets[env_ids])
 
         self.cmd_resample_time[env_ids] += self._sample_resample_steps(len(env_ids))
@@ -779,6 +843,9 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         right_contact_duty_excess = self._straight_right_contact_duty_excess_value()
         forward_push_asymmetry = self._straight_forward_push_asymmetry_value()
         right_forward_push_excess = self._straight_right_forward_push_excess_value()
+        low_speed_forward_push_asymmetry = self._low_speed_forward_push_asymmetry_value()
+        low_speed_right_forward_push_excess = self._low_speed_right_forward_push_excess_value()
+        low_speed_right_forward_pitch_push = self._low_speed_right_forward_pitch_push_value()
         forward_pitch_push = self._straight_forward_pitch_push_value()
         right_forward_pitch_push = self._straight_right_forward_pitch_push_value()
         forward_pitch_excess = self._straight_forward_pitch_excess_value()
@@ -836,11 +903,16 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         command_transition_forward_pitch = self._command_transition_forward_pitch_value()
         command_transition_no_foot_contact = self._command_transition_no_foot_contact_value()
         command_transition_planted_contact_deficit = self._command_transition_planted_contact_deficit_value()
+        command_transition_forward_push_asymmetry = self._command_transition_forward_push_asymmetry_value()
+        command_transition_right_forward_push_excess = self._command_transition_right_forward_push_excess_value()
         decel_transition_overspeed = self._decel_transition_overspeed_value()
         decel_transition_forward_pitch = self._decel_transition_forward_pitch_value()
         decel_transition_no_foot_contact = self._decel_transition_no_foot_contact_value()
         decel_transition_support_contact_loss = self._decel_transition_support_contact_loss_value()
         decel_transition_planted_contact_deficit = self._decel_transition_planted_contact_deficit_value()
+        decel_transition_forward_push_asymmetry = self._decel_transition_forward_push_asymmetry_value()
+        decel_transition_right_forward_push_excess = self._decel_transition_right_forward_push_excess_value()
+        decel_transition_right_forward_pitch_push = self._decel_transition_right_forward_pitch_push_value()
         return {
             "velocity_error": velocity_error,
             "feet_slip": feet_slip,
@@ -869,6 +941,9 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             "right_contact_duty_excess": right_contact_duty_excess,
             "forward_push_asymmetry": forward_push_asymmetry,
             "right_forward_push_excess": right_forward_push_excess,
+            "low_speed_forward_push_asymmetry": low_speed_forward_push_asymmetry,
+            "low_speed_right_forward_push_excess": low_speed_right_forward_push_excess,
+            "low_speed_right_forward_pitch_push": low_speed_right_forward_pitch_push,
             "forward_pitch_push": forward_pitch_push,
             "right_forward_pitch_push": right_forward_pitch_push,
             "forward_pitch_excess": forward_pitch_excess,
@@ -900,11 +975,16 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             "command_transition_forward_pitch": command_transition_forward_pitch,
             "command_transition_no_foot_contact": command_transition_no_foot_contact,
             "command_transition_planted_contact_deficit": command_transition_planted_contact_deficit,
+            "command_transition_forward_push_asymmetry": command_transition_forward_push_asymmetry,
+            "command_transition_right_forward_push_excess": command_transition_right_forward_push_excess,
             "decel_transition_overspeed": decel_transition_overspeed,
             "decel_transition_forward_pitch": decel_transition_forward_pitch,
             "decel_transition_no_foot_contact": decel_transition_no_foot_contact,
             "decel_transition_support_contact_loss": decel_transition_support_contact_loss,
             "decel_transition_planted_contact_deficit": decel_transition_planted_contact_deficit,
+            "decel_transition_forward_push_asymmetry": decel_transition_forward_push_asymmetry,
+            "decel_transition_right_forward_push_excess": decel_transition_right_forward_push_excess,
+            "decel_transition_right_forward_pitch_push": decel_transition_right_forward_pitch_push,
         }
 
     def _reward_lin_vel_y_error(self):
@@ -1444,6 +1524,31 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         diff = torch.clamp(torch.abs(push[:, 1] - push[:, 0]) - deadband, min=0.0)
         return torch.square(diff) * self._straight_walk_mask()
 
+    def _forward_push_asymmetry_value(self, mask, deadband_key="forward_push_asymmetry_deadband"):
+        deadband = float(self.cfg["rewards"].get(deadband_key, self.cfg["rewards"].get("forward_push_asymmetry_deadband", 0.08)))
+        push = self._straight_forward_push()
+        diff = torch.clamp(torch.abs(push[:, 1] - push[:, 0]) - deadband, min=0.0)
+        return torch.square(diff) * mask
+
+    def _right_forward_push_excess_value(self, mask, deadband_key="right_forward_push_deadband"):
+        deadband = float(self.cfg["rewards"].get(deadband_key, self.cfg["rewards"].get("right_forward_push_deadband", 0.06)))
+        push = self._straight_forward_push()
+        excess = torch.clamp(push[:, 1] - push[:, 0] - deadband, min=0.0)
+        return torch.square(excess) * mask
+
+    def _right_forward_pitch_push_value(
+        self,
+        mask,
+        pitch_threshold_key="forward_pitch_push_threshold",
+        deadband_key="right_forward_pitch_push_deadband",
+    ):
+        threshold = float(self.cfg["rewards"].get(pitch_threshold_key, self.cfg["rewards"].get("forward_pitch_push_threshold", 0.05)))
+        deadband = float(self.cfg["rewards"].get(deadband_key, self.cfg["rewards"].get("right_forward_pitch_push_deadband", 0.06)))
+        forward_pitch = torch.clamp(self.projected_gravity[:, 0] - threshold, min=0.0)
+        push = self._straight_forward_push()
+        right_excess = torch.clamp(push[:, 1] - push[:, 0] - deadband, min=0.0)
+        return forward_pitch * right_excess * mask
+
     def _straight_right_forward_push_excess_value(self):
         deadband = float(
             self.cfg["rewards"].get(
@@ -1454,6 +1559,38 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         push = self._straight_forward_push()
         excess = torch.clamp(push[:, 1] - push[:, 0] - deadband, min=0.0)
         return torch.square(excess) * self._straight_walk_mask()
+
+    def _low_speed_forward_push_asymmetry_value(self):
+        return self._forward_push_asymmetry_value(self._low_speed_straight_mask(), "low_speed_forward_push_asymmetry_deadband")
+
+    def _low_speed_right_forward_push_excess_value(self):
+        return self._right_forward_push_excess_value(self._low_speed_straight_mask(), "low_speed_right_forward_push_deadband")
+
+    def _low_speed_right_forward_pitch_push_value(self):
+        return self._right_forward_pitch_push_value(
+            self._low_speed_straight_mask(),
+            "low_speed_forward_pitch_push_threshold",
+            "low_speed_right_forward_pitch_push_deadband",
+        )
+
+    def _command_transition_forward_push_asymmetry_value(self):
+        return self._forward_push_asymmetry_value(self._command_transition_mask(), "transition_forward_push_asymmetry_deadband")
+
+    def _command_transition_right_forward_push_excess_value(self):
+        return self._right_forward_push_excess_value(self._command_transition_mask(), "transition_right_forward_push_deadband")
+
+    def _decel_transition_forward_push_asymmetry_value(self):
+        return self._forward_push_asymmetry_value(self._decel_transition_mask(), "transition_forward_push_asymmetry_deadband")
+
+    def _decel_transition_right_forward_push_excess_value(self):
+        return self._right_forward_push_excess_value(self._decel_transition_mask(), "transition_right_forward_push_deadband")
+
+    def _decel_transition_right_forward_pitch_push_value(self):
+        return self._right_forward_pitch_push_value(
+            self._decel_transition_mask(),
+            "decel_transition_forward_pitch_push_threshold",
+            "transition_right_forward_pitch_push_deadband",
+        )
 
     def _straight_forward_pitch_push_value(self):
         threshold = float(self.cfg["rewards"].get("forward_pitch_push_threshold", 0.05))
@@ -1479,6 +1616,30 @@ class VelocityCommandWalkK1(ParameterWalkK1):
 
     def _reward_straight_right_forward_push_excess(self):
         return self._straight_right_forward_push_excess_value()
+
+    def _reward_low_speed_forward_push_balance(self):
+        return self._low_speed_forward_push_asymmetry_value()
+
+    def _reward_low_speed_right_forward_push_excess(self):
+        return self._low_speed_right_forward_push_excess_value()
+
+    def _reward_low_speed_right_forward_pitch_push(self):
+        return self._low_speed_right_forward_pitch_push_value()
+
+    def _reward_command_transition_forward_push_balance(self):
+        return self._command_transition_forward_push_asymmetry_value()
+
+    def _reward_command_transition_right_forward_push_excess(self):
+        return self._command_transition_right_forward_push_excess_value()
+
+    def _reward_decel_transition_forward_push_balance(self):
+        return self._decel_transition_forward_push_asymmetry_value()
+
+    def _reward_decel_transition_right_forward_push_excess(self):
+        return self._decel_transition_right_forward_push_excess_value()
+
+    def _reward_decel_transition_right_forward_pitch_push(self):
+        return self._decel_transition_right_forward_pitch_push_value()
 
     def _reward_straight_forward_pitch_push(self):
         return self._straight_forward_pitch_push_value()

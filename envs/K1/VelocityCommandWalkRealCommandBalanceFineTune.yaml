@@ -70,12 +70,12 @@ algorithm:
     actor_rl_warmup_iterations: 5500
     actor_mean_l2_coef: 0.120
     actor_action_l2_coef: 0.090
-    actor_symmetry_coef: 0.018
-    actor_symmetry_min_abs_vx: 1.20
+    actor_symmetry_coef: 0.024
+    actor_symmetry_min_abs_vx: 0.04
     actor_symmetry_max_abs_vy: 0.030
     actor_symmetry_max_abs_yaw: 0.060
     actor_symmetry_include_stand: true
-    actor_symmetry_warmup_iterations: 4500
+    actor_symmetry_warmup_iterations: 3500
     model_batch_ratio: 0.0
     model_rollout_enabled: false
     sirl_metric_penalties:
@@ -105,6 +105,9 @@ algorithm:
       right_contact_duty_excess: 4.5
       forward_push_asymmetry: 1.4
       right_forward_push_excess: 5.5
+      low_speed_forward_push_asymmetry: 8.0
+      low_speed_right_forward_push_excess: 16.0
+      low_speed_right_forward_pitch_push: 18.0
       forward_pitch_push: 9.0
       right_forward_pitch_push: 6.5
       forward_pitch_excess: 16.0
@@ -137,11 +140,16 @@ algorithm:
       command_transition_forward_pitch: 18.0
       command_transition_no_foot_contact: 24.0
       command_transition_planted_contact_deficit: 24.0
+      command_transition_forward_push_asymmetry: 10.0
+      command_transition_right_forward_push_excess: 16.0
       decel_transition_overspeed: 22.0
       decel_transition_forward_pitch: 34.0
       decel_transition_no_foot_contact: 34.0
       decel_transition_support_contact_loss: 30.0
       decel_transition_planted_contact_deficit: 34.0
+      decel_transition_forward_push_asymmetry: 14.0
+      decel_transition_right_forward_push_excess: 22.0
+      decel_transition_right_forward_pitch_push: 24.0
 
 control:
   target_lag_alpha_by_index: [0.70, 0.62, 0.55, 0.70, 0.42, 0.52, 0.70, 0.62, 0.55, 0.70, 0.34, 0.48]
@@ -156,6 +164,14 @@ commands:
     lin_vel_x: [1.20, 1.50]
     lin_vel_y: 0.0
     ang_vel_yaw: 0.0
+  transition_probes:
+    proportion: 0.24
+    speeds: [0.0, 0.20, 0.40, 0.60, 0.80, 1.00, 1.20, 1.50]
+    min_delta: 0.12
+    straight_only: true
+    decel_proportion: 0.22
+    decel_source_min_vx: 0.18
+    decel_targets: [0.0, 0.10, 0.20, 0.40, 0.60]
   lin_vel_x: [0.0, 1.50]
   lin_vel_y: [-0.24, 0.24]
   ang_vel_yaw: [-0.36, 0.36]
@@ -172,11 +188,11 @@ commands:
     gait_frequency_speed_max: 1.50
     max_yaw_speed_for_drive: 0.90
     stop_gait_hold_enabled: true
-    stop_gait_hold_s: 1.00
+    stop_gait_hold_s: 1.20
     stop_gait_hold_min_drop: 0.10
     stop_gait_hold_min_filtered_speed: 0.08
-    stop_gait_hold_drive: 0.18
-    stop_gait_frequency: 1.36
+    stop_gait_hold_drive: 0.20
+    stop_gait_frequency: 1.50
     foot_yaw_from_yaw_gain: 0.10
     foot_yaw_target_clip: [-0.18, 0.18]
     body_pitch_gain: 0.0
@@ -215,6 +231,11 @@ commands:
         gait_frequency_min: 1.46
         gait_frequency_max: 1.55
         gait_frequency_speed_max: 0.70
+      transition_probes:
+        proportion: 0.24
+        speeds: [0.0, 0.20, 0.40, 0.60, 0.70]
+        decel_proportion: 0.26
+        decel_targets: [0.0, 0.10, 0.20, 0.40]
     - start_iteration: 3000
       disturbance_scale: 0.00
       command_slew_rate: 1.30
@@ -237,6 +258,11 @@ commands:
         gait_frequency_min: 1.47
         gait_frequency_max: 1.60
         gait_frequency_speed_max: 1.00
+      transition_probes:
+        proportion: 0.26
+        speeds: [0.0, 0.20, 0.40, 0.60, 0.80, 1.00]
+        decel_proportion: 0.26
+        decel_targets: [0.0, 0.10, 0.20, 0.40, 0.60]
     - start_iteration: 6500
       disturbance_scale: 0.00
       command_slew_rate: 1.35
@@ -259,6 +285,11 @@ commands:
         gait_frequency_min: 1.48
         gait_frequency_max: 1.66
         gait_frequency_speed_max: 1.20
+      transition_probes:
+        proportion: 0.26
+        speeds: [0.0, 0.20, 0.40, 0.60, 0.80, 1.00, 1.20]
+        decel_proportion: 0.24
+        decel_targets: [0.0, 0.10, 0.20, 0.40, 0.60, 0.80]
     - start_iteration: 10000
       disturbance_scale: 0.00
       command_slew_rate: 1.40
@@ -281,6 +312,11 @@ commands:
         gait_frequency_min: 1.48
         gait_frequency_max: 1.70
         gait_frequency_speed_max: 1.35
+      transition_probes:
+        proportion: 0.24
+        speeds: [0.0, 0.20, 0.40, 0.60, 0.80, 1.00, 1.20, 1.35]
+        decel_proportion: 0.22
+        decel_targets: [0.0, 0.10, 0.20, 0.40, 0.60, 0.80, 1.00]
     - start_iteration: 12000
       disturbance_scale: 0.08
       command_slew_rate: 1.45
@@ -303,6 +339,11 @@ commands:
         gait_frequency_min: 1.48
         gait_frequency_max: 1.72
         gait_frequency_speed_max: 1.50
+      transition_probes:
+        proportion: 0.22
+        speeds: [0.0, 0.20, 0.40, 0.60, 0.80, 1.00, 1.20, 1.35, 1.50]
+        decel_proportion: 0.22
+        decel_targets: [0.0, 0.10, 0.20, 0.40, 0.60, 0.80, 1.00]
 
 randomization:
   dof_stiffness:
@@ -343,7 +384,7 @@ rewards:
     dof_vel: -0.00022
     dof_acc: -0.00000022
     root_acc: -0.00012
-    feet_swing: 1.6
+    feet_swing: 1.9
     swing_clearance: 1.0
     scuff_clearance: -10.0
     straight_phase_contact: 2.8
@@ -368,6 +409,9 @@ rewards:
     straight_forward_pitch_rate: -20.0
     straight_forward_push_balance: -3.0
     straight_right_forward_push_excess: -18.0
+    low_speed_forward_push_balance: -12.0
+    low_speed_right_forward_push_excess: -30.0
+    low_speed_right_forward_pitch_push: -44.0
     straight_forward_pitch_push: -30.0
     straight_right_forward_pitch_push: -20.0
     sustain_forward_pitch: -420.0
@@ -397,11 +441,16 @@ rewards:
     command_transition_forward_pitch: -520.0
     command_transition_no_foot_contact: -95.0
     command_transition_planted_contact_deficit: -95.0
+    command_transition_forward_push_balance: -14.0
+    command_transition_right_forward_push_excess: -26.0
     decel_transition_overspeed: -220.0
     decel_transition_forward_pitch: -950.0
     decel_transition_no_foot_contact: -160.0
     decel_transition_support_contact_loss: -120.0
     decel_transition_planted_contact_deficit: -160.0
+    decel_transition_forward_push_balance: -18.0
+    decel_transition_right_forward_push_excess: -38.0
+    decel_transition_right_forward_pitch_push: -54.0
     straight_path_lateral: -42.0
     straight_heading: -36.0
     straight_lateral_vel: -48.0
@@ -421,16 +470,16 @@ rewards:
   feet_edge_contact_threshold: 0.010
   use_planted_contact_for_support: true
   planted_contact_mode: "edge_and_force"
-  planted_min_edge_count: 2.0
-  planted_min_vertical_force: 8.0
+  planted_min_edge_count: 2.5
+  planted_min_vertical_force: 9.0
   planted_contact_force_norm: 36.0
   planted_contact_duty_tau_s: 0.28
   feet_contact_duty_tau_s: 0.35
   min_stance_foot_contacts: 1.0
   moving_contact_min_command_norm: 0.030
-  moving_min_planted_contact_quality: 0.70
+  moving_min_planted_contact_quality: 0.82
   stand_min_planted_contact_quality: 1.55
-  transition_min_planted_contact_quality: 0.85
+  transition_min_planted_contact_quality: 1.00
   low_speed_guard_min_vx: 0.04
   low_speed_guard_max_vx: 0.75
   low_speed_overspeed_margin: 0.045
@@ -441,7 +490,7 @@ rewards:
   command_response_window_s: 0.9
   command_response_tau_s: 0.40
   command_response_min_abs_vx: 0.60
-  command_transition_window_s: 1.25
+  command_transition_window_s: 1.80
   command_transition_min_delta: 0.12
   command_transition_lin_vel_clip: 1.8
   command_transition_yaw_vel_clip: 3.0
@@ -450,12 +499,12 @@ rewards:
   command_transition_yaw_weight: 0.55
   command_transition_tilt_weight: 1.6
   command_transition_forward_pitch_threshold: 0.018
-  decel_transition_window_s: 2.4
+  decel_transition_window_s: 3.0
   decel_transition_min_speed_drop: 0.10
   decel_transition_overspeed_margin: 0.045
   decel_transition_forward_pitch_threshold: 0.008
   stop_transition_hold_after_command_zero: true
-  stop_transition_window_s: 3.0
+  stop_transition_window_s: 3.2
   stop_transition_min_command_norm: 0.030
   stop_transition_lin_vel_clip: 1.8
   stop_transition_yaw_vel_clip: 3.0
@@ -486,6 +535,14 @@ rewards:
   forward_push_asymmetry_deadband: 0.140
   right_forward_push_deadband: 0.040
   right_forward_pitch_push_deadband: 0.040
+  low_speed_forward_push_asymmetry_deadband: 0.080
+  low_speed_right_forward_push_deadband: 0.020
+  low_speed_forward_pitch_push_threshold: 0.014
+  low_speed_right_forward_pitch_push_deadband: 0.020
+  transition_forward_push_asymmetry_deadband: 0.080
+  transition_right_forward_push_deadband: 0.020
+  transition_right_forward_pitch_push_deadband: 0.020
+  decel_transition_forward_pitch_push_threshold: 0.010
   sustain_min_vx: 0.82
   sustain_max_vx: 1.55
   sustain_min_command_age_s: 1.4
