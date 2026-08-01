@@ -182,8 +182,8 @@ commands:
   resampling_time_s: [3.5, 6.5]
   adapter:
     stand_command_threshold: 0.035
-    gait_frequency_min: 1.46
-    gait_frequency_max: 1.72
+    gait_frequency_min: 1.50
+    gait_frequency_max: 1.50
     gait_frequency_speed_min: 0.05
     gait_frequency_speed_max: 1.50
     max_yaw_speed_for_drive: 0.90
@@ -237,8 +237,8 @@ commands:
         lin_vel_y: 0.0
         ang_vel_yaw: 0.0
       adapter:
-        gait_frequency_min: 1.46
-        gait_frequency_max: 1.55
+        gait_frequency_min: 1.50
+        gait_frequency_max: 1.50
         gait_frequency_speed_max: 0.70
       transition_probes:
         proportion: 0.24
@@ -264,8 +264,8 @@ commands:
         lin_vel_y: 0.0
         ang_vel_yaw: 0.0
       adapter:
-        gait_frequency_min: 1.47
-        gait_frequency_max: 1.60
+        gait_frequency_min: 1.50
+        gait_frequency_max: 1.50
         gait_frequency_speed_max: 1.00
       transition_probes:
         proportion: 0.26
@@ -291,8 +291,8 @@ commands:
         lin_vel_y: 0.0
         ang_vel_yaw: 0.0
       adapter:
-        gait_frequency_min: 1.48
-        gait_frequency_max: 1.66
+        gait_frequency_min: 1.50
+        gait_frequency_max: 1.50
         gait_frequency_speed_max: 1.20
       transition_probes:
         proportion: 0.26
@@ -318,8 +318,8 @@ commands:
         lin_vel_y: 0.0
         ang_vel_yaw: 0.0
       adapter:
-        gait_frequency_min: 1.48
-        gait_frequency_max: 1.70
+        gait_frequency_min: 1.50
+        gait_frequency_max: 1.50
         gait_frequency_speed_max: 1.35
       transition_probes:
         proportion: 0.24
@@ -345,8 +345,8 @@ commands:
         lin_vel_y: 0.0
         ang_vel_yaw: 0.0
       adapter:
-        gait_frequency_min: 1.48
-        gait_frequency_max: 1.72
+        gait_frequency_min: 1.50
+        gait_frequency_max: 1.50
         gait_frequency_speed_max: 1.50
       transition_probes:
         proportion: 0.22
@@ -469,9 +469,9 @@ rewards:
     straight_swing_pitch_balance: -1.0
     feet_slip: -6.5
     fast_stance_feet_xy_vel: -2.6
-  swing_period: 0.18
+  swing_period: 0.20
   swing_clearance_target: 0.060
-  swing_clearance_max: 0.085
+  swing_clearance_max: 0.080
   swing_clearance_sigma: 0.010
   swing_clearance_side_weights: [1.0, 1.0]
   scuff_clearance_threshold: 0.032
