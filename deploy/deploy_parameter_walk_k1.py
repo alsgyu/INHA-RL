@@ -76,6 +76,56 @@ class StdinCommandInput:
             return ("error", f"could not parse command '{text}'")
 
 
+class RealTrajectoryRecorder:
+    def __init__(self, path, metadata=None):
+        self.path = self._resolve_path(path)
+        self.metadata = metadata or {}
+        self.records = []
+
+    @staticmethod
+    def _resolve_path(path):
+        if path is None:
+            return None
+        text = str(path).strip()
+        if not text or text.lower() in ("0", "false", "off", "none"):
+            return None
+        if text.lower() == "auto":
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            return os.path.join(os.path.dirname(__file__), "real_logs", f"k1_real_trajectory_{stamp}.npz")
+        return text
+
+    @property
+    def enabled(self):
+        return self.path is not None
+
+    @staticmethod
+    def _copy_value(value):
+        if isinstance(value, str):
+            return np.array(value)
+        return np.asarray(value).copy()
+
+    def append(self, **fields):
+        if not self.enabled:
+            return
+        self.records.append({key: self._copy_value(value) for key, value in fields.items()})
+
+    def save(self):
+        if not self.enabled or not self.records:
+            return None
+        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
+        arrays = {}
+        for key in self.records[0].keys():
+            values = [record[key] for record in self.records if key in record]
+            try:
+                arrays[key] = np.stack(values, axis=0)
+            except ValueError:
+                arrays[key] = np.asarray(values)
+        arrays["metadata_json"] = np.array(json.dumps(self.metadata, ensure_ascii=False, sort_keys=True))
+        np.savez_compressed(self.path, **arrays)
+        print(f"[real-record] saved {len(self.records)} policy steps to {self.path}")
+        return self.path
+
+
 class Controller:
     def __init__(self, cfg_file, args=None) -> None:
         # Setup logging
@@ -123,6 +173,17 @@ class Controller:
         self.control_stage = "idle"
         self.safety_abort_triggered = False
         self.stdin_cmd = StdinCommandInput() if bool(getattr(args, "stdin_cmd", False)) else None
+        self.real_recorder = RealTrajectoryRecorder(
+            getattr(args, "record_real_npz", None),
+            metadata={
+                "commit": self._git_commit(),
+                "script": os.path.abspath(__file__),
+                "config": os.path.abspath(cfg_file),
+                "policy_path": self.cfg["policy"].get("policy_path"),
+                "metadata_path": self.policy_metadata_path,
+                "metadata_task": self.policy_metadata_task,
+            },
+        )
 
         self.publish_lock = threading.Lock()
 
@@ -463,7 +524,8 @@ class Controller:
             f"heading_gain={adapter.get('heading_correction_gain', 'default')} "
             f"heading_max_yaw={adapter.get('heading_correction_max_yaw_rate', 'default')} "
             f"heading_to_yaw={adapter.get('heading_correction_apply_to_yaw_command', False)} "
-            f"debug={self.cfg.get('debug', {}).get('enabled', False)}"
+            f"debug={self.cfg.get('debug', {}).get('enabled', False)} "
+            f"record_real_npz={self.real_recorder.path or 'none'}"
         )
         print(
             "[deploy-startup] "
@@ -919,8 +981,51 @@ class Controller:
             f"tau={[round(x, 2) for x in tau]}"
         )
 
+    def _record_real_policy_step(self, time_now, policy_target, action_scale_multiplier, command_scale_multiplier):
+        if not self.real_recorder.enabled:
+            return
+        action_dof_indexes = getattr(self.policy, "action_dof_indexes", np.arange(10, 22, dtype=np.int64))
+        remote_command = np.array(
+            [
+                self.remoteControlService.get_vx_cmd(),
+                self.remoteControlService.get_vy_cmd(),
+                self.remoteControlService.get_vyaw_cmd(),
+            ],
+            dtype=np.float32,
+        )
+        self.real_recorder.append(
+            time_s=np.array(float(time_now), dtype=np.float32),
+            stage=str(self.control_stage),
+            obs=np.asarray(self.policy.obs, dtype=np.float32),
+            action=np.asarray(self.policy.actions, dtype=np.float32),
+            raw_action=np.asarray(getattr(self.policy, "raw_actions", self.policy.actions), dtype=np.float32),
+            command=np.asarray(getattr(self.policy, "command_block", np.zeros(10, dtype=np.float32)), dtype=np.float32),
+            public_command=np.asarray(getattr(self.policy, "policy_commands", remote_command), dtype=np.float32),
+            remote_command=remote_command,
+            dof_pos=np.asarray(self.dof_pos[action_dof_indexes], dtype=np.float32),
+            dof_vel=np.asarray(self.policy_dof_vel[action_dof_indexes], dtype=np.float32),
+            dof_target=np.asarray(self.dof_target[action_dof_indexes], dtype=np.float32),
+            filtered_dof_target=np.asarray(self.filtered_dof_target[action_dof_indexes], dtype=np.float32),
+            policy_target=np.asarray(policy_target[action_dof_indexes], dtype=np.float32),
+            base_rpy=np.asarray(self.base_rpy, dtype=np.float32),
+            base_ang_vel=np.asarray(self.base_ang_vel, dtype=np.float32),
+            projected_gravity=np.asarray(self.projected_gravity, dtype=np.float32),
+            gait_process=np.array(float(getattr(self.policy, "gait_process", 0.0)), dtype=np.float32),
+            gait_frequency=np.array(float(getattr(self.policy, "gait_frequency", 0.0)), dtype=np.float32),
+            command_age=np.array(float(getattr(self.policy, "command_age", 0.0)), dtype=np.float32),
+            motion_start_alpha=np.array(float(action_scale_multiplier), dtype=np.float32),
+            motion_command_alpha=np.array(float(command_scale_multiplier), dtype=np.float32),
+            stop_recovery=np.array(float(getattr(self.policy, "stop_recovery", False)), dtype=np.float32),
+            decel_recovery=np.array(float(getattr(self.policy, "decel_recovery", False)), dtype=np.float32),
+            balance_vx_correction=np.array(float(getattr(self.policy, "balance_vx_correction", 0.0)), dtype=np.float32),
+            heading_correction_yaw=np.array(float(getattr(self.policy, "heading_correction_yaw", 0.0)), dtype=np.float32),
+            heading_error_yaw=np.array(float(getattr(self.policy, "heading_error_yaw", 0.0)), dtype=np.float32),
+        )
+
     def cleanup(self) -> None:
         """Cleanup resources."""
+        if hasattr(self, "real_recorder"):
+            self.real_recorder.save()
         self.remoteControlService.close()
         if hasattr(self, "low_cmd_publisher"):
             self.low_cmd_publisher.CloseChannel()
@@ -1096,6 +1201,7 @@ class Controller:
             )
         else:
             self.dof_target[:] = policy_target
+        self._record_real_policy_step(time_now, policy_target, action_scale_multiplier, command_scale_multiplier)
 
         inference_time = time.perf_counter()
         self.logger.debug(f"Inference took {(inference_time - start_time)*1000:.4f} ms")
@@ -1231,6 +1337,13 @@ if __name__ == "__main__":
     parser.add_argument("--cmd_max_vx", type=float, default=None, help="Override stdin/keyboard vx command limit.")
     parser.add_argument("--cmd_max_vy", type=float, default=None, help="Override stdin/keyboard vy command limit.")
     parser.add_argument("--cmd_max_vyaw", type=float, default=None, help="Override stdin/keyboard vyaw command limit.")
+    parser.add_argument(
+        "--record_real_npz",
+        nargs="?",
+        const="auto",
+        default=None,
+        help="Record policy-step real robot trajectory to an npz file for later SIRL preload.",
+    )
     args = parser.parse_args()
     cfg_candidates = [
         args.config,

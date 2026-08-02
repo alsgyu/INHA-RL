@@ -161,6 +161,7 @@ class SIRLWorldModelRunner:
             command_dim=self.replay_command_dim,
         )
         self._load()
+        self._load_external_real_replay()
 
     def _get_args(self):
         parser = argparse.ArgumentParser()
@@ -173,6 +174,7 @@ class SIRLWorldModelRunner:
         parser.add_argument("--seed", type=int, help="Random seed.")
         parser.add_argument("--max_iterations", type=int, help="Training iterations.")
         parser.add_argument("--model", type=str, help="Actor model class name.")
+        parser.add_argument("--real_replay_path", type=str, help="Comma-separated real robot npz trajectory file(s) to preload.")
         parser.add_argument("--disable_record_video", action="store_true", help="Disable video recording in training.")
         self.args = parser.parse_args()
 
@@ -193,6 +195,9 @@ class SIRLWorldModelRunner:
             elif arg == "disable_record_video":
                 if value:
                     self.cfg["viewer"]["record_video"] = False
+            elif arg == "real_replay_path":
+                paths = [path.strip() for path in str(value).split(",") if path.strip()]
+                self.cfg["algorithm"]["sirl_worldmodel"]["external_real_replay_paths"] = paths
             else:
                 self.cfg["basic"][arg] = value
         if not self.test:
@@ -398,6 +403,140 @@ class SIRLWorldModelRunner:
                 return
             self.teacher_policy = checkpoint_policy
             print(f"[sirl-wm] teacher actor checkpoint loaded: {teacher_path}")
+
+    def _external_real_reward(self, obs, action, command=None):
+        cfg = self.wm_cfg
+        reward = torch.zeros(obs.shape[0], dtype=torch.float)
+        command_norm = torch.zeros_like(reward)
+        if command is not None and command.numel() > 0:
+            command_norm = torch.sqrt(torch.sum(torch.square(command[:, :3]), dim=-1))
+        moving = (command_norm >= float(cfg.get("external_real_reward_min_command_norm", 0.04))).float()
+
+        forward_pitch = torch.clamp(
+            obs[:, 0] - float(cfg.get("external_real_forward_pitch_deadband", 0.06)),
+            min=0.0,
+        )
+        lateral_tilt = torch.clamp(
+            torch.abs(obs[:, 1]) - float(cfg.get("external_real_lateral_tilt_deadband", 0.04)),
+            min=0.0,
+        )
+        pitch_rate = torch.clamp(
+            torch.abs(obs[:, 4]) - float(cfg.get("external_real_pitch_rate_deadband", 0.05)),
+            min=0.0,
+        )
+        yaw_rate = torch.clamp(
+            torch.abs(obs[:, 5]) - float(cfg.get("external_real_yaw_rate_deadband", 0.05)),
+            min=0.0,
+        )
+        lateral_indices = torch.as_tensor([1, 2, 5, 7, 8, 11], dtype=torch.long)
+        lateral_action = torch.mean(torch.square(action[:, lateral_indices]), dim=-1) if action.shape[-1] > 11 else torch.zeros_like(reward)
+        action_l2 = torch.mean(torch.square(action), dim=-1)
+
+        reward -= moving * float(cfg.get("external_real_forward_pitch_penalty", 36.0)) * torch.square(forward_pitch)
+        reward -= moving * float(cfg.get("external_real_lateral_tilt_penalty", 16.0)) * torch.square(lateral_tilt)
+        reward -= moving * float(cfg.get("external_real_pitch_rate_penalty", 1.4)) * torch.square(pitch_rate)
+        reward -= moving * float(cfg.get("external_real_yaw_rate_penalty", 3.2)) * torch.square(yaw_rate)
+        reward -= moving * float(cfg.get("external_real_lateral_action_penalty", 0.45)) * lateral_action
+        reward -= moving * float(cfg.get("external_real_action_l2_penalty", 0.05)) * action_l2
+        reward += moving * float(cfg.get("external_real_alive_reward", 0.02))
+        return reward
+
+    def _load_external_real_replay(self):
+        paths = self.wm_cfg.get("external_real_replay_paths", [])
+        if isinstance(paths, str):
+            paths = [path.strip() for path in paths.split(",") if path.strip()]
+        if not paths:
+            return
+
+        total_added = 0
+        for path in paths:
+            resolved = self._resolve_path(path)
+            if resolved is None:
+                print(f"[sirl-wm] real replay path not found: {path}")
+                continue
+            try:
+                data = np.load(resolved, allow_pickle=False)
+                obs = torch.as_tensor(data["obs"], dtype=torch.float)
+                action_key = "action" if "action" in data.files else "actions"
+                action = torch.as_tensor(data[action_key], dtype=torch.float)
+                command = torch.as_tensor(data["command"], dtype=torch.float) if "command" in data.files else None
+                stage = data["stage"] if "stage" in data.files else None
+                alpha = torch.as_tensor(data["motion_start_alpha"], dtype=torch.float) if "motion_start_alpha" in data.files else None
+                if "next_obs" in data.files:
+                    next_obs = torch.as_tensor(data["next_obs"], dtype=torch.float)
+                    keep = torch.ones(obs.shape[0], dtype=torch.bool)
+                else:
+                    next_obs = obs[1:]
+                    obs = obs[:-1]
+                    action = action[:-1]
+                    command = command[:-1] if command is not None else None
+                    keep = torch.ones(obs.shape[0], dtype=torch.bool)
+                    if stage is not None:
+                        keep &= torch.as_tensor(stage[:-1] == "rl", dtype=torch.bool)
+                        keep &= torch.as_tensor(stage[1:] == "rl", dtype=torch.bool)
+                    if alpha is not None:
+                        keep &= alpha[:-1] >= float(self.wm_cfg.get("external_real_min_motion_alpha", 0.98))
+                if command is not None and command.shape[-1] < self.replay_command_dim:
+                    padded = torch.zeros(command.shape[0], self.replay_command_dim, dtype=torch.float)
+                    padded[:, : command.shape[-1]] = command
+                    command = padded
+                elif command is not None and command.shape[-1] > self.replay_command_dim:
+                    command = command[:, : self.replay_command_dim]
+
+                if "reward" in data.files:
+                    reward = torch.as_tensor(data["reward"], dtype=torch.float).reshape(-1)
+                    if reward.shape[0] != obs.shape[0]:
+                        reward = reward[: obs.shape[0]]
+                else:
+                    reward = self._external_real_reward(obs, action, command)
+
+                if "done" in data.files:
+                    done = torch.as_tensor(data["done"], dtype=torch.float).reshape(-1)[: obs.shape[0]]
+                else:
+                    fall_x = torch.abs(next_obs[:, 0]) > float(self.wm_cfg.get("external_real_done_gravity_x", 0.55))
+                    fall_y = torch.abs(next_obs[:, 1]) > float(self.wm_cfg.get("external_real_done_gravity_y", 0.55))
+                    done = (fall_x | fall_y).float()
+
+                if "sample_weight" in data.files:
+                    sample_weight = torch.as_tensor(data["sample_weight"], dtype=torch.float).reshape(-1)[: obs.shape[0]]
+                else:
+                    sample_weight = torch.full((obs.shape[0],), float(self.wm_cfg.get("external_real_sample_weight", 2.0)), dtype=torch.float)
+
+                ret = reward.clone()
+                if "return" in data.files:
+                    ret = torch.as_tensor(data["return"], dtype=torch.float).reshape(-1)[: obs.shape[0]]
+                sirl_weight = torch.zeros_like(reward)
+                if bool(self.wm_cfg.get("external_real_bc_enabled", False)):
+                    sirl_weight[:] = float(self.wm_cfg.get("external_real_bc_weight", 0.15))
+
+                keep &= torch.isfinite(obs).all(dim=-1)
+                keep &= torch.isfinite(next_obs).all(dim=-1)
+                keep &= torch.isfinite(action).all(dim=-1)
+                keep &= torch.isfinite(reward)
+                if command is not None:
+                    keep &= torch.isfinite(command).all(dim=-1)
+                if int(keep.sum().item()) <= 0:
+                    print(f"[sirl-wm] real replay had no usable transitions: {resolved}")
+                    continue
+
+                added = self.real_replay.add(
+                    obs[keep],
+                    action[keep],
+                    reward[keep],
+                    done[keep],
+                    next_obs[keep],
+                    command=command[keep] if command is not None else None,
+                    ret=ret[keep],
+                    sirl_weight=sirl_weight[keep],
+                    is_model=0.0,
+                    sample_weight=sample_weight[keep],
+                )
+                total_added += int(added)
+                print(f"[sirl-wm] loaded {int(keep.sum().item())} real replay transitions from {resolved}")
+            except Exception as exc:
+                print(f"[sirl-wm] failed to load real replay '{path}': {exc}")
+        if total_added > 0:
+            print(f"[sirl-wm] external real replay preload total={total_added}")
 
     def _teacher_action(self, obs):
         if self.teacher_policy is None:

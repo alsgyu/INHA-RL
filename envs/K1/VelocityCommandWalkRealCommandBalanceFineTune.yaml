@@ -19,6 +19,21 @@ algorithm:
     collect_steps_per_iter: 192
     updates_per_iter: 1
     batch_size: 512
+    external_real_sample_weight: 2.5
+    external_real_min_motion_alpha: 0.98
+    external_real_bc_enabled: false
+    external_real_reward_min_command_norm: 0.04
+    external_real_forward_pitch_deadband: 0.055
+    external_real_lateral_tilt_deadband: 0.035
+    external_real_pitch_rate_deadband: 0.04
+    external_real_yaw_rate_deadband: 0.04
+    external_real_forward_pitch_penalty: 42.0
+    external_real_lateral_tilt_penalty: 18.0
+    external_real_pitch_rate_penalty: 1.6
+    external_real_yaw_rate_penalty: 4.0
+    external_real_lateral_action_penalty: 0.55
+    external_real_action_l2_penalty: 0.05
+    external_real_alive_reward: 0.02
     actor_lr: 1.2e-7
     critic_lr: 3.0e-6
     collect_noise_std: 0.00018
