@@ -413,6 +413,13 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             min=float(pitch_clip[0]),
             max=float(pitch_clip[1]),
         )
+        balance_gain = float(adapter.get("body_pitch_balance_gain", 0.0))
+        if balance_gain != 0.0:
+            pitch_deadband = float(adapter.get("forward_pitch_vx_comp_deadband", 0.04))
+            forward_pitch = torch.clamp(self.projected_gravity[env_ids, 0] - pitch_deadband, min=0.0)
+            balanced_pitch = body_pitch - balance_gain * forward_pitch
+            body_pitch = torch.where(vx > 0.0, balanced_pitch, body_pitch)
+            body_pitch = torch.clamp(body_pitch, min=float(pitch_clip[0]), max=float(pitch_clip[1]))
 
         roll_gain = float(adapter.get("body_roll_gain", -0.08))
         roll_clip = adapter.get("body_roll_target_clip", [-0.08, 0.08])
@@ -895,6 +902,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         move_start_ankle_tracking = self._move_start_ankle_pitch_tracking_value()
         move_start_yaw_drift = self._move_start_yaw_drift_value()
         move_start_support_front_lag = self._move_start_support_front_lag_value()
+        move_start_lateral_action = self._move_start_lateral_action_value()
         sustain_forward_pitch = self._sustain_forward_pitch_value()
         sustain_forward_pitch_rate = self._sustain_forward_pitch_rate_value()
         sustain_right_forward_push = self._sustain_right_forward_push_excess_value()
@@ -993,6 +1001,7 @@ class VelocityCommandWalkK1(ParameterWalkK1):
             "move_start_ankle_tracking": move_start_ankle_tracking,
             "move_start_yaw_drift": move_start_yaw_drift,
             "move_start_support_front_lag": move_start_support_front_lag,
+            "move_start_lateral_action": move_start_lateral_action,
             "sustain_forward_pitch": sustain_forward_pitch,
             "sustain_forward_pitch_rate": sustain_forward_pitch_rate,
             "sustain_right_forward_push": sustain_right_forward_push,
@@ -1223,6 +1232,20 @@ class VelocityCommandWalkK1(ParameterWalkK1):
         yaw_vel = torch.clamp(self.filtered_ang_vel[:, 2], min=-yaw_clip, max=yaw_clip)
         return torch.square(yaw_vel) * self._move_start_transition_mask()
 
+    def _move_start_lateral_action_value(self):
+        if self.num_actions <= 11:
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        indices = torch.as_tensor([1, 2, 5, 7, 8, 11], dtype=torch.long, device=self.device)
+        weights = torch.as_tensor(
+            self.cfg["rewards"].get("move_start_lateral_action_weights", [1.0, 1.6, 1.3, 1.0, 1.6, 1.3]),
+            dtype=torch.float,
+            device=self.device,
+        ).flatten()
+        if weights.numel() != indices.numel():
+            weights = torch.ones_like(indices, dtype=torch.float)
+        value = torch.sum(torch.square(self.actions[:, indices]) * weights.view(1, -1), dim=-1)
+        return value / torch.clamp(weights.sum(), min=1.0e-6) * self._move_start_transition_mask()
+
     def _reward_move_start_forward_pitch(self):
         return self._move_start_forward_pitch_value()
 
@@ -1231,6 +1254,9 @@ class VelocityCommandWalkK1(ParameterWalkK1):
 
     def _reward_move_start_yaw_drift(self):
         return self._move_start_yaw_drift_value()
+
+    def _reward_move_start_lateral_action(self):
+        return self._move_start_lateral_action_value()
 
     def _reward_straight_ankle_pitch_tracking(self):
         return self._ankle_pitch_tracking_error_value() * self._straight_walk_mask()

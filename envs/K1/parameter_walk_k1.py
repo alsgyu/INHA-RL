@@ -308,14 +308,22 @@ class ParameterWalkK1(BaseTask):
         self.feet_edge_height = torch.zeros(self.num_envs, len(self.feet_indices), feet_edge_count, dtype=torch.float, device=self.device)
         self.feet_edge_contact = torch.zeros(self.num_envs, len(self.feet_indices), feet_edge_count, dtype=torch.bool, device=self.device)
         self.dof_pos_ref = torch.zeros(self.num_envs, self.num_dofs, dtype=torch.float, device=self.device)
-        self.default_dof_pos = torch.zeros(1, self.num_dofs, dtype=torch.float, device=self.device)
-        for i in range(self.num_dofs):
-            name = self._longest_matching_key(self.dof_names[i], self.cfg["init_state"]["default_joint_angles"])
-            if name is None:
-                self.default_dof_pos[:, i] = self.cfg["init_state"]["default_joint_angles"]["default"]
-            else:
-                self.default_dof_pos[:, i] = self.cfg["init_state"]["default_joint_angles"][name]
+        self.default_dof_pos = self._dof_pos_from_joint_angles(self.cfg["init_state"]["default_joint_angles"])
+        pose_blend_cfg = self.cfg.get("randomization", {}).get("init_dof_pos_pose_blend")
+        self.init_dof_pos_pose_blend_target = None
+        if pose_blend_cfg:
+            self.init_dof_pos_pose_blend_target = self._dof_pos_from_joint_angles(pose_blend_cfg["joint_angles"])
         self.lagged_dof_targets[:] = self.default_dof_pos
+
+    def _dof_pos_from_joint_angles(self, joint_angles):
+        dof_pos = torch.zeros(1, self.num_dofs, dtype=torch.float, device=self.device)
+        for i in range(self.num_dofs):
+            name = self._longest_matching_key(self.dof_names[i], joint_angles)
+            if name is None:
+                dof_pos[:, i] = joint_angles["default"]
+            else:
+                dof_pos[:, i] = joint_angles[name]
+        return dof_pos
 
     def _control_action_tensor(self, name):
         values = self.cfg["control"].get(name)
@@ -499,7 +507,23 @@ class ParameterWalkK1(BaseTask):
         self.extras["time_outs"] = self.time_out_buf
 
     def _reset_dofs(self, env_ids):
-        self.dof_pos[env_ids] = apply_randomization(self.default_dof_pos, self.cfg["randomization"].get("init_dof_pos"))
+        dof_pos = self.default_dof_pos.expand(len(env_ids), -1).clone()
+        pose_blend_cfg = self.cfg["randomization"].get("init_dof_pos_pose_blend")
+        if pose_blend_cfg and self.init_dof_pos_pose_blend_target is not None:
+            blend_range = pose_blend_cfg.get("range", [0.0, 1.0])
+            blend = torch_rand_float(
+                float(blend_range[0]),
+                float(blend_range[1]),
+                (len(env_ids), 1),
+                device=self.device,
+            )
+            probability = float(pose_blend_cfg.get("probability", 1.0))
+            if probability < 1.0:
+                enabled = (torch.rand(len(env_ids), 1, device=self.device) < probability).float()
+                blend = blend * enabled
+            target = self.init_dof_pos_pose_blend_target.expand_as(dof_pos)
+            dof_pos = dof_pos + blend * (target - dof_pos)
+        self.dof_pos[env_ids] = apply_randomization(dof_pos, self.cfg["randomization"].get("init_dof_pos"))
         self.dof_vel[env_ids] = 0.0
         env_ids_int32 = env_ids.to(dtype=torch.int32)
         self.gym.set_dof_state_tensor_indexed(

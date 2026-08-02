@@ -42,6 +42,7 @@ SIRL_METRIC_KEYS = (
     "move_start_ankle_tracking",
     "move_start_yaw_drift",
     "move_start_support_front_lag",
+    "move_start_lateral_action",
     "sustain_forward_pitch",
     "sustain_forward_pitch_rate",
     "sustain_right_forward_push",
