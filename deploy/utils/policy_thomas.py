@@ -65,6 +65,7 @@ class Policy:
         self.obs = np.zeros(self.cfg["policy"]["num_observations"], dtype=np.float32)
         self.raw_actions = np.zeros(self.cfg["policy"]["num_actions"], dtype=np.float32)
         self.actions = np.zeros(self.cfg["policy"]["num_actions"], dtype=np.float32)
+        self.phase_action_bias = np.zeros(self.cfg["policy"]["num_actions"], dtype=np.float32)
         self.policy_interval = self.cfg["common"]["dt"] * self.cfg["policy"]["control"]["decimation"]
         self.action_dof_indexes = self._resolve_action_dof_indexes()
         self.leg_start_index = int(self.action_dof_indexes[0])
@@ -74,6 +75,10 @@ class Policy:
         self._validate_action_vector("deploy_action_rate_limit_by_index")
         self._validate_action_vector("deploy_action_lower_by_index")
         self._validate_action_vector("deploy_action_upper_by_index")
+        phase_bias_cfg = self.cfg["policy"].get("deploy_phase_action_bias", {})
+        if isinstance(phase_bias_cfg, dict):
+            self._validate_phase_action_vector(phase_bias_cfg, "left_swing_bias_by_index")
+            self._validate_phase_action_vector(phase_bias_cfg, "right_swing_bias_by_index")
 
     def _resolve_action_dof_indexes(self):
         num_actions = self.cfg["policy"]["num_actions"]
@@ -104,6 +109,14 @@ class Policy:
                 f"{key} must contain {self.cfg['policy']['num_actions']} values, got {len(values)}"
             )
 
+    def _validate_phase_action_vector(self, cfg, key):
+        values = cfg.get(key)
+        if values is not None and len(values) != self.cfg["policy"]["num_actions"]:
+            raise ValueError(
+                f"deploy_phase_action_bias.{key} must contain {self.cfg['policy']['num_actions']} values, "
+                f"got {len(values)}"
+            )
+
     def _use_observation_controller_commands(self):
         return self.command_source in ("observation_controller", "obs_controller", "live")
 
@@ -128,6 +141,7 @@ class Policy:
         self.heading_error_yaw = 0.0
         self.raw_actions[:] = 0.0
         self.actions[:] = 0.0
+        self.phase_action_bias[:] = 0.0
         self.dof_targets[:] = self.target_default_dof_pos
 
     def _adapter_value(self, key, default):
@@ -263,6 +277,49 @@ class Policy:
         # into a full walking gait.
         self.policy_commands[0] = min(original_vx, compensated_vx)
         self.balance_vx_correction = original_vx - float(self.policy_commands[0])
+
+    @staticmethod
+    def _phase_distance(phase, center):
+        return abs(((phase - center + 0.5) % 1.0) - 0.5)
+
+    def _phase_window(self, center, width):
+        width = max(float(width), 1.0e-6)
+        distance = self._phase_distance(float(self.gait_process), float(center))
+        return float(np.clip(1.0 - distance / width, 0.0, 1.0))
+
+    def _resolve_phase_action_bias(self):
+        self.phase_action_bias[:] = 0.0
+        cfg = self.cfg["policy"].get("deploy_phase_action_bias")
+        if not isinstance(cfg, dict) or not bool(cfg.get("enabled", False)):
+            return self.phase_action_bias
+        if self.gait_frequency <= 1.0e-8:
+            return self.phase_action_bias
+
+        vx = float(self.policy_commands[0])
+        min_vx = float(cfg.get("min_vx", 0.05))
+        if vx <= min_vx:
+            return self.phase_action_bias
+        ramp_vx = max(float(cfg.get("ramp_vx", 0.12)), 1.0e-6)
+        speed_weight = float(np.clip((vx - min_vx) / ramp_vx, 0.0, 1.0))
+        if speed_weight <= 0.0:
+            return self.phase_action_bias
+
+        width = float(cfg.get("phase_width", 0.18))
+        left_window = self._phase_window(float(cfg.get("left_swing_center", 0.25)), width)
+        right_window = self._phase_window(float(cfg.get("right_swing_center", 0.75)), width)
+        if left_window <= 0.0 and right_window <= 0.0:
+            return self.phase_action_bias
+
+        left_bias = np.asarray(
+            cfg.get("left_swing_bias_by_index", [0.0] * self.cfg["policy"]["num_actions"]),
+            dtype=np.float32,
+        )
+        right_bias = np.asarray(
+            cfg.get("right_swing_bias_by_index", [0.0] * self.cfg["policy"]["num_actions"]),
+            dtype=np.float32,
+        )
+        self.phase_action_bias[:] = speed_weight * (left_window * left_bias + right_window * right_bias)
+        return self.phase_action_bias
 
     def _resolve_command_block(self):
         adapter = self.command_adapter
@@ -448,6 +505,7 @@ class Policy:
         deploy_scale_by_index = self.cfg["policy"].get("deploy_action_scale_by_index")
         if deploy_scale_by_index is not None:
             desired_actions *= np.asarray(deploy_scale_by_index, dtype=np.float32)
+        desired_actions += self._resolve_phase_action_bias()
         deploy_lower_by_index = self.cfg["policy"].get("deploy_action_lower_by_index")
         deploy_upper_by_index = self.cfg["policy"].get("deploy_action_upper_by_index")
         if deploy_lower_by_index is not None or deploy_upper_by_index is not None:

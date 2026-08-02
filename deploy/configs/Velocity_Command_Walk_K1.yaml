@@ -77,6 +77,15 @@ policy:
   deploy_action_scale_by_index: [0.85, 0.75, 0.20, 0.85, 0.80, 0.75, 0.85, 0.75, 0.20, 0.85, 0.80, 0.75]
   deploy_action_lower_by_index: [-0.60, -0.28, -0.04, -0.30, -0.45, -0.22, -0.60, -0.28, -0.04, -0.30, -0.45, -0.22]
   deploy_action_upper_by_index: [0.45, 0.28, 0.04, 0.56, 0.16, 0.22, 0.45, 0.28, 0.04, 0.56, 0.16, 0.22]
+  deploy_phase_action_bias:
+    enabled: true
+    min_vx: 0.055
+    ramp_vx: 0.120
+    phase_width: 0.180
+    left_swing_center: 0.25
+    right_swing_center: 0.75
+    left_swing_bias_by_index: [0.020, 0.0, 0.0, -0.015, 0.010, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    right_swing_bias_by_index: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.045, 0.0, 0.0, 0.010, -0.015, 0.0]
 
   command_adapter:
     stand_command_threshold: 0.035

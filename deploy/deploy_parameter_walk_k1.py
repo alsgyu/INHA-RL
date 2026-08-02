@@ -137,6 +137,13 @@ class Controller:
         except Exception:
             return "unknown"
 
+    @staticmethod
+    def _bias_value(values, index):
+        try:
+            return float(values[int(index)])
+        except Exception:
+            return 0.0
+
     def _resolve_policy_path(self, policy_path):
         if not policy_path:
             return policy_path
@@ -362,6 +369,35 @@ class Controller:
         if heading_to_yaw is not None:
             adapter["heading_correction_apply_to_yaw_command"] = bool(heading_to_yaw)
 
+        phase_bias = self.cfg["policy"].setdefault("deploy_phase_action_bias", {})
+        phase_bias_enabled = getattr(args, "stride_balance_enabled", None)
+        if phase_bias_enabled is not None:
+            phase_bias["enabled"] = bool(phase_bias_enabled)
+            reload_policy = True
+        phase_bias_float_overrides = {
+            "stride_balance_phase_width": "phase_width",
+            "stride_balance_min_vx": "min_vx",
+            "stride_balance_ramp_vx": "ramp_vx",
+            "stride_left_hip_pitch_bias": ("left_swing_bias_by_index", 0),
+            "stride_left_knee_pitch_bias": ("left_swing_bias_by_index", 3),
+            "stride_left_ankle_pitch_bias": ("left_swing_bias_by_index", 4),
+            "stride_right_hip_pitch_bias": ("right_swing_bias_by_index", 6),
+            "stride_right_knee_pitch_bias": ("right_swing_bias_by_index", 9),
+            "stride_right_ankle_pitch_bias": ("right_swing_bias_by_index", 10),
+        }
+        for arg_name, key in phase_bias_float_overrides.items():
+            value = getattr(args, arg_name, None)
+            if value is None:
+                continue
+            if isinstance(key, tuple):
+                vector_key, index = key
+                values = list(phase_bias.get(vector_key, [0.0] * int(self.cfg["policy"]["num_actions"])))
+                values[int(index)] = float(value)
+                phase_bias[vector_key] = values
+            else:
+                phase_bias[key] = float(value)
+            reload_policy = True
+
         if reload_policy:
             self.policy = Policy(cfg=self.cfg)
 
@@ -441,6 +477,20 @@ class Controller:
             f"action_dof_indexes={[int(i) for i in getattr(self.policy, 'action_dof_indexes', [])]} "
             f"policy_joint_names={getattr(self.policy, 'policy_joint_names', 'unknown')}"
         )
+        phase_bias = self.cfg["policy"].get("deploy_phase_action_bias", {})
+        if isinstance(phase_bias, dict):
+            left_bias = phase_bias.get("left_swing_bias_by_index", [])
+            right_bias = phase_bias.get("right_swing_bias_by_index", [])
+            print(
+                "[deploy-startup] "
+                f"stride_balance={phase_bias.get('enabled', False)} "
+                f"phase_width={phase_bias.get('phase_width', 'default')} "
+                f"min_vx={phase_bias.get('min_vx', 'default')} "
+                f"L(h={self._bias_value(left_bias, 0):+.3f},k={self._bias_value(left_bias, 3):+.3f},"
+                f"a={self._bias_value(left_bias, 4):+.3f}) "
+                f"R(h={self._bias_value(right_bias, 6):+.3f},k={self._bias_value(right_bias, 9):+.3f},"
+                f"a={self._bias_value(right_bias, 10):+.3f})"
+            )
         print(
             "[deploy-startup] "
             f"ankle_ids={mech_indexes} "
@@ -862,6 +912,7 @@ class Controller:
             f"raw_act_max={raw_action_abs_max:.3f} "
             f"lat_act_max={lateral_action_abs_max:.3f} "
             f"raw_lat_act_max={raw_lateral_action_abs_max:.3f} "
+            f"stride_bias_max={float(np.max(np.abs(getattr(self.policy, 'phase_action_bias', np.zeros_like(self.policy.actions))))):.3f} "
             f"act={[round(x, 3) for x in action_sample]} "
             f"kp={[round(x, 1) for x in kp]} "
             f"kd={[round(x, 1) for x in kd]} "
@@ -1161,6 +1212,17 @@ if __name__ == "__main__":
         dest="adapter_heading_correction_apply_to_yaw_command",
         action="store_false",
     )
+    parser.add_argument("--stride_balance_enabled", dest="stride_balance_enabled", action="store_true", default=None)
+    parser.add_argument("--no_stride_balance", dest="stride_balance_enabled", action="store_false")
+    parser.add_argument("--stride_balance_phase_width", type=float, default=None)
+    parser.add_argument("--stride_balance_min_vx", type=float, default=None)
+    parser.add_argument("--stride_balance_ramp_vx", type=float, default=None)
+    parser.add_argument("--stride_left_hip_pitch_bias", type=float, default=None)
+    parser.add_argument("--stride_left_knee_pitch_bias", type=float, default=None)
+    parser.add_argument("--stride_left_ankle_pitch_bias", type=float, default=None)
+    parser.add_argument("--stride_right_hip_pitch_bias", type=float, default=None)
+    parser.add_argument("--stride_right_knee_pitch_bias", type=float, default=None)
+    parser.add_argument("--stride_right_ankle_pitch_bias", type=float, default=None)
     parser.add_argument(
         "--stdin_cmd",
         action="store_true",
