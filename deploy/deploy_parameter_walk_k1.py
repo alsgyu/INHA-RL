@@ -204,6 +204,9 @@ class Controller:
         adapter = commands.get("adapter")
         if isinstance(adapter, dict):
             changed = self._merge_changed(self.cfg["policy"].setdefault("command_adapter", {}), adapter) or changed
+        adapter_override = self.cfg["policy"].get("deploy_command_adapter_override")
+        if isinstance(adapter_override, dict):
+            changed = self._merge_changed(self.cfg["policy"].setdefault("command_adapter", {}), adapter_override) or changed
 
         normalization = metadata.get("normalization")
         if isinstance(normalization, dict):
@@ -377,6 +380,8 @@ class Controller:
             f"forward_pitch_vx_comp={adapter.get('forward_pitch_vx_comp_enabled', False)} "
             f"forward_pitch_min_vx={adapter.get('forward_pitch_vx_comp_min_vx', 'default')} "
             f"heading_correction={adapter.get('heading_correction_enabled', False)} "
+            f"heading_gain={adapter.get('heading_correction_gain', 'default')} "
+            f"heading_max_yaw={adapter.get('heading_correction_max_yaw_rate', 'default')} "
             f"debug={self.cfg.get('debug', {}).get('enabled', False)}"
         )
         print(
@@ -790,6 +795,7 @@ class Controller:
             f"cmd_age={getattr(self.policy, 'command_age', 0.0):.2f} "
             f"vx_corr={getattr(self.policy, 'balance_vx_correction', 0.0):+.2f} "
             f"yaw_corr={getattr(self.policy, 'heading_correction_yaw', 0.0):+.2f} "
+            f"heading_err={getattr(self.policy, 'heading_error_yaw', 0.0):+.2f} "
             f"alpha={self.motion_start_alpha:.2f} "
             f"cmd_alpha={self.motion_command_alpha:.2f} "
             f"stage={self.control_stage} "

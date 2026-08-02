@@ -104,6 +104,11 @@ policy:
     heading_correction_gain: 0.05
     heading_correction_deadband: 0.035
     heading_correction_max_yaw_rate: 0.015
+  deploy_command_adapter_override:
+    heading_correction_gain: 0.16
+    heading_correction_deadband: 0.010
+    heading_correction_max_yaw_rate: 0.08
+    foot_yaw_from_yaw_gain: 0.14
 
   normalization:
     gravity: 1.0

@@ -59,6 +59,7 @@ class Policy:
         self.desired_yaw = 0.0
         self.heading_initialized = False
         self.heading_correction_yaw = 0.0
+        self.heading_error_yaw = 0.0
         self.dof_targets = np.copy(self.target_default_dof_pos)
         self.obs = np.zeros(self.cfg["policy"]["num_observations"], dtype=np.float32)
         self.raw_actions = np.zeros(self.cfg["policy"]["num_actions"], dtype=np.float32)
@@ -122,6 +123,7 @@ class Policy:
         self.desired_yaw = 0.0
         self.heading_initialized = False
         self.heading_correction_yaw = 0.0
+        self.heading_error_yaw = 0.0
         self.raw_actions[:] = 0.0
         self.actions[:] = 0.0
         self.dof_targets[:] = self.target_default_dof_pos
@@ -195,12 +197,14 @@ class Policy:
     def _heading_correction(self, moving):
         adapter = self.command_adapter
         if adapter is None or not bool(adapter.get("heading_correction_enabled", False)):
+            self.heading_error_yaw = 0.0
             return 0.0
 
         if not moving:
             self.desired_yaw = self.estimated_yaw
             self.heading_initialized = False
             self.heading_correction_yaw = 0.0
+            self.heading_error_yaw = 0.0
             return 0.0
 
         if not self.heading_initialized:
@@ -219,9 +223,11 @@ class Policy:
         )
         if not straight:
             self.heading_correction_yaw = 0.0
+            self.heading_error_yaw = 0.0
             return 0.0
 
         yaw_error = self._wrap_to_pi(self.estimated_yaw - self.desired_yaw)
+        self.heading_error_yaw = float(yaw_error)
         deadband = float(adapter.get("heading_correction_deadband", 0.015))
         yaw_error = np.sign(yaw_error) * max(abs(yaw_error) - deadband, 0.0)
         correction = -float(adapter.get("heading_correction_gain", 1.0)) * yaw_error
