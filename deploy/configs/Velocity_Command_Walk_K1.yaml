@@ -105,6 +105,13 @@ policy:
     heading_correction_deadband: 0.035
     heading_correction_max_yaw_rate: 0.015
   deploy_command_adapter_override:
+    body_pitch_offset: -0.006
+    body_pitch_balance_gain: 0.35
+    body_pitch_target_clip: [-0.030, 0.018]
+    forward_pitch_vx_comp_deadband: 0.020
+    forward_pitch_vx_comp_gain: 1.20
+    forward_pitch_vx_comp_max: 0.140
+    forward_pitch_vx_comp_min_vx: 0.030
     heading_correction_gain: 0.16
     heading_correction_deadband: 0.010
     heading_correction_max_yaw_rate: 0.08

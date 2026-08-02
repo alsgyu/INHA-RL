@@ -45,6 +45,7 @@ class Policy:
         self.policy_commands = np.zeros(3, dtype=np.float32)
         self.command_block = np.zeros(10, dtype=np.float32)
         self.balance_vx_correction = 0.0
+        self.forward_pitch_balance_error = 0.0
         self.command_age = 1.0e6
         self.command_speed_drop = 0.0
         self.command_speed_jump = 0.0
@@ -112,6 +113,7 @@ class Policy:
         self.policy_commands[:] = 0.0
         self.command_block[:] = 0.0
         self.balance_vx_correction = 0.0
+        self.forward_pitch_balance_error = 0.0
         self.command_age = 1.0e6
         self.command_speed_drop = 0.0
         self.command_speed_jump = 0.0
@@ -238,6 +240,7 @@ class Policy:
     def _adapt_commands_for_balance(self, projected_gravity):
         self.policy_commands[:] = self.smoothed_commands
         self.balance_vx_correction = 0.0
+        self.forward_pitch_balance_error = 0.0
         adapter = self.command_adapter
         if adapter is None or not bool(adapter.get("forward_pitch_vx_comp_enabled", False)):
             return
@@ -245,6 +248,7 @@ class Policy:
         if self.policy_commands[0] <= 0.0:
             return
         forward_pitch = max(float(projected_gravity[0]) - float(adapter.get("forward_pitch_vx_comp_deadband", 0.04)), 0.0)
+        self.forward_pitch_balance_error = forward_pitch
         correction = min(
             forward_pitch * float(adapter.get("forward_pitch_vx_comp_gain", 0.8)),
             float(adapter.get("forward_pitch_vx_comp_max", 0.05)),
@@ -327,6 +331,8 @@ class Policy:
             float(pitch_clip[0]),
             float(pitch_clip[1]),
         )
+        body_pitch -= float(adapter.get("body_pitch_balance_gain", 0.0)) * float(self.forward_pitch_balance_error)
+        body_pitch = float(np.clip(body_pitch, float(pitch_clip[0]), float(pitch_clip[1])))
         roll_clip = adapter.get("body_roll_target_clip", [-0.08, 0.08])
         body_roll = np.clip(
             vy * float(adapter.get("body_roll_gain", -0.08)),
