@@ -79,13 +79,13 @@ policy:
   deploy_action_upper_by_index: [0.45, 0.28, 0.04, 0.56, 0.16, 0.22, 0.45, 0.28, 0.04, 0.56, 0.16, 0.22]
   deploy_phase_action_bias:
     enabled: true
-    min_vx: 0.055
-    ramp_vx: 0.120
-    phase_width: 0.180
+    min_vx: 0.040
+    ramp_vx: 0.060
+    phase_width: 0.260
     left_swing_center: 0.25
-    right_swing_center: 0.75
-    left_swing_bias_by_index: [0.020, 0.0, 0.0, -0.015, 0.010, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    right_swing_bias_by_index: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.045, 0.0, 0.0, 0.010, -0.015, 0.0]
+    right_swing_center: 0.62
+    left_swing_bias_by_index: [0.040, 0.0, 0.0, -0.025, 0.020, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    right_swing_bias_by_index: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.100, 0.0, 0.0, 0.000, -0.020, 0.0]
 
   command_adapter:
     stand_command_threshold: 0.035
@@ -124,9 +124,9 @@ policy:
     forward_pitch_vx_comp_max: 0.060
     forward_pitch_vx_comp_min_vx: 0.075
     heading_correction_enabled: true
-    heading_correction_gain: 0.12
-    heading_correction_deadband: 0.025
-    heading_correction_max_yaw_rate: 0.035
+    heading_correction_gain: 0.24
+    heading_correction_deadband: 0.015
+    heading_correction_max_yaw_rate: 0.090
     heading_correction_apply_to_yaw_command: true
     foot_yaw_from_yaw_gain: 0.14
 
