@@ -60,7 +60,7 @@ policy:
   motion_start_command_ramp_s: 2.8
   deploy_action_clip: 0.85
   deploy_action_scale: 1.0
-  deploy_default_qpos_source: "common"
+  deploy_default_qpos_source: "prepare"
   deploy_target_default_blend: 0.0
   deploy_scale_actions_in_policy: true
   deploy_action_rate_limit: 0.0
