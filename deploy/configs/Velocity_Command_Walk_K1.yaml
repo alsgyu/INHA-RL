@@ -78,7 +78,7 @@ policy:
   deploy_action_lower_by_index: [-0.60, -0.28, -0.04, -0.30, -0.45, -0.22, -0.60, -0.28, -0.04, -0.30, -0.45, -0.22]
   deploy_action_upper_by_index: [0.45, 0.28, 0.04, 0.56, 0.16, 0.22, 0.45, 0.28, 0.04, 0.56, 0.16, 0.22]
   deploy_phase_action_bias:
-    enabled: true
+    enabled: false
     min_vx: 0.040
     ramp_vx: 0.060
     phase_width: 0.260
@@ -123,11 +123,11 @@ policy:
     forward_pitch_vx_comp_gain: 0.55
     forward_pitch_vx_comp_max: 0.060
     forward_pitch_vx_comp_min_vx: 0.075
-    heading_correction_enabled: true
-    heading_correction_gain: 0.24
-    heading_correction_deadband: 0.015
-    heading_correction_max_yaw_rate: 0.090
-    heading_correction_apply_to_yaw_command: true
+    heading_correction_enabled: false
+    heading_correction_gain: 0.12
+    heading_correction_deadband: 0.025
+    heading_correction_max_yaw_rate: 0.035
+    heading_correction_apply_to_yaw_command: false
     foot_yaw_from_yaw_gain: 0.14
 
   normalization:
