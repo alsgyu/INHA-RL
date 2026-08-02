@@ -759,6 +759,7 @@ def main():
     parser.add_argument("--metrics_warmup_s", type=float, default=1.0)
     parser.add_argument("--metrics_csv", default=None)
     parser.add_argument("--metrics_csv_sample_s", type=float, default=0.05)
+    parser.add_argument("--foot_metrics", action="store_true", help="Enable MuJoCo foot contact/cadence diagnostics.")
     parser.add_argument("--foot_metrics_window_s", type=float, default=3.0)
     parser.add_argument("--foot_contact_debounce_s", type=float, default=0.035)
     args = parser.parse_args()
@@ -866,11 +867,15 @@ def main():
         csv_path=args.metrics_csv,
         csv_sample_s=args.metrics_csv_sample_s,
     )
-    foot_metrics = FootstepMetrics(
-        mujoco,
-        model,
-        window_s=args.foot_metrics_window_s,
-        contact_debounce_s=args.foot_contact_debounce_s,
+    foot_metrics = (
+        FootstepMetrics(
+            mujoco,
+            model,
+            window_s=args.foot_metrics_window_s,
+            contact_debounce_s=args.foot_contact_debounce_s,
+        )
+        if args.foot_metrics
+        else None
     )
     if target_pose is None:
         print(f"[mujoco] walk command vx={args.vx:.3f} vy={args.vy:.3f} vyaw={args.vyaw:.3f} getup_enabled={enable_getup}")
@@ -940,14 +945,17 @@ def main():
         f"ground_friction=({args.ground_friction:.2f},{args.ground_torsional_friction:.3f},"
         f"{args.ground_rolling_friction:.4f}) ground_condim={args.ground_condim}"
     )
-    print(
-        "[mujoco] foot metrics "
-        f"available={foot_metrics.available} "
-        f"ground_geom_id={foot_metrics.ground_geom_id} "
-        f"foot_body_ids={[int(body_id) for body_id in foot_metrics.foot_body_ids]} "
-        f"window_s={args.foot_metrics_window_s:.1f} "
-        f"debounce_s={args.foot_contact_debounce_s:.3f}"
-    )
+    if foot_metrics is None:
+        print("[mujoco] foot metrics disabled; pass --foot_metrics to enable cadence/contact diagnostics")
+    else:
+        print(
+            "[mujoco] foot metrics "
+            f"available={foot_metrics.available} "
+            f"ground_geom_id={foot_metrics.ground_geom_id} "
+            f"foot_body_ids={[int(body_id) for body_id in foot_metrics.foot_body_ids]} "
+            f"window_s={args.foot_metrics_window_s:.1f} "
+            f"debounce_s={args.foot_contact_debounce_s:.3f}"
+        )
     l_hip, l_knee, l_ankle, r_hip, r_knee, r_ankle = leg_default_summary(default_qpos)
     print(
         "[mujoco] default pose "
@@ -991,7 +999,8 @@ def main():
                 start_yaw = metric_yaw
                 path_start_time = float(data.time)
                 metrics.set_target_command((args.vx, args.vy, args.vyaw))
-                foot_metrics.reset_window()
+                if foot_metrics is not None:
+                    foot_metrics.reset_window()
                 print(
                     "[mujoco-cmd] "
                     f"cmd=({args.vx:+.3f},{args.vy:+.3f},{args.vyaw:+.3f}) "
@@ -1014,7 +1023,8 @@ def main():
             start_yaw = metric_yaw
             path_start_time = float(data.time)
             metrics.reset_window()
-            foot_metrics.reset_window()
+            if foot_metrics is not None:
+                foot_metrics.reset_window()
             print(f"[mujoco] forced fall at t={data.time:.2f}s pose={args.fall_pose}")
 
         root_quat = np.array(data.qpos[3:7], dtype=np.float32)
@@ -1071,7 +1081,8 @@ def main():
                 start_yaw = metric_yaw
                 path_start_time = float(data.time)
                 metrics.reset_window()
-                foot_metrics.reset_window()
+                if foot_metrics is not None:
+                    foot_metrics.reset_window()
 
         dof_pos = np.array(data.qpos[7 : 7 + len(default_qpos)], dtype=np.float32)
         dof_vel = np.array(data.qvel[6 : 6 + len(default_qpos)], dtype=np.float32)
@@ -1089,7 +1100,8 @@ def main():
             policy_command=np.array(policy.smoothed_commands, dtype=np.float64),
             tracked=tracked,
         )
-        foot_metrics.update(data.time, data, tracked=tracked)
+        if foot_metrics is not None:
+            foot_metrics.update(data.time, data, tracked=tracked)
 
         if viewer is not None:
             viewer.sync()
@@ -1140,8 +1152,13 @@ def main():
             world_speed_xy = np.linalg.norm(world_velocity[:2])
             report_rpy = quat_to_euler(np.array(data.qpos[3:7], dtype=np.float32))
             metrics_text = metrics.report(metrics_row, metrics_summary)
-            foot_summary = foot_metrics.summary()
-            foot_text = foot_metrics.report(foot_summary, float(getattr(policy, "walk_gait_frequency", 0.0)))
+            foot_text = ""
+            if foot_metrics is not None:
+                foot_summary = foot_metrics.summary()
+                foot_text = " " + foot_metrics.report(
+                    foot_summary,
+                    float(getattr(policy, "walk_gait_frequency", 0.0)),
+                )
             print(
                 f"[mujoco] t={data.time:5.2f}s mode={policy.mode:5s} "
                 f"xy=({data.qpos[0]:+.2f},{data.qpos[1]:+.2f}) "
@@ -1150,7 +1167,7 @@ def main():
                 f"world_v=({world_velocity[0]:+.3f},{world_velocity[1]:+.3f}) "
                 f"world_speed={world_speed_xy:.3f} "
                 f"rpy=({report_rpy[0]:+.2f},{report_rpy[1]:+.2f},{report_rpy[2]:+.2f}) "
-                f"{metrics_text} "
+                f"{metrics_text}"
                 f"{foot_text}"
             )
 
