@@ -525,10 +525,11 @@ class Policy:
             float(roll_clip[0]),
             float(roll_clip[1]),
         )
+        yaw_command = internal_vyaw if bool(adapter.get("heading_correction_apply_to_yaw_command", False)) else vyaw
         return {
             "lin_vel_x": float(vx),
             "lin_vel_y": float(vy),
-            "ang_vel_yaw": float(vyaw),
+            "ang_vel_yaw": float(yaw_command),
             "gait_frequency": float(gait_frequency),
             "foot_yaw_L": float(foot_yaw),
             "foot_yaw_R": float(foot_yaw),

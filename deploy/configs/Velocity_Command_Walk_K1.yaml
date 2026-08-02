@@ -115,9 +115,10 @@ policy:
     forward_pitch_vx_comp_max: 0.060
     forward_pitch_vx_comp_min_vx: 0.075
     heading_correction_enabled: true
-    heading_correction_gain: 0.06
-    heading_correction_deadband: 0.040
-    heading_correction_max_yaw_rate: 0.020
+    heading_correction_gain: 0.12
+    heading_correction_deadband: 0.025
+    heading_correction_max_yaw_rate: 0.035
+    heading_correction_apply_to_yaw_command: true
     foot_yaw_from_yaw_gain: 0.14
 
   normalization:

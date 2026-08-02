@@ -358,6 +358,10 @@ class Controller:
         if heading_enabled is not None:
             adapter["heading_correction_enabled"] = bool(heading_enabled)
 
+        heading_to_yaw = getattr(args, "adapter_heading_correction_apply_to_yaw_command", None)
+        if heading_to_yaw is not None:
+            adapter["heading_correction_apply_to_yaw_command"] = bool(heading_to_yaw)
+
         if reload_policy:
             self.policy = Policy(cfg=self.cfg)
 
@@ -422,6 +426,7 @@ class Controller:
             f"heading_correction={adapter.get('heading_correction_enabled', False)} "
             f"heading_gain={adapter.get('heading_correction_gain', 'default')} "
             f"heading_max_yaw={adapter.get('heading_correction_max_yaw_rate', 'default')} "
+            f"heading_to_yaw={adapter.get('heading_correction_apply_to_yaw_command', False)} "
             f"debug={self.cfg.get('debug', {}).get('enabled', False)}"
         )
         print(
@@ -833,6 +838,7 @@ class Controller:
             f"recovery=(stop:{getattr(self.policy, 'stop_recovery', False)},"
             f"decel:{getattr(self.policy, 'decel_recovery', False)}) "
             f"cmd_age={getattr(self.policy, 'command_age', 0.0):.2f} "
+            f"phase={getattr(self.policy, 'gait_process', 0.0):.2f} "
             f"vx_corr={getattr(self.policy, 'balance_vx_correction', 0.0):+.2f} "
             f"yaw_corr={getattr(self.policy, 'heading_correction_yaw', 0.0):+.2f} "
             f"heading_err={getattr(self.policy, 'heading_error_yaw', 0.0):+.2f} "
@@ -1144,6 +1150,17 @@ if __name__ == "__main__":
     parser.add_argument("--adapter_heading_correction_max_yaw_rate", type=float, default=None)
     parser.add_argument("--adapter_heading_correction_enabled", dest="adapter_heading_correction_enabled", action="store_true", default=None)
     parser.add_argument("--adapter_no_heading_correction", dest="adapter_heading_correction_enabled", action="store_false")
+    parser.add_argument(
+        "--adapter_heading_correction_apply_to_yaw_command",
+        dest="adapter_heading_correction_apply_to_yaw_command",
+        action="store_true",
+        default=None,
+    )
+    parser.add_argument(
+        "--adapter_no_heading_correction_apply_to_yaw_command",
+        dest="adapter_heading_correction_apply_to_yaw_command",
+        action="store_false",
+    )
     parser.add_argument(
         "--stdin_cmd",
         action="store_true",

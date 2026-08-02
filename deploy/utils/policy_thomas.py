@@ -343,12 +343,13 @@ class Policy:
             body_pitch = 0.0
             body_roll = 0.0
             foot_yaw = 0.0
+        yaw_command = internal_yaw if bool(adapter.get("heading_correction_apply_to_yaw_command", False)) else yaw
 
         return np.array(
             [
                 vx,
                 vy,
-                yaw,
+                yaw_command,
                 self.gait_frequency,
                 foot_yaw,
                 foot_yaw,
