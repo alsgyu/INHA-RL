@@ -67,6 +67,12 @@ class Policy:
         self.getup_obs = np.zeros(self.cfg["getup_policy"]["num_observations"], dtype=np.float32)
         self.commands = np.zeros(3, dtype=np.float32)
         self.smoothed_commands = np.zeros(3, dtype=np.float32)
+        self.walk_command_age = 1.0e6
+        self.walk_command_speed_drop = 0.0
+        self.walk_command_speed_jump = 0.0
+        self.walk_stop_recovery = False
+        self.walk_decel_recovery = False
+        self.walk_gait_frequency = 0.0
         self.walk_gait_process = 0.0
         self.walk_desired_yaw = 0.0
         self.walk_heading_initialized = False
@@ -84,6 +90,71 @@ class Policy:
             raise ValueError(
                 f"walk_policy.control.{key} must contain {self.cfg['walk_policy']['num_actions']} values, got {len(values)}"
             )
+
+    def _reset_walk_command_transition_state(self):
+        self.walk_command_age = 1.0e6
+        self.walk_command_speed_drop = 0.0
+        self.walk_command_speed_jump = 0.0
+        self.walk_stop_recovery = False
+        self.walk_decel_recovery = False
+        self.walk_gait_frequency = 0.0
+
+    @staticmethod
+    def _walk_command_norm(command):
+        return float(np.sqrt(float(command[0]) ** 2 + float(command[1]) ** 2 + float(command[2]) ** 2))
+
+    def _record_walk_command_change(self, next_command, walk_cfg):
+        delta = next_command - self.commands
+        delta_norm = self._walk_command_norm(delta)
+        threshold = float(walk_cfg.get("command_change_threshold", 1.0e-4))
+        if delta_norm <= threshold:
+            return
+
+        prev_norm = self._walk_command_norm(self.commands)
+        next_norm = self._walk_command_norm(next_command)
+        self.walk_command_age = 0.0
+        self.walk_command_speed_drop = max(prev_norm - next_norm, 0.0)
+        self.walk_command_speed_jump = max(next_norm - prev_norm, 0.0)
+
+    def _walk_recovery_masks(self, walk_cfg, command_norm):
+        adapter = walk_cfg.get("velocity_command_adapter", {})
+        if not bool(adapter.get("enabled", False)):
+            return False, False
+
+        threshold = float(adapter.get("stand_command_threshold", walk_cfg.get("stand_command_threshold", 0.04)))
+        target_norm = self._walk_command_norm(self.commands)
+
+        stop_recovery = False
+        if bool(adapter.get("stop_gait_hold_enabled", False)):
+            stop_window_s = float(adapter.get("stop_gait_hold_s", 0.65))
+            min_drop = float(adapter.get("stop_gait_hold_min_drop", 0.10))
+            min_speed = float(adapter.get("stop_gait_hold_min_filtered_speed", 0.08))
+            recent_stop = target_norm <= threshold and self.walk_command_age <= stop_window_s
+            recovery_needed = (
+                self.walk_command_speed_drop >= min_drop
+                or command_norm > threshold
+                or command_norm >= min_speed
+            )
+            stop_recovery = recent_stop and recovery_needed
+
+        decel_recovery = False
+        if bool(adapter.get("decel_gait_hold_enabled", False)):
+            decel_window_s = float(adapter.get("decel_gait_hold_s", 1.8))
+            min_drop = float(adapter.get("decel_gait_hold_min_drop", 0.12))
+            min_target_norm = float(adapter.get("decel_gait_hold_min_target_norm", threshold))
+            max_target_norm = float(adapter.get("decel_gait_hold_max_target_norm", 10.0))
+            command_margin = float(
+                adapter.get(
+                    "decel_gait_hold_command_margin",
+                    adapter.get("decel_gait_hold_overspeed_margin", 0.05),
+                )
+            )
+            recent_decel = self.walk_command_speed_drop >= min_drop and self.walk_command_age <= decel_window_s
+            target_in_range = target_norm > min_target_norm and target_norm <= max_target_norm
+            recovery_needed = command_norm > target_norm + command_margin
+            decel_recovery = recent_decel and target_in_range and recovery_needed
+
+        return bool(stop_recovery), bool(decel_recovery)
 
     def get_policy_interval(self):
         return self.policy_interval
@@ -115,6 +186,7 @@ class Policy:
             self.recovered_time = 0.0
             self.getup_actions[:] = 0.0
             self.smoothed_commands[:] = 0.0
+            self._reset_walk_command_transition_state()
             self.walk_heading_initialized = False
             self.walk_heading_correction_yaw = 0.0
             return
@@ -129,6 +201,7 @@ class Policy:
                 self.mode = "walk"
                 self.walk_actions[:] = 0.0
                 self.walk_gait_process = 0.0
+                self._reset_walk_command_transition_state()
                 self.walk_heading_initialized = False
                 self.recovered_time = 0.0
 
@@ -206,18 +279,41 @@ class Policy:
         leg_start = int(walk_cfg.get("leg_start_index", self.cfg["common"]["joint_cnt"] - walk_cfg["num_actions"]))
         leg_end = leg_start + walk_cfg["num_actions"]
 
-        self.commands[:] = [vx, vy, vyaw]
+        next_command = np.array([vx, vy, vyaw], dtype=np.float32)
+        self._record_walk_command_change(next_command, walk_cfg)
+        self.commands[:] = next_command
+        self.walk_command_age += self.policy_interval
         command_slew_rate = float(walk_cfg.get("command_slew_rate", 1.0))
         clip_delta = self.policy_interval * command_slew_rate
         clip_range = (-clip_delta, clip_delta)
         self.smoothed_commands += np.clip(self.commands - self.smoothed_commands, *clip_range)
 
-        moving = np.linalg.norm(self.smoothed_commands) > float(walk_cfg.get("stand_command_threshold", 1.0e-5))
+        command_norm = self._walk_command_norm(self.smoothed_commands)
+        stop_recovery, decel_recovery = self._walk_recovery_masks(walk_cfg, command_norm)
+        self.walk_stop_recovery = stop_recovery
+        self.walk_decel_recovery = decel_recovery
+        moving = (
+            command_norm
+            > float(
+                walk_cfg.get(
+                    "stand_command_threshold",
+                    walk_cfg.get("velocity_command_adapter", {}).get("stand_command_threshold", 1.0e-5),
+                )
+            )
+        ) or stop_recovery or decel_recovery
         if not moving:
             self.walk_actions *= float(walk_cfg.get("stand_action_decay", 0.0))
         heading_correction_yaw = self._walk_heading_correction(walk_cfg, moving, base_rpy)
-        internal_command = self._resolve_walk_internal_command(walk_cfg, moving, heading_correction_yaw, projected_gravity)
+        internal_command = self._resolve_walk_internal_command(
+            walk_cfg,
+            moving,
+            heading_correction_yaw,
+            projected_gravity,
+            stop_recovery=stop_recovery,
+            decel_recovery=decel_recovery,
+        )
         gait_frequency = internal_command["gait_frequency"]
+        self.walk_gait_frequency = float(gait_frequency)
         self.walk_gait_process = np.fmod(self.walk_gait_process + self.policy_interval * gait_frequency, 1.0)
 
         command_block = np.array(
@@ -343,7 +439,15 @@ class Policy:
         self.walk_heading_correction_yaw = float(np.clip(correction, -max_correction, max_correction))
         return self.walk_heading_correction_yaw
 
-    def _resolve_walk_internal_command(self, walk_cfg, moving, heading_correction_yaw=0.0, projected_gravity=None):
+    def _resolve_walk_internal_command(
+        self,
+        walk_cfg,
+        moving,
+        heading_correction_yaw=0.0,
+        projected_gravity=None,
+        stop_recovery=False,
+        decel_recovery=False,
+    ):
         if not moving:
             return {
                 "lin_vel_x": 0.0,
@@ -391,10 +495,18 @@ class Policy:
         linear_drive = np.clip((linear_speed - speed_min) / (speed_max - speed_min), 0.0, 1.0)
         yaw_drive = np.clip(abs(internal_vyaw) / max_yaw, 0.0, 1.0)
         drive = max(linear_drive, yaw_drive)
+        if stop_recovery:
+            drive = max(drive, float(adapter.get("stop_gait_hold_drive", 0.45)))
+        if decel_recovery:
+            drive = max(drive, float(adapter.get("decel_gait_hold_drive", adapter.get("stop_gait_hold_drive", 0.45))))
 
         gait_frequency = float(adapter.get("gait_frequency_min", 1.15)) + drive * (
             float(adapter.get("gait_frequency_max", 1.95)) - float(adapter.get("gait_frequency_min", 1.15))
         )
+        if decel_recovery and "decel_gait_frequency" in adapter:
+            gait_frequency = float(adapter["decel_gait_frequency"])
+        if stop_recovery and "stop_gait_frequency" in adapter:
+            gait_frequency = float(adapter["stop_gait_frequency"])
         foot_yaw_clip = adapter.get("foot_yaw_target_clip", [-0.22, 0.22])
         foot_yaw = np.clip(
             internal_vyaw * float(adapter.get("foot_yaw_from_yaw_gain", 0.12)),

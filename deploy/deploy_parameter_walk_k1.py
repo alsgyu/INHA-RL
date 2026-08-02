@@ -5,6 +5,7 @@ import logging
 import threading
 import queue
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -88,6 +89,11 @@ class Controller:
         # Initialize components
         remote_cfg = self.cfg.get("remote_control", {})
         args = args or object()
+        self.policy_metadata_path = None
+        self.policy_metadata_task = None
+        self.policy_metadata_synced = False
+        self._apply_policy_path_override(args)
+        self._sync_policy_metadata_from_policy_path()
         self.remoteControlService = RemoteControlService(
             JoystickConfig(
                 max_vx=float(getattr(args, "cmd_max_vx", None) or remote_cfg.get("max_vx", 0.5)),
@@ -130,10 +136,83 @@ class Controller:
         except Exception:
             return "unknown"
 
+    def _resolve_policy_path(self, policy_path):
+        if not policy_path:
+            return policy_path
+        if os.path.isabs(policy_path) and os.path.exists(policy_path):
+            return policy_path
+
+        deploy_dir = os.path.abspath(os.path.dirname(__file__))
+        repo_dir = os.path.abspath(os.path.join(deploy_dir, ".."))
+        relative_path = policy_path[2:] if policy_path.startswith("./") else policy_path
+        candidates = [
+            policy_path,
+            os.path.abspath(policy_path),
+            os.path.join(deploy_dir, relative_path),
+            os.path.join(repo_dir, relative_path),
+            os.path.join(repo_dir, "deploy", relative_path),
+        ]
+        for candidate in candidates:
+            if candidate and os.path.exists(candidate):
+                return os.path.abspath(candidate)
+        return os.path.abspath(policy_path)
+
+    def _apply_policy_path_override(self, args):
+        policy_path = getattr(args, "policy_path", None)
+        if policy_path is None:
+            self.cfg["policy"]["policy_path"] = self._resolve_policy_path(self.cfg["policy"]["policy_path"])
+            return False
+
+        resolved_path = self._resolve_policy_path(policy_path)
+        changed = self.cfg["policy"].get("policy_path") != resolved_path
+        self.cfg["policy"]["policy_path"] = resolved_path
+        return changed
+
+    @staticmethod
+    def _merge_changed(target, source):
+        changed = False
+        for key, value in source.items():
+            if target.get(key) != value:
+                target[key] = value
+                changed = True
+        return changed
+
+    def _sync_policy_metadata_from_policy_path(self):
+        policy_path = self._resolve_policy_path(self.cfg["policy"]["policy_path"])
+        self.cfg["policy"]["policy_path"] = policy_path
+        metadata_path = os.path.splitext(policy_path)[0] + ".metadata.json"
+        self.policy_metadata_path = metadata_path if os.path.exists(metadata_path) else None
+        self.policy_metadata_task = None
+        if self.policy_metadata_path is None:
+            self.policy_metadata_synced = False
+            return False
+
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            metadata = json.load(f)
+        self.policy_metadata_task = metadata.get("task")
+
+        changed = False
+        commands = metadata.get("commands", {})
+        if "command_slew_rate" in commands and self.cfg["policy"].get("command_slew_rate") != commands["command_slew_rate"]:
+            self.cfg["policy"]["command_slew_rate"] = commands["command_slew_rate"]
+            changed = True
+        if "command_change_threshold" in commands:
+            if self.cfg["policy"].get("command_change_threshold") != commands["command_change_threshold"]:
+                self.cfg["policy"]["command_change_threshold"] = commands["command_change_threshold"]
+                changed = True
+        adapter = commands.get("adapter")
+        if isinstance(adapter, dict):
+            changed = self._merge_changed(self.cfg["policy"].setdefault("command_adapter", {}), adapter) or changed
+
+        normalization = metadata.get("normalization")
+        if isinstance(normalization, dict):
+            changed = self._merge_changed(self.cfg["policy"].setdefault("normalization", {}), normalization) or changed
+
+        self.policy_metadata_synced = True
+        return changed
+
     def _policy_sha1(self):
-        policy_path = self.cfg["policy"]["policy_path"]
-        if not os.path.isabs(policy_path):
-            policy_path = os.path.abspath(policy_path)
+        policy_path = self._resolve_policy_path(self.cfg["policy"]["policy_path"])
         try:
             digest = hashlib.sha1()
             with open(policy_path, "rb") as f:
@@ -145,10 +224,8 @@ class Controller:
 
     def apply_prepare_overrides(self, args):
         reload_policy = False
-        policy_path = getattr(args, "policy_path", None)
-        if policy_path is not None:
-            self.cfg["policy"]["policy_path"] = policy_path
-            reload_policy = True
+        reload_policy = self._apply_policy_path_override(args) or reload_policy
+        reload_policy = self._sync_policy_metadata_from_policy_path() or reload_policy
 
         deploy_profile = str(getattr(args, "deploy_profile", "safe")).lower()
         if deploy_profile == "training_exact":
@@ -237,7 +314,9 @@ class Controller:
             f"commit={self._git_commit()} "
             f"cwd={os.getcwd()} "
             f"script={os.path.abspath(__file__)} "
-            f"config={os.path.abspath(cfg_file)}"
+            f"config={os.path.abspath(cfg_file)} "
+            f"metadata={self.policy_metadata_path or 'none'} "
+            f"metadata_task={self.policy_metadata_task or 'none'}"
         )
         print(
             "[deploy-startup] "
@@ -267,6 +346,11 @@ class Controller:
             f"motion_ramp={self.cfg['policy'].get('motion_start_action_ramp_s', 'default')} "
             f"motion_cmd_ramp={self.cfg['policy'].get('motion_start_command_ramp_s', 'default')} "
             f"gait_min={adapter.get('gait_frequency_min', 'default')} "
+            f"gait_max={adapter.get('gait_frequency_max', 'default')} "
+            f"stop_hold={adapter.get('stop_gait_hold_enabled', False)}:"
+            f"{adapter.get('stop_gait_hold_s', 'default')}s "
+            f"decel_hold={adapter.get('decel_gait_hold_enabled', False)}:"
+            f"{adapter.get('decel_gait_hold_s', 'default')}s "
             f"body_pitch_gain={adapter.get('body_pitch_gain', 'default')} "
             f"body_pitch_offset={adapter.get('body_pitch_offset', 0.0)} "
             f"forward_pitch_vx_comp={adapter.get('forward_pitch_vx_comp_enabled', False)} "
@@ -468,7 +552,23 @@ class Controller:
         if not bool(self.cfg["policy"].get("zero_command_hold_prepare", False)):
             return False
         threshold = float(self.cfg["policy"].get("zero_command_hold_threshold", 0.035))
-        return self._remote_command_norm() <= threshold
+        if self._remote_command_norm() > threshold:
+            return False
+
+        if self.control_stage == "rl":
+            smoothed = getattr(self.policy, "smoothed_commands", np.zeros(3, dtype=np.float32))
+            if float(np.linalg.norm(smoothed)) > threshold:
+                return False
+            adapter = self.cfg["policy"].get("command_adapter", {})
+            recovery_window_s = 0.0
+            if bool(adapter.get("stop_gait_hold_enabled", False)):
+                recovery_window_s = max(recovery_window_s, float(adapter.get("stop_gait_hold_s", 0.0)))
+            if bool(adapter.get("decel_gait_hold_enabled", False)):
+                recovery_window_s = max(recovery_window_s, float(adapter.get("decel_gait_hold_s", 0.0)))
+            if float(getattr(self.policy, "command_age", 1.0e6)) <= recovery_window_s:
+                return False
+
+        return True
 
     def _rl_publish_mode(self):
         return str(self.cfg["policy"].get("rl_publish_mode", "continuous")).lower()
@@ -608,6 +708,9 @@ class Controller:
             f"{self.policy.policy_commands[2]:+.2f}) "
             f"cmd10={[round(x, 3) for x in command_block]} "
             f"gait={self.policy.gait_frequency:.2f} "
+            f"recovery=(stop:{getattr(self.policy, 'stop_recovery', False)},"
+            f"decel:{getattr(self.policy, 'decel_recovery', False)}) "
+            f"cmd_age={getattr(self.policy, 'command_age', 0.0):.2f} "
             f"vx_corr={getattr(self.policy, 'balance_vx_correction', 0.0):+.2f} "
             f"yaw_corr={getattr(self.policy, 'heading_correction_yaw', 0.0):+.2f} "
             f"alpha={self.motion_start_alpha:.2f} "
@@ -890,7 +993,12 @@ if __name__ == "__main__":
     parser.add_argument("--cmd_max_vy", type=float, default=None, help="Override stdin/keyboard vy command limit.")
     parser.add_argument("--cmd_max_vyaw", type=float, default=None, help="Override stdin/keyboard vyaw command limit.")
     args = parser.parse_args()
-    cfg_file = os.path.join("configs", args.config)
+    cfg_candidates = [
+        args.config,
+        os.path.join("configs", args.config),
+        os.path.join(os.path.dirname(__file__), "configs", args.config),
+    ]
+    cfg_file = next((path for path in cfg_candidates if os.path.exists(path)), cfg_candidates[-1])
 
     print(f"Starting custom controller, connecting to {args.net} ...")
     ChannelFactory.Instance().Init(0, args.net)

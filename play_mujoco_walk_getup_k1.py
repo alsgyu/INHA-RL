@@ -229,8 +229,9 @@ def sync_walk_policy_from_task_config(cfg, task_cfg):
         if key in task_control:
             walk_control[key] = task_control[key]
 
-    if "command_slew_rate" in task_commands:
-        walk_cfg["command_slew_rate"] = task_commands["command_slew_rate"]
+    for key in ("command_slew_rate", "command_change_threshold"):
+        if key in task_commands:
+            walk_cfg[key] = task_commands[key]
     adapter = task_commands.get("adapter")
     if adapter:
         walk_adapter = walk_cfg.setdefault("velocity_command_adapter", {})
@@ -708,6 +709,18 @@ def main():
         f"action_by_index={walk_control.get('action_clip_by_index') is not None} "
         f"rate_limit_by_index={walk_control.get('action_rate_limit_by_index') is not None}"
     )
+    walk_adapter = cfg["walk_policy"].get("velocity_command_adapter", {})
+    if walk_adapter:
+        print(
+            "[mujoco] adapter "
+            f"gait=({walk_adapter.get('gait_frequency_min', 'default')},"
+            f"{walk_adapter.get('gait_frequency_max', 'default')}) "
+            f"stop_hold={walk_adapter.get('stop_gait_hold_enabled', False)}:"
+            f"{walk_adapter.get('stop_gait_hold_s', 'default')}s "
+            f"decel_hold={walk_adapter.get('decel_gait_hold_enabled', False)}:"
+            f"{walk_adapter.get('decel_gait_hold_s', 'default')}s "
+            f"body_pitch_offset={walk_adapter.get('body_pitch_offset', 0.0)}"
+        )
     if args.straight_path_correction:
         print(
             "[mujoco] straight path correction "
@@ -906,9 +919,14 @@ def main():
                 adapter_yaw_correction = float(getattr(policy, "walk_heading_correction_yaw", 0.0))
                 if abs(adapter_yaw_correction) > 1.0e-5:
                     correction_text += f"adapter_yaw={adapter_yaw_correction:+.3f} "
+                recovery_text = (
+                    f"gait={float(getattr(policy, 'walk_gait_frequency', 0.0)):.2f} "
+                    f"recovery=(stop:{getattr(policy, 'walk_stop_recovery', False)},"
+                    f"decel:{getattr(policy, 'walk_decel_recovery', False)}) "
+                )
                 path_text = (
                     f"path_err=({path_along_error:+.3f},{path_lateral_error:+.3f}) "
-                    f"yaw_err={path_yaw_error:+.3f} {correction_text}"
+                    f"yaw_err={path_yaw_error:+.3f} {recovery_text}{correction_text}"
                 )
             else:
                 target_dist = np.linalg.norm(target_pose[0:2] - data.qpos[0:2])

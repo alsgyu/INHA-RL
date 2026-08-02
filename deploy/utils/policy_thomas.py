@@ -45,6 +45,11 @@ class Policy:
         self.policy_commands = np.zeros(3, dtype=np.float32)
         self.command_block = np.zeros(10, dtype=np.float32)
         self.balance_vx_correction = 0.0
+        self.command_age = 1.0e6
+        self.command_speed_drop = 0.0
+        self.command_speed_jump = 0.0
+        self.stop_recovery = False
+        self.decel_recovery = False
 
         self.command_adapter = self.cfg["policy"].get("command_adapter")
         self.command_source = str(self.cfg["policy"].get("command_source", "remote")).lower()
@@ -106,6 +111,11 @@ class Policy:
         self.policy_commands[:] = 0.0
         self.command_block[:] = 0.0
         self.balance_vx_correction = 0.0
+        self.command_age = 1.0e6
+        self.command_speed_drop = 0.0
+        self.command_speed_jump = 0.0
+        self.stop_recovery = False
+        self.decel_recovery = False
         self.gait_frequency = 0.0
         self.gait_process = 0.0
         self.estimated_yaw = 0.0
@@ -120,6 +130,63 @@ class Policy:
         if self.command_adapter is None:
             return default
         return self.command_adapter.get(key, default)
+
+    @staticmethod
+    def _command_norm(command):
+        return float(np.sqrt(float(command[0]) ** 2 + float(command[1]) ** 2 + float(command[2]) ** 2))
+
+    def _record_command_change(self, next_command):
+        delta = next_command - self.commands
+        delta_norm = self._command_norm(delta)
+        threshold = float(self.cfg["policy"].get("command_change_threshold", 1.0e-4))
+        if delta_norm <= threshold:
+            return
+
+        prev_norm = self._command_norm(self.commands)
+        next_norm = self._command_norm(next_command)
+        self.command_age = 0.0
+        self.command_speed_drop = max(prev_norm - next_norm, 0.0)
+        self.command_speed_jump = max(next_norm - prev_norm, 0.0)
+
+    def _recovery_masks(self, command_norm):
+        adapter = self.command_adapter
+        if adapter is None:
+            return False, False
+
+        threshold = float(adapter.get("stand_command_threshold", 0.04))
+        target_norm = self._command_norm(self.commands)
+
+        stop_recovery = False
+        if bool(adapter.get("stop_gait_hold_enabled", False)):
+            stop_window_s = float(adapter.get("stop_gait_hold_s", 0.65))
+            min_drop = float(adapter.get("stop_gait_hold_min_drop", 0.10))
+            min_speed = float(adapter.get("stop_gait_hold_min_filtered_speed", 0.08))
+            recent_stop = target_norm <= threshold and self.command_age <= stop_window_s
+            recovery_needed = (
+                self.command_speed_drop >= min_drop
+                or command_norm > threshold
+                or command_norm >= min_speed
+            )
+            stop_recovery = recent_stop and recovery_needed
+
+        decel_recovery = False
+        if bool(adapter.get("decel_gait_hold_enabled", False)):
+            decel_window_s = float(adapter.get("decel_gait_hold_s", 1.8))
+            min_drop = float(adapter.get("decel_gait_hold_min_drop", 0.12))
+            min_target_norm = float(adapter.get("decel_gait_hold_min_target_norm", threshold))
+            max_target_norm = float(adapter.get("decel_gait_hold_max_target_norm", 10.0))
+            command_margin = float(
+                adapter.get(
+                    "decel_gait_hold_command_margin",
+                    adapter.get("decel_gait_hold_overspeed_margin", 0.05),
+                )
+            )
+            recent_decel = self.command_speed_drop >= min_drop and self.command_age <= decel_window_s
+            target_in_range = target_norm > min_target_norm and target_norm <= max_target_norm
+            recovery_needed = command_norm > target_norm + command_margin
+            decel_recovery = recent_decel and target_in_range and recovery_needed
+
+        return bool(stop_recovery), bool(decel_recovery)
 
     @staticmethod
     def _wrap_to_pi(angle):
@@ -190,6 +257,8 @@ class Policy:
     def _resolve_command_block(self):
         adapter = self.command_adapter
         if adapter is None:
+            self.stop_recovery = False
+            self.decel_recovery = False
             moving = np.linalg.norm(self.policy_commands) > 1.0e-5
             self.gait_frequency = float(self.obs_controller.get_value(9)) if moving else 0.0
             return np.array(
@@ -210,7 +279,11 @@ class Policy:
 
         vx, vy, yaw = self.policy_commands
         stand_threshold = float(adapter.get("stand_command_threshold", 0.04))
-        moving = np.sqrt(vx * vx + vy * vy + yaw * yaw) > stand_threshold
+        command_norm = float(np.sqrt(vx * vx + vy * vy + yaw * yaw))
+        stop_recovery, decel_recovery = self._recovery_masks(command_norm)
+        self.stop_recovery = stop_recovery
+        self.decel_recovery = decel_recovery
+        moving = command_norm > stand_threshold or stop_recovery or decel_recovery
         internal_yaw = yaw + self._heading_correction(moving)
 
         linear_speed = np.sqrt(vx * vx + vy * vy)
@@ -220,11 +293,19 @@ class Policy:
         linear_drive = np.clip((linear_speed - speed_min) / (speed_max - speed_min), 0.0, 1.0)
         yaw_drive = np.clip(abs(internal_yaw) / max_yaw, 0.0, 1.0)
         drive = max(linear_drive, yaw_drive)
+        if stop_recovery:
+            drive = max(drive, float(adapter.get("stop_gait_hold_drive", 0.45)))
+        if decel_recovery:
+            drive = max(drive, float(adapter.get("decel_gait_hold_drive", adapter.get("stop_gait_hold_drive", 0.45))))
 
         if moving:
             gait_min = float(adapter.get("gait_frequency_min", 1.15))
             gait_max = float(adapter.get("gait_frequency_max", 1.95))
             self.gait_frequency = gait_min + drive * (gait_max - gait_min)
+            if decel_recovery and "decel_gait_frequency" in adapter:
+                self.gait_frequency = float(adapter["decel_gait_frequency"])
+            if stop_recovery and "stop_gait_frequency" in adapter:
+                self.gait_frequency = float(adapter["stop_gait_frequency"])
         else:
             self.gait_frequency = 0.0
 
@@ -281,13 +362,19 @@ class Policy:
     ):
         self.estimated_yaw = self._wrap_to_pi(self.estimated_yaw + float(base_ang_vel[2]) * self.policy_interval)
         if self._use_observation_controller_commands():
-            self.commands[0] = self.obs_controller.get_vx_cmd()
-            self.commands[1] = self.obs_controller.get_vy_cmd()
-            self.commands[2] = self.obs_controller.get_vyaw_cmd()
+            next_command = np.array(
+                [
+                    self.obs_controller.get_vx_cmd(),
+                    self.obs_controller.get_vy_cmd(),
+                    self.obs_controller.get_vyaw_cmd(),
+                ],
+                dtype=np.float32,
+            )
         else:
-            self.commands[0] = vx
-            self.commands[1] = vy
-            self.commands[2] = vyaw
+            next_command = np.array([vx, vy, vyaw], dtype=np.float32)
+        self._record_command_change(next_command)
+        self.commands[:] = next_command
+        self.command_age += self.policy_interval
             
         command_slew_rate = float(self.cfg["policy"].get("command_slew_rate", 1.0))
         clip_delta = self.policy_interval * command_slew_rate
