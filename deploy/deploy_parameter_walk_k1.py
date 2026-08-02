@@ -121,6 +121,7 @@ class Controller:
         self.motion_command_alpha = 0.0
         self.last_debug_print_time = 0.0
         self.control_stage = "idle"
+        self.safety_abort_triggered = False
         self.stdin_cmd = StdinCommandInput() if bool(getattr(args, "stdin_cmd", False)) else None
 
         self.publish_lock = threading.Lock()
@@ -396,6 +397,7 @@ class Controller:
             f"mode=(prepare:{self._parallel_mech_mode('prepare')},rl:{self._parallel_mech_mode('rl')}) "
             f"prepare_hold_current={self.cfg.get('prepare', {}).get('hold_current_on_custom', False)} "
             f"prepare_transition_s={self.cfg.get('prepare', {}).get('transition_s', 0.0)} "
+            f"prepare_safety={self.cfg.get('prepare', {}).get('safety_abort_enabled', False)} "
             f"prepare_kp={prepare_kp} prepare_kd={prepare_kd} "
             f"common_kp={common_kp} common_kd={common_kd}"
         )
@@ -427,6 +429,8 @@ class Controller:
             self.dof_target[i] = float(target[i])
             self.filtered_dof_target[i] = float(target[i])
         self.control_stage = "prepare"
+        if self._abort_if_prepare_unstable_locked("prepare"):
+            return
         self._apply_parallel_mech_cmd("prepare")
         self._send_cmd(self.low_cmd)
 
@@ -447,6 +451,8 @@ class Controller:
             target = start_target + smooth_alpha * (final_target - start_target)
             with self.publish_lock:
                 self._send_prepare_target_locked(target)
+            if not self.running:
+                break
             if alpha >= 1.0:
                 break
             time.sleep(transition_dt_s)
@@ -668,11 +674,58 @@ class Controller:
             self.low_cmd.motor_cmd[i].q = self.filtered_dof_target[i]
         self._apply_parallel_mech_cmd("prepare" if stage in ("prepare", "rl_hold") else "rl")
 
+    def _abort_if_prepare_unstable_locked(self, stage):
+        if stage not in ("prepare", "rl_hold") or self.safety_abort_triggered:
+            return False
+        prepare_cfg = self.cfg.get("prepare", {})
+        if not bool(prepare_cfg.get("safety_abort_enabled", False)):
+            return False
+
+        action_dof_indexes = getattr(self.policy, "action_dof_indexes", np.arange(10, 22, dtype=np.int64))
+        target = self.filtered_dof_target[action_dof_indexes]
+        actual = self.dof_pos_latest[action_dof_indexes]
+        leg_error_abs_max = float(np.max(np.abs(target - actual)))
+        raw_leg_vel_abs_max = float(np.max(np.abs(self.dof_vel[action_dof_indexes])))
+        pitch_abs = abs(float(self.base_rpy[1]))
+        roll_abs = abs(float(self.base_rpy[0]))
+
+        pitch_limit = float(prepare_cfg.get("safety_abort_pitch_abs", 10.0))
+        roll_limit = float(prepare_cfg.get("safety_abort_roll_abs", 10.0))
+        leg_error_limit = float(prepare_cfg.get("safety_abort_leg_error_abs", 10.0))
+        raw_leg_vel_limit = float(prepare_cfg.get("safety_abort_raw_leg_vel_abs", 1000.0))
+
+        reasons = []
+        if pitch_abs > pitch_limit:
+            reasons.append(f"pitch={self.base_rpy[1]:+.3f}>{pitch_limit:.3f}")
+        if roll_abs > roll_limit:
+            reasons.append(f"roll={self.base_rpy[0]:+.3f}>{roll_limit:.3f}")
+        if leg_error_abs_max > leg_error_limit:
+            reasons.append(f"leg_err={leg_error_abs_max:.3f}>{leg_error_limit:.3f}")
+        if raw_leg_vel_abs_max > raw_leg_vel_limit:
+            reasons.append(f"raw_leg_vel={raw_leg_vel_abs_max:.3f}>{raw_leg_vel_limit:.3f}")
+
+        if not reasons:
+            return False
+
+        self.safety_abort_triggered = True
+        self.running = False
+        print(
+            "[deploy-safety] prepare instability detected; switching to damping: "
+            + ", ".join(reasons)
+        )
+        try:
+            self.client.ChangeMode(RobotMode.kDamping)
+        except Exception as exc:
+            print(f"[deploy-safety] failed to switch to damping: {exc}")
+        return True
+
     def _publish_policy_step_target(self):
         if self._rl_publish_mode() not in ("policy", "policy_step", "policy_dt"):
             return
         with self.publish_lock:
             if self.control_stage != "rl":
+                return
+            if self._abort_if_prepare_unstable_locked(self.control_stage):
                 return
             alpha = float(np.clip(self.cfg["policy"].get("rl_target_filter_alpha", 1.0), 0.0, 1.0))
             self.filtered_dof_target[:] = self.filtered_dof_target * (1.0 - alpha) + self.dof_target * alpha
@@ -805,6 +858,8 @@ class Controller:
             print("[deploy-prepare] holding current joint target")
         else:
             self._ramp_to_prepare_target(start_target, prepare_target)
+        if not self.running:
+            return
         print("[deploy-prepare] custom mode active; prepare command sent")
         end_time = time.perf_counter()
         self.logger.debug(f"Change mode took {(end_time - send_time)*1000:.4f} ms")
@@ -963,6 +1018,9 @@ class Controller:
                     self.filtered_dof_target = self.filtered_dof_target * (1.0 - alpha) + self.dof_target * alpha
                 elif stage in ("prepare", "rl_hold"):
                     self.filtered_dof_target[:] = self.dof_target
+
+                if self._abort_if_prepare_unstable_locked(stage):
+                    continue
 
                 self._write_filtered_target_to_low_cmd(stage)
 

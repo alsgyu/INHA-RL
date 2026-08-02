@@ -143,9 +143,14 @@ debug:
   print_interval_s: 0.5
 
 prepare:
-  hold_current_on_custom: true
+  hold_current_on_custom: false
   transition_s: 2.5
   transition_dt_s: 0.02
+  safety_abort_enabled: true
+  safety_abort_pitch_abs: 0.18
+  safety_abort_roll_abs: 0.35
+  safety_abort_leg_error_abs: 0.35
+  safety_abort_raw_leg_vel_abs: 4.0
   stiffness: [
     2, 2,
     5, 5, 5, 5,
