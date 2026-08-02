@@ -53,12 +53,14 @@ policy:
   zero_command_hold_prepare: true
   zero_command_hold_threshold: 0.035
   rl_stance_transition_s: 2.0
-  motion_start_hold_s: 1.00
-  motion_start_action_ramp_s: 3.0
-  motion_start_command_ramp_s: 1.8
+  motion_start_hold_s: 1.20
+  motion_start_action_ramp_s: 4.0
+  motion_start_command_delay_s: 1.20
+  motion_start_command_ramp_s: 2.8
   deploy_action_clip: 0.85
   deploy_action_scale: 1.0
   deploy_default_qpos_source: "common"
+  deploy_target_default_blend: 0.35
   deploy_scale_actions_in_policy: false
   deploy_action_rate_limit: 0.0
   # Keep yaw slow, but let hip/ankle roll react for balance.
@@ -141,7 +143,7 @@ debug:
 
 prepare:
   hold_current_on_custom: false
-  transition_s: 1.6
+  transition_s: 1.2
   transition_dt_s: 0.02
   stiffness: [
     2, 2,
@@ -161,6 +163,6 @@ prepare:
     0, 0,
     0.2, -1.35, 0, -0.5,
     0.2, 1.35, 0, 0.5,
-    -0.2, 0, 0, 0.4, -0.25, 0,
-    -0.2, 0, 0, 0.4, -0.25, 0
+    -0.12, 0, 0, 0.24, -0.16, 0,
+    -0.12, 0, 0, 0.24, -0.16, 0
   ]

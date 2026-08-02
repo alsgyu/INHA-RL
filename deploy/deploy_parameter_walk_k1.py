@@ -299,6 +299,10 @@ class Controller:
         if motion_command_ramp is not None:
             self.cfg["policy"]["motion_start_command_ramp_s"] = float(motion_command_ramp)
 
+        motion_command_delay = getattr(args, "motion_start_command_delay_s", None)
+        if motion_command_delay is not None:
+            self.cfg["policy"]["motion_start_command_delay_s"] = float(motion_command_delay)
+
         if reload_policy:
             self.policy = Policy(cfg=self.cfg)
 
@@ -344,6 +348,7 @@ class Controller:
             f"control_decimation={self.cfg['policy']['control'].get('decimation', 'default')} "
             f"motion_hold={self.cfg['policy'].get('motion_start_hold_s', 'default')} "
             f"motion_ramp={self.cfg['policy'].get('motion_start_action_ramp_s', 'default')} "
+            f"motion_cmd_delay={self.cfg['policy'].get('motion_start_command_delay_s', 0.0)} "
             f"motion_cmd_ramp={self.cfg['policy'].get('motion_start_command_ramp_s', 'default')} "
             f"gait_min={adapter.get('gait_frequency_min', 'default')} "
             f"gait_max={adapter.get('gait_frequency_max', 'default')} "
@@ -679,8 +684,10 @@ class Controller:
         leg_actual = self.dof_pos_latest[action_dof_indexes]
         leg_desired = self.dof_target[action_dof_indexes]
         policy_default = getattr(self.policy, "default_dof_pos", self.cfg["common"]["default_qpos"])[action_dof_indexes]
+        target_default = getattr(self.policy, "target_default_dof_pos", policy_default)[action_dof_indexes]
         leg_error_abs_max = float(np.max(np.abs(leg_target - leg_actual)))
         default_error_abs_max = float(np.max(np.abs(policy_default - leg_actual)))
+        target_default_error_abs_max = float(np.max(np.abs(target_default - leg_actual)))
         target_lag_abs_max = float(np.max(np.abs(leg_desired - leg_target)))
         leg_vel_abs_max = float(np.max(np.abs(self.policy_dof_vel[action_dof_indexes])))
         raw_leg_vel_abs_max = float(np.max(np.abs(self.dof_vel[action_dof_indexes])))
@@ -727,6 +734,7 @@ class Controller:
             f"err={[round(x, 3) for x in error]} "
             f"leg_err_max={leg_error_abs_max:.3f} "
             f"default_err_max={default_error_abs_max:.3f} "
+            f"target_default_err_max={target_default_error_abs_max:.3f} "
             f"target_lag_max={target_lag_abs_max:.3f} "
             f"leg_vel_max={leg_vel_abs_max:.3f} "
             f"raw_leg_vel_max={raw_leg_vel_abs_max:.3f} "
@@ -882,11 +890,12 @@ class Controller:
         else:
             action_scale_multiplier = 1.0
         self.motion_start_alpha = action_scale_multiplier
+        command_delay_s = float(self.cfg["policy"].get("motion_start_command_delay_s", 0.0))
         command_ramp_s = float(self.cfg["policy"].get("motion_start_command_ramp_s", ramp_s))
         if command_ramp_s > 1.0e-6:
-            command_scale_multiplier = self._smoothstep((elapsed - hold_s) / command_ramp_s)
+            command_scale_multiplier = self._smoothstep((elapsed - hold_s - command_delay_s) / command_ramp_s)
         else:
-            command_scale_multiplier = 1.0
+            command_scale_multiplier = 0.0 if elapsed < hold_s + command_delay_s else 1.0
         self.motion_command_alpha = command_scale_multiplier
         self._update_policy_dof_vel()
 
@@ -986,6 +995,7 @@ if __name__ == "__main__":
         help="Publish RL targets continuously or once per policy step like Booster Deploy.",
     )
     parser.add_argument("--motion_start_action_ramp_s", type=float, default=None)
+    parser.add_argument("--motion_start_command_delay_s", type=float, default=None)
     parser.add_argument("--motion_start_command_ramp_s", type=float, default=None)
     parser.add_argument(
         "--stdin_cmd",
