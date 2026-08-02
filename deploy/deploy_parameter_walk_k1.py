@@ -678,7 +678,9 @@ class Controller:
         leg_target = self.filtered_dof_target[action_dof_indexes]
         leg_actual = self.dof_pos_latest[action_dof_indexes]
         leg_desired = self.dof_target[action_dof_indexes]
+        policy_default = getattr(self.policy, "default_dof_pos", self.cfg["common"]["default_qpos"])[action_dof_indexes]
         leg_error_abs_max = float(np.max(np.abs(leg_target - leg_actual)))
+        default_error_abs_max = float(np.max(np.abs(policy_default - leg_actual)))
         target_lag_abs_max = float(np.max(np.abs(leg_desired - leg_target)))
         leg_vel_abs_max = float(np.max(np.abs(self.policy_dof_vel[action_dof_indexes])))
         raw_leg_vel_abs_max = float(np.max(np.abs(self.dof_vel[action_dof_indexes])))
@@ -724,6 +726,7 @@ class Controller:
             f"target[{leg_ids}]={[round(x, 3) for x in target]} "
             f"err={[round(x, 3) for x in error]} "
             f"leg_err_max={leg_error_abs_max:.3f} "
+            f"default_err_max={default_error_abs_max:.3f} "
             f"target_lag_max={target_lag_abs_max:.3f} "
             f"leg_vel_max={leg_vel_abs_max:.3f} "
             f"raw_leg_vel_max={raw_leg_vel_abs_max:.3f} "

@@ -53,7 +53,7 @@ policy:
   zero_command_hold_prepare: true
   zero_command_hold_threshold: 0.035
   rl_stance_transition_s: 2.0
-  motion_start_hold_s: 0.50
+  motion_start_hold_s: 1.00
   motion_start_action_ramp_s: 3.0
   motion_start_command_ramp_s: 1.8
   deploy_action_clip: 0.85
@@ -140,8 +140,8 @@ debug:
   print_interval_s: 0.5
 
 prepare:
-  hold_current_on_custom: true
-  transition_s: 0.8
+  hold_current_on_custom: false
+  transition_s: 1.6
   transition_dt_s: 0.02
   stiffness: [
     2, 2,
@@ -161,6 +161,6 @@ prepare:
     0, 0,
     0.2, -1.35, 0, -0.5,
     0.2, 1.35, 0, 0.5,
-    -0.12, 0, 0, 0.24, -0.16, 0,
-    -0.12, 0, 0, 0.24, -0.16, 0
+    -0.2, 0, 0, 0.4, -0.25, 0,
+    -0.2, 0, 0, 0.4, -0.25, 0
   ]
