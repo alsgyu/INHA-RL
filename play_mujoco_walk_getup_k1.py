@@ -1,4 +1,5 @@
 import argparse
+from collections import deque
 import glob
 import os
 import queue
@@ -98,6 +99,166 @@ class ClampedActor(torch.nn.Module):
         if self.action_clip is not None:
             action = torch.clamp(action, -self.action_clip, self.action_clip)
         return action
+
+
+class FootstepMetrics:
+    FOOT_BODY_NAMES = ("left_foot_link", "right_foot_link")
+    SOLE_OFFSETS = (
+        np.array([0.026, 0.0, -0.038], dtype=np.float64),
+        np.array([0.026, 0.0, -0.038], dtype=np.float64),
+    )
+
+    def __init__(self, mujoco, model, window_s=3.0):
+        self.mujoco = mujoco
+        self.model = model
+        self.window_s = max(float(window_s), 1.0e-6)
+        self.rows = deque()
+        self.prev_contact = None
+        self.prev_pos = None
+        self.prev_time = None
+
+        self.ground_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "ground")
+        self.foot_body_ids = [
+            mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name)
+            for name in self.FOOT_BODY_NAMES
+        ]
+        self.available = self.ground_geom_id >= 0 and all(body_id >= 0 for body_id in self.foot_body_ids)
+
+    def reset_window(self):
+        self.rows.clear()
+
+    def update(self, time_s, data, tracked=True):
+        if not self.available:
+            return None
+
+        contact, normal_force = self._foot_contact_and_force(data)
+        sole_pos = self._sole_positions(data)
+        if self.prev_pos is None or self.prev_time is None:
+            sole_vel = np.zeros_like(sole_pos)
+        else:
+            dt = max(float(time_s) - float(self.prev_time), 1.0e-6)
+            sole_vel = (sole_pos - self.prev_pos) / dt
+
+        if self.prev_contact is None:
+            touchdown = np.zeros(2, dtype=bool)
+        else:
+            touchdown = contact & (~self.prev_contact)
+
+        if tracked:
+            self.rows.append(
+                {
+                    "time": float(time_s),
+                    "contact": contact.copy(),
+                    "force": normal_force.copy(),
+                    "sole_pos": sole_pos.copy(),
+                    "sole_vel": sole_vel.copy(),
+                    "touchdown": touchdown.copy(),
+                }
+            )
+            while self.rows and float(time_s) - self.rows[0]["time"] > self.window_s:
+                self.rows.popleft()
+
+        self.prev_contact = contact
+        self.prev_pos = sole_pos
+        self.prev_time = float(time_s)
+        return self.summary()
+
+    def summary(self):
+        if not self.rows:
+            return None
+
+        times = np.array([row["time"] for row in self.rows], dtype=np.float64)
+        contacts = np.stack([row["contact"] for row in self.rows], axis=0)
+        forces = np.stack([row["force"] for row in self.rows], axis=0)
+        sole_pos = np.stack([row["sole_pos"] for row in self.rows], axis=0)
+        sole_vel = np.stack([row["sole_vel"] for row in self.rows], axis=0)
+        touchdowns = np.stack([row["touchdown"] for row in self.rows], axis=0)
+        duration = max(float(times[-1] - times[0]), 1.0e-6)
+
+        swing = ~contacts
+        foot_xy_speed = np.linalg.norm(sole_vel[:, :, 0:2], axis=-1)
+        swing_xy_speed = np.zeros(2, dtype=np.float64)
+        stance_xy_speed = np.zeros(2, dtype=np.float64)
+        swing_clearance = np.zeros(2, dtype=np.float64)
+        contact_force = np.zeros(2, dtype=np.float64)
+        for side in range(2):
+            swing_mask = swing[:, side]
+            stance_mask = contacts[:, side]
+            if np.any(swing_mask):
+                swing_xy_speed[side] = float(np.mean(foot_xy_speed[swing_mask, side]))
+                swing_clearance[side] = float(np.mean(np.maximum(sole_pos[swing_mask, side, 2], 0.0)))
+            if np.any(stance_mask):
+                stance_xy_speed[side] = float(np.mean(foot_xy_speed[stance_mask, side]))
+                contact_force[side] = float(np.mean(forces[stance_mask, side]))
+
+        return {
+            "duration": duration,
+            "touchdown_rate": touchdowns.sum(axis=0).astype(np.float64) / duration,
+            "duty": contacts.mean(axis=0),
+            "both_air": np.mean(~contacts[:, 0] & ~contacts[:, 1]),
+            "both_contact": np.mean(contacts[:, 0] & contacts[:, 1]),
+            "swing_clearance": swing_clearance,
+            "swing_xy_speed": swing_xy_speed,
+            "stance_xy_speed": stance_xy_speed,
+            "contact_force": contact_force,
+        }
+
+    def report(self, summary, gait_frequency):
+        if not self.available:
+            return "foot=unavailable"
+        if summary is None:
+            return "foot=warming"
+
+        touchdown_rate = summary["touchdown_rate"]
+        total_rate = float(touchdown_rate.sum())
+        expected_total_rate = max(2.0 * float(gait_frequency), 1.0e-6)
+        cadence_ratio = total_rate / expected_total_rate
+        duty = summary["duty"] * 100.0
+        clearance_cm = summary["swing_clearance"] * 100.0
+        return (
+            "foot="
+            f"td/s(L={touchdown_rate[0]:.2f},R={touchdown_rate[1]:.2f},T={total_rate:.2f},"
+            f"ratio={cadence_ratio:.2f}) "
+            f"duty(L={duty[0]:.0f}%,R={duty[1]:.0f}%,air={summary['both_air']*100.0:.0f}%,"
+            f"both={summary['both_contact']*100.0:.0f}%) "
+            f"zsw_cm(L={clearance_cm[0]:.1f},R={clearance_cm[1]:.1f}) "
+            f"fxy_sw(L={summary['swing_xy_speed'][0]:.2f},R={summary['swing_xy_speed'][1]:.2f}) "
+            f"fxy_st(L={summary['stance_xy_speed'][0]:.2f},R={summary['stance_xy_speed'][1]:.2f}) "
+            f"fN(L={summary['contact_force'][0]:.0f},R={summary['contact_force'][1]:.0f})"
+        )
+
+    def _foot_contact_and_force(self, data):
+        contact = np.zeros(2, dtype=bool)
+        normal_force = np.zeros(2, dtype=np.float64)
+        contact_force = np.zeros(6, dtype=np.float64)
+        for contact_id in range(data.ncon):
+            item = data.contact[contact_id]
+            geom1 = int(item.geom1)
+            geom2 = int(item.geom2)
+            if geom1 == self.ground_geom_id:
+                other_geom = geom2
+            elif geom2 == self.ground_geom_id:
+                other_geom = geom1
+            else:
+                continue
+
+            body_id = int(self.model.geom_bodyid[other_geom])
+            for side, foot_body_id in enumerate(self.foot_body_ids):
+                if body_id != foot_body_id:
+                    continue
+                contact[side] = True
+                self.mujoco.mj_contactForce(self.model, data, contact_id, contact_force)
+                normal_force[side] += abs(float(contact_force[0]))
+                break
+        return contact, normal_force
+
+    def _sole_positions(self, data):
+        positions = np.zeros((2, 3), dtype=np.float64)
+        for side, body_id in enumerate(self.foot_body_ids):
+            body_pos = np.asarray(data.xpos[body_id], dtype=np.float64)
+            body_mat = np.asarray(data.xmat[body_id], dtype=np.float64).reshape(3, 3)
+            positions[side] = body_pos + body_mat @ self.SOLE_OFFSETS[side]
+        return positions
 
 
 def quat_to_mat(q):
@@ -574,6 +735,7 @@ def main():
     parser.add_argument("--metrics_warmup_s", type=float, default=1.0)
     parser.add_argument("--metrics_csv", default=None)
     parser.add_argument("--metrics_csv_sample_s", type=float, default=0.05)
+    parser.add_argument("--foot_metrics_window_s", type=float, default=3.0)
     args = parser.parse_args()
     if args.cmd_pose6 is not None:
         (
@@ -679,6 +841,7 @@ def main():
         csv_path=args.metrics_csv,
         csv_sample_s=args.metrics_csv_sample_s,
     )
+    foot_metrics = FootstepMetrics(mujoco, model, window_s=args.foot_metrics_window_s)
     if target_pose is None:
         print(f"[mujoco] walk command vx={args.vx:.3f} vy={args.vy:.3f} vyaw={args.vyaw:.3f} getup_enabled={enable_getup}")
         if not cli_flag_was_provided("--vx"):
@@ -747,6 +910,13 @@ def main():
         f"ground_friction=({args.ground_friction:.2f},{args.ground_torsional_friction:.3f},"
         f"{args.ground_rolling_friction:.4f}) ground_condim={args.ground_condim}"
     )
+    print(
+        "[mujoco] foot metrics "
+        f"available={foot_metrics.available} "
+        f"ground_geom_id={foot_metrics.ground_geom_id} "
+        f"foot_body_ids={[int(body_id) for body_id in foot_metrics.foot_body_ids]} "
+        f"window_s={args.foot_metrics_window_s:.1f}"
+    )
     l_hip, l_knee, l_ankle, r_hip, r_knee, r_ankle = leg_default_summary(default_qpos)
     print(
         "[mujoco] default pose "
@@ -790,6 +960,7 @@ def main():
                 start_yaw = metric_yaw
                 path_start_time = float(data.time)
                 metrics.set_target_command((args.vx, args.vy, args.vyaw))
+                foot_metrics.reset_window()
                 print(
                     "[mujoco-cmd] "
                     f"cmd=({args.vx:+.3f},{args.vy:+.3f},{args.vyaw:+.3f}) "
@@ -812,6 +983,7 @@ def main():
             start_yaw = metric_yaw
             path_start_time = float(data.time)
             metrics.reset_window()
+            foot_metrics.reset_window()
             print(f"[mujoco] forced fall at t={data.time:.2f}s pose={args.fall_pose}")
 
         root_quat = np.array(data.qpos[3:7], dtype=np.float32)
@@ -868,6 +1040,7 @@ def main():
                 start_yaw = metric_yaw
                 path_start_time = float(data.time)
                 metrics.reset_window()
+                foot_metrics.reset_window()
 
         dof_pos = np.array(data.qpos[7 : 7 + len(default_qpos)], dtype=np.float32)
         dof_vel = np.array(data.qvel[6 : 6 + len(default_qpos)], dtype=np.float32)
@@ -885,6 +1058,7 @@ def main():
             policy_command=np.array(policy.smoothed_commands, dtype=np.float64),
             tracked=tracked,
         )
+        foot_summary = foot_metrics.update(data.time, data, tracked=tracked)
 
         if viewer is not None:
             viewer.sync()
@@ -935,6 +1109,7 @@ def main():
             world_speed_xy = np.linalg.norm(world_velocity[:2])
             report_rpy = quat_to_euler(np.array(data.qpos[3:7], dtype=np.float32))
             metrics_text = metrics.report(metrics_row, metrics_summary)
+            foot_text = foot_metrics.report(foot_summary, float(getattr(policy, "walk_gait_frequency", 0.0)))
             print(
                 f"[mujoco] t={data.time:5.2f}s mode={policy.mode:5s} "
                 f"xy=({data.qpos[0]:+.2f},{data.qpos[1]:+.2f}) "
@@ -943,7 +1118,8 @@ def main():
                 f"world_v=({world_velocity[0]:+.3f},{world_velocity[1]:+.3f}) "
                 f"world_speed={world_speed_xy:.3f} "
                 f"rpy=({report_rpy[0]:+.2f},{report_rpy[1]:+.2f},{report_rpy[2]:+.2f}) "
-                f"{metrics_text}"
+                f"{metrics_text} "
+                f"{foot_text}"
             )
 
     if viewer is not None:
