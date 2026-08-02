@@ -161,7 +161,7 @@ class FootstepMetrics:
 
         self.prev_pos = sole_pos
         self.prev_time = float(time_s)
-        return self.summary()
+        return None
 
     def summary(self):
         if not self.rows:
@@ -1089,7 +1089,7 @@ def main():
             policy_command=np.array(policy.smoothed_commands, dtype=np.float64),
             tracked=tracked,
         )
-        foot_summary = foot_metrics.update(data.time, data, tracked=tracked)
+        foot_metrics.update(data.time, data, tracked=tracked)
 
         if viewer is not None:
             viewer.sync()
@@ -1140,6 +1140,7 @@ def main():
             world_speed_xy = np.linalg.norm(world_velocity[:2])
             report_rpy = quat_to_euler(np.array(data.qpos[3:7], dtype=np.float32))
             metrics_text = metrics.report(metrics_row, metrics_summary)
+            foot_summary = foot_metrics.summary()
             foot_text = foot_metrics.report(foot_summary, float(getattr(policy, "walk_gait_frequency", 0.0)))
             print(
                 f"[mujoco] t={data.time:5.2f}s mode={policy.mode:5s} "
