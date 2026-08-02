@@ -93,6 +93,8 @@ algorithm:
       support_front_lag: 8.0
       support_front_pitch_lag: 12.0
       swing_foot_forward_lag: 4.5
+      swing_pair_forward_lag: 11.0
+      low_speed_swing_pair_forward_lag: 15.0
       root_feet_lateral_diff: 8.0
       straight_path_lateral: 12.0
       straight_heading: 12.0
@@ -127,6 +129,7 @@ algorithm:
       sustain_support_front_lag: 13.0
       sustain_support_front_pitch_lag: 18.0
       sustain_swing_foot_forward_lag: 7.0
+      sustain_swing_pair_forward_lag: 14.0
       sustain_root_feet_lateral_diff: 12.0
       feet_slip: 1.4
       base_tilt: 5.5
@@ -216,7 +219,7 @@ commands:
     forward_pitch_vx_comp_gain: 1.20
     forward_pitch_vx_comp_max: 0.140
     forward_pitch_vx_comp_min_vx: 0.030
-    heading_correction_enabled: true
+    heading_correction_enabled: false
     heading_correction_min_abs_vx: 0.08
     heading_correction_max_abs_vy_command: 0.04
     heading_correction_max_abs_yaw_command: 0.08
@@ -387,6 +390,8 @@ rewards:
     straight_support_front_lag: -110.0
     straight_support_front_pitch_lag: -130.0
     straight_swing_foot_forward_lag: -42.0
+    straight_swing_pair_forward_lag: -115.0
+    low_speed_swing_pair_forward_lag: -145.0
     straight_root_feet_lateral_diff: -120.0
     move_start_forward_pitch: -440.0
     move_start_ankle_pitch_tracking: -55.0
@@ -414,6 +419,7 @@ rewards:
     sustain_support_front_lag: -150.0
     sustain_support_front_pitch_lag: -170.0
     sustain_swing_foot_forward_lag: -65.0
+    sustain_swing_pair_forward_lag: -140.0
     sustain_root_feet_lateral_diff: -160.0
     command_stand_still: -110.0
     command_stand_action: -6.0
@@ -514,6 +520,11 @@ rewards:
   swing_foot_forward_min_x: -0.040
   sustain_swing_foot_forward_min_x: -0.020
   swing_foot_forward_side_weights: [1.0, 1.0]
+  swing_pair_forward_min_abs_vx: 0.045
+  swing_pair_forward_margin: 0.020
+  low_speed_swing_pair_forward_margin: 0.018
+  sustain_swing_pair_forward_margin: 0.026
+  swing_pair_forward_side_weights: [0.85, 2.40]
   root_feet_lateral_deadzone: 0.020
   root_feet_lateral_vy_deadzone_gain: 0.04
   root_feet_lateral_yaw_deadzone_gain: 0.03
