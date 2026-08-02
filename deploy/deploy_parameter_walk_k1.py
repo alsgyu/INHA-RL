@@ -260,6 +260,11 @@ class Controller:
                 continue
             for i in ids:
                 self.cfg["prepare"]["default_qpos"][i] = float(value)
+            reload_policy = True
+
+        prepare_hold_current = getattr(args, "prepare_hold_current", None)
+        if prepare_hold_current is not None:
+            self.cfg["prepare"]["hold_current_on_custom"] = bool(prepare_hold_current)
 
         ankle_kp = getattr(args, "prepare_ankle_kp", None)
         if ankle_kp is not None:
@@ -283,6 +288,11 @@ class Controller:
         if deploy_action_rate_limit is not None:
             self.cfg["policy"]["deploy_action_rate_limit"] = float(deploy_action_rate_limit)
 
+        deploy_target_default_blend = getattr(args, "deploy_target_default_blend", None)
+        if deploy_target_default_blend is not None:
+            self.cfg["policy"]["deploy_target_default_blend"] = float(deploy_target_default_blend)
+            reload_policy = True
+
         rl_target_filter_alpha = getattr(args, "rl_target_filter_alpha", None)
         if rl_target_filter_alpha is not None:
             self.cfg["policy"]["rl_target_filter_alpha"] = float(rl_target_filter_alpha)
@@ -294,6 +304,10 @@ class Controller:
         motion_ramp = getattr(args, "motion_start_action_ramp_s", None)
         if motion_ramp is not None:
             self.cfg["policy"]["motion_start_action_ramp_s"] = float(motion_ramp)
+
+        motion_action_delay = getattr(args, "motion_start_action_delay_s", None)
+        if motion_action_delay is not None:
+            self.cfg["policy"]["motion_start_action_delay_s"] = float(motion_action_delay)
 
         motion_command_ramp = getattr(args, "motion_start_command_ramp_s", None)
         if motion_command_ramp is not None:
@@ -347,6 +361,7 @@ class Controller:
             f"control_action_scale={self.cfg['policy']['control'].get('action_scale', 'default')} "
             f"control_decimation={self.cfg['policy']['control'].get('decimation', 'default')} "
             f"motion_hold={self.cfg['policy'].get('motion_start_hold_s', 'default')} "
+            f"motion_action_delay={self.cfg['policy'].get('motion_start_action_delay_s', 0.0)} "
             f"motion_ramp={self.cfg['policy'].get('motion_start_action_ramp_s', 'default')} "
             f"motion_cmd_delay={self.cfg['policy'].get('motion_start_command_delay_s', 0.0)} "
             f"motion_cmd_ramp={self.cfg['policy'].get('motion_start_command_ramp_s', 'default')} "
@@ -885,10 +900,16 @@ class Controller:
             self.policy.reset_runtime_state()
             time.sleep(0.001)
             return
+        action_delay_s = float(
+            self.cfg["policy"].get(
+                "motion_start_action_delay_s",
+                self.cfg["policy"].get("motion_start_command_delay_s", 0.0),
+            )
+        )
         if ramp_s > 1.0e-6:
-            action_scale_multiplier = self._smoothstep((elapsed - hold_s) / ramp_s)
+            action_scale_multiplier = self._smoothstep((elapsed - hold_s - action_delay_s) / ramp_s)
         else:
-            action_scale_multiplier = 1.0
+            action_scale_multiplier = 0.0 if elapsed < hold_s + action_delay_s else 1.0
         self.motion_start_alpha = action_scale_multiplier
         command_delay_s = float(self.cfg["policy"].get("motion_start_command_delay_s", 0.0))
         command_ramp_s = float(self.cfg["policy"].get("motion_start_command_ramp_s", ramp_s))
@@ -982,11 +1003,14 @@ if __name__ == "__main__":
     parser.add_argument("--prepare_hip_pitch", type=float, default=None)
     parser.add_argument("--prepare_knee_pitch", type=float, default=None)
     parser.add_argument("--prepare_ankle_pitch", type=float, default=None)
+    parser.add_argument("--prepare_hold_current", dest="prepare_hold_current", action="store_true", default=None)
+    parser.add_argument("--no_prepare_hold_current", dest="prepare_hold_current", action="store_false")
     parser.add_argument("--prepare_ankle_kp", type=float, default=None)
     parser.add_argument("--prepare_ankle_kd", type=float, default=None)
     parser.add_argument("--deploy_action_clip", type=float, default=None)
     parser.add_argument("--deploy_action_scale", type=float, default=None)
     parser.add_argument("--deploy_action_rate_limit", type=float, default=None)
+    parser.add_argument("--deploy_target_default_blend", type=float, default=None)
     parser.add_argument("--rl_target_filter_alpha", type=float, default=None)
     parser.add_argument(
         "--rl_publish_mode",
@@ -994,6 +1018,7 @@ if __name__ == "__main__":
         default=None,
         help="Publish RL targets continuously or once per policy step like Booster Deploy.",
     )
+    parser.add_argument("--motion_start_action_delay_s", type=float, default=None)
     parser.add_argument("--motion_start_action_ramp_s", type=float, default=None)
     parser.add_argument("--motion_start_command_delay_s", type=float, default=None)
     parser.add_argument("--motion_start_command_ramp_s", type=float, default=None)
