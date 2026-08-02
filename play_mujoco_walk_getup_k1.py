@@ -108,12 +108,16 @@ class FootstepMetrics:
         np.array([0.026, 0.0, -0.038], dtype=np.float64),
     )
 
-    def __init__(self, mujoco, model, window_s=3.0):
+    def __init__(self, mujoco, model, window_s=3.0, contact_debounce_s=0.035, min_summary_s=0.5):
         self.mujoco = mujoco
         self.model = model
         self.window_s = max(float(window_s), 1.0e-6)
+        self.contact_debounce_s = max(float(contact_debounce_s), 0.0)
+        self.min_summary_s = max(float(min_summary_s), 0.0)
         self.rows = deque()
-        self.prev_contact = None
+        self.stable_contact = None
+        self.candidate_contact = None
+        self.candidate_since = None
         self.prev_pos = None
         self.prev_time = None
 
@@ -131,7 +135,8 @@ class FootstepMetrics:
         if not self.available:
             return None
 
-        contact, normal_force = self._foot_contact_and_force(data)
+        raw_contact, normal_force = self._foot_contact_and_force(data)
+        contact, touchdown = self._debounced_contact(float(time_s), raw_contact)
         sole_pos = self._sole_positions(data)
         if self.prev_pos is None or self.prev_time is None:
             sole_vel = np.zeros_like(sole_pos)
@@ -139,16 +144,12 @@ class FootstepMetrics:
             dt = max(float(time_s) - float(self.prev_time), 1.0e-6)
             sole_vel = (sole_pos - self.prev_pos) / dt
 
-        if self.prev_contact is None:
-            touchdown = np.zeros(2, dtype=bool)
-        else:
-            touchdown = contact & (~self.prev_contact)
-
         if tracked:
             self.rows.append(
                 {
                     "time": float(time_s),
                     "contact": contact.copy(),
+                    "raw_contact": raw_contact.copy(),
                     "force": normal_force.copy(),
                     "sole_pos": sole_pos.copy(),
                     "sole_vel": sole_vel.copy(),
@@ -158,7 +159,6 @@ class FootstepMetrics:
             while self.rows and float(time_s) - self.rows[0]["time"] > self.window_s:
                 self.rows.popleft()
 
-        self.prev_contact = contact
         self.prev_pos = sole_pos
         self.prev_time = float(time_s)
         return self.summary()
@@ -174,6 +174,8 @@ class FootstepMetrics:
         sole_vel = np.stack([row["sole_vel"] for row in self.rows], axis=0)
         touchdowns = np.stack([row["touchdown"] for row in self.rows], axis=0)
         duration = max(float(times[-1] - times[0]), 1.0e-6)
+        if duration < self.min_summary_s:
+            return None
 
         swing = ~contacts
         foot_xy_speed = np.linalg.norm(sole_vel[:, :, 0:2], axis=-1)
@@ -251,6 +253,28 @@ class FootstepMetrics:
                 normal_force[side] += abs(float(contact_force[0]))
                 break
         return contact, normal_force
+
+    def _debounced_contact(self, time_s, raw_contact):
+        raw_contact = np.asarray(raw_contact, dtype=bool)
+        if self.stable_contact is None:
+            self.stable_contact = raw_contact.copy()
+            self.candidate_contact = raw_contact.copy()
+            self.candidate_since = np.full(2, float(time_s), dtype=np.float64)
+            return self.stable_contact.copy(), np.zeros(2, dtype=bool)
+
+        touchdown = np.zeros(2, dtype=bool)
+        for side in range(2):
+            if raw_contact[side] != self.candidate_contact[side]:
+                self.candidate_contact[side] = raw_contact[side]
+                self.candidate_since[side] = float(time_s)
+            if (
+                self.candidate_contact[side] != self.stable_contact[side]
+                and float(time_s) - float(self.candidate_since[side]) >= self.contact_debounce_s
+            ):
+                previous = bool(self.stable_contact[side])
+                self.stable_contact[side] = bool(self.candidate_contact[side])
+                touchdown[side] = self.stable_contact[side] and not previous
+        return self.stable_contact.copy(), touchdown
 
     def _sole_positions(self, data):
         positions = np.zeros((2, 3), dtype=np.float64)
@@ -736,6 +760,7 @@ def main():
     parser.add_argument("--metrics_csv", default=None)
     parser.add_argument("--metrics_csv_sample_s", type=float, default=0.05)
     parser.add_argument("--foot_metrics_window_s", type=float, default=3.0)
+    parser.add_argument("--foot_contact_debounce_s", type=float, default=0.035)
     args = parser.parse_args()
     if args.cmd_pose6 is not None:
         (
@@ -841,7 +866,12 @@ def main():
         csv_path=args.metrics_csv,
         csv_sample_s=args.metrics_csv_sample_s,
     )
-    foot_metrics = FootstepMetrics(mujoco, model, window_s=args.foot_metrics_window_s)
+    foot_metrics = FootstepMetrics(
+        mujoco,
+        model,
+        window_s=args.foot_metrics_window_s,
+        contact_debounce_s=args.foot_contact_debounce_s,
+    )
     if target_pose is None:
         print(f"[mujoco] walk command vx={args.vx:.3f} vy={args.vy:.3f} vyaw={args.vyaw:.3f} getup_enabled={enable_getup}")
         if not cli_flag_was_provided("--vx"):
@@ -915,7 +945,8 @@ def main():
         f"available={foot_metrics.available} "
         f"ground_geom_id={foot_metrics.ground_geom_id} "
         f"foot_body_ids={[int(body_id) for body_id in foot_metrics.foot_body_ids]} "
-        f"window_s={args.foot_metrics_window_s:.1f}"
+        f"window_s={args.foot_metrics_window_s:.1f} "
+        f"debounce_s={args.foot_contact_debounce_s:.3f}"
     )
     l_hip, l_knee, l_ankle, r_hip, r_knee, r_ankle = leg_default_summary(default_qpos)
     print(
