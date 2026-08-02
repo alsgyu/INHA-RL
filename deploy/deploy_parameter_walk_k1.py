@@ -321,6 +321,38 @@ class Controller:
         if motion_command_delay is not None:
             self.cfg["policy"]["motion_start_command_delay_s"] = float(motion_command_delay)
 
+        motion_hold = getattr(args, "motion_start_hold_s", None)
+        if motion_hold is not None:
+            self.cfg["policy"]["motion_start_hold_s"] = float(motion_hold)
+
+        adapter = self.cfg["policy"].setdefault("command_adapter", {})
+        adapter_float_overrides = {
+            "adapter_stand_command_threshold": "stand_command_threshold",
+            "adapter_gait_frequency_min": "gait_frequency_min",
+            "adapter_gait_frequency_max": "gait_frequency_max",
+            "adapter_forward_pitch_vx_comp_deadband": "forward_pitch_vx_comp_deadband",
+            "adapter_forward_pitch_vx_comp_gain": "forward_pitch_vx_comp_gain",
+            "adapter_forward_pitch_vx_comp_max": "forward_pitch_vx_comp_max",
+            "adapter_forward_pitch_vx_comp_min_vx": "forward_pitch_vx_comp_min_vx",
+            "adapter_body_pitch_offset": "body_pitch_offset",
+            "adapter_body_pitch_balance_gain": "body_pitch_balance_gain",
+            "adapter_heading_correction_gain": "heading_correction_gain",
+            "adapter_heading_correction_deadband": "heading_correction_deadband",
+            "adapter_heading_correction_max_yaw_rate": "heading_correction_max_yaw_rate",
+        }
+        for arg_name, key in adapter_float_overrides.items():
+            value = getattr(args, arg_name, None)
+            if value is not None:
+                adapter[key] = float(value)
+
+        forward_pitch_enabled = getattr(args, "adapter_forward_pitch_vx_comp_enabled", None)
+        if forward_pitch_enabled is not None:
+            adapter["forward_pitch_vx_comp_enabled"] = bool(forward_pitch_enabled)
+
+        heading_enabled = getattr(args, "adapter_heading_correction_enabled", None)
+        if heading_enabled is not None:
+            adapter["heading_correction_enabled"] = bool(heading_enabled)
+
         if reload_policy:
             self.policy = Policy(cfg=self.cfg)
 
@@ -377,7 +409,10 @@ class Controller:
             f"{adapter.get('decel_gait_hold_s', 'default')}s "
             f"body_pitch_gain={adapter.get('body_pitch_gain', 'default')} "
             f"body_pitch_offset={adapter.get('body_pitch_offset', 0.0)} "
+            f"body_pitch_balance_gain={adapter.get('body_pitch_balance_gain', 0.0)} "
             f"forward_pitch_vx_comp={adapter.get('forward_pitch_vx_comp_enabled', False)} "
+            f"forward_pitch_gain={adapter.get('forward_pitch_vx_comp_gain', 'default')} "
+            f"forward_pitch_max={adapter.get('forward_pitch_vx_comp_max', 'default')} "
             f"forward_pitch_min_vx={adapter.get('forward_pitch_vx_comp_min_vx', 'default')} "
             f"heading_correction={adapter.get('heading_correction_enabled', False)} "
             f"heading_gain={adapter.get('heading_correction_gain', 'default')} "
@@ -1083,9 +1118,26 @@ if __name__ == "__main__":
         help="Publish RL targets continuously or once per policy step like Booster Deploy.",
     )
     parser.add_argument("--motion_start_action_delay_s", type=float, default=None)
+    parser.add_argument("--motion_start_hold_s", type=float, default=None)
     parser.add_argument("--motion_start_action_ramp_s", type=float, default=None)
     parser.add_argument("--motion_start_command_delay_s", type=float, default=None)
     parser.add_argument("--motion_start_command_ramp_s", type=float, default=None)
+    parser.add_argument("--adapter_stand_command_threshold", type=float, default=None)
+    parser.add_argument("--adapter_gait_frequency_min", type=float, default=None)
+    parser.add_argument("--adapter_gait_frequency_max", type=float, default=None)
+    parser.add_argument("--adapter_forward_pitch_vx_comp_deadband", type=float, default=None)
+    parser.add_argument("--adapter_forward_pitch_vx_comp_gain", type=float, default=None)
+    parser.add_argument("--adapter_forward_pitch_vx_comp_max", type=float, default=None)
+    parser.add_argument("--adapter_forward_pitch_vx_comp_min_vx", type=float, default=None)
+    parser.add_argument("--adapter_forward_pitch_vx_comp_enabled", dest="adapter_forward_pitch_vx_comp_enabled", action="store_true", default=None)
+    parser.add_argument("--adapter_no_forward_pitch_vx_comp", dest="adapter_forward_pitch_vx_comp_enabled", action="store_false")
+    parser.add_argument("--adapter_body_pitch_offset", type=float, default=None)
+    parser.add_argument("--adapter_body_pitch_balance_gain", type=float, default=None)
+    parser.add_argument("--adapter_heading_correction_gain", type=float, default=None)
+    parser.add_argument("--adapter_heading_correction_deadband", type=float, default=None)
+    parser.add_argument("--adapter_heading_correction_max_yaw_rate", type=float, default=None)
+    parser.add_argument("--adapter_heading_correction_enabled", dest="adapter_heading_correction_enabled", action="store_true", default=None)
+    parser.add_argument("--adapter_no_heading_correction", dest="adapter_heading_correction_enabled", action="store_false")
     parser.add_argument(
         "--stdin_cmd",
         action="store_true",
