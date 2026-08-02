@@ -297,6 +297,11 @@ class Controller:
             self.cfg["policy"]["deploy_target_default_blend"] = float(deploy_target_default_blend)
             reload_policy = True
 
+        deploy_default_qpos_source = getattr(args, "deploy_default_qpos_source", None)
+        if deploy_default_qpos_source is not None:
+            self.cfg["policy"]["deploy_default_qpos_source"] = str(deploy_default_qpos_source)
+            reload_policy = True
+
         rl_target_filter_alpha = getattr(args, "rl_target_filter_alpha", None)
         if rl_target_filter_alpha is not None:
             self.cfg["policy"]["rl_target_filter_alpha"] = float(rl_target_filter_alpha)
@@ -1110,6 +1115,7 @@ if __name__ == "__main__":
     parser.add_argument("--deploy_action_scale", type=float, default=None)
     parser.add_argument("--deploy_action_rate_limit", type=float, default=None)
     parser.add_argument("--deploy_target_default_blend", type=float, default=None)
+    parser.add_argument("--deploy_default_qpos_source", choices=["common", "prepare"], default=None)
     parser.add_argument("--rl_target_filter_alpha", type=float, default=None)
     parser.add_argument(
         "--rl_publish_mode",
