@@ -25,7 +25,7 @@ algorithm:
     external_real_expert_sample_weight: 3.0
     external_real_expert_bc_weight: 0.85
     external_real_expert_reward_bonus: 0.04
-    external_real_expert_return_bonus: 8.0
+    external_real_expert_return_bonus: 80.0
     external_real_expert_max_abs_gravity_x: 0.18
     external_real_expert_max_abs_gravity_y: 0.14
     external_real_min_motion_alpha: 0.98

@@ -615,27 +615,34 @@ class SIRLWorldModelRunner:
                     self.external_real_replay.add(**add_kwargs)
                     total_added += int(added)
                     if is_expert:
-                        expert_return = torch.clamp(ret_keep.sum(), min=0.0) + float(
-                            self.wm_cfg.get("external_real_expert_return_bonus", 6.0)
+                        expert_return = torch.full_like(
+                            reward_keep,
+                            float(self.wm_cfg.get("external_real_expert_return_bonus", 64.0)),
+                        ) + torch.clamp(reward_keep, min=0.0)
+                        expert_sirl_weight = torch.full_like(
+                            reward_keep,
+                            float(self.wm_cfg.get("external_real_expert_bc_weight", 0.8)),
                         )
-                        expert_count = self.sirl_replay.add_segments(
-                            obs_keep.unsqueeze(1),
-                            action_keep.unsqueeze(1),
-                            reward_keep.unsqueeze(1),
-                            done_keep.unsqueeze(1),
-                            time_outs=torch.zeros_like(done_keep, dtype=torch.bool).unsqueeze(1),
-                            next_obses=next_obs_keep.unsqueeze(1),
-                            commands=command_keep.unsqueeze(1) if command_keep is not None else None,
-                            returns=torch.as_tensor([float(expert_return.item())], dtype=torch.float),
-                            bc_weights=torch.as_tensor(
-                                [float(self.wm_cfg.get("external_real_expert_bc_weight", 0.8))],
-                                dtype=torch.float,
-                            ),
+                        expert_sample_weight = torch.full_like(
+                            reward_keep,
+                            float(self.wm_cfg.get("external_real_expert_sample_weight", 2.0)),
                         )
-                        total_expert_added += int(obs_keep.shape[0])
+                        expert_count = self.sirl_replay.add(
+                            obs=obs_keep,
+                            action=action_keep,
+                            reward=reward_keep,
+                            done=done_keep,
+                            next_obs=next_obs_keep,
+                            command=command_keep,
+                            ret=expert_return,
+                            sirl_weight=expert_sirl_weight,
+                            is_model=0.0,
+                            sample_weight=expert_sample_weight,
+                        )
+                        total_expert_added += int(expert_count)
                         print(
-                            f"[sirl-wm] loaded {int(obs_keep.shape[0])} expert real transitions "
-                            f"from {resolved} into replay and {expert_count} SIRL segment"
+                            f"[sirl-wm] loaded {int(obs_keep.shape[0])} expert real transitions from {resolved} "
+                            f"into replay and {int(expert_count)} SIRL transitions"
                         )
                     else:
                         print(f"[sirl-wm] loaded {int(obs_keep.shape[0])} real replay transitions from {resolved}")
