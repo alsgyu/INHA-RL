@@ -22,6 +22,12 @@ algorithm:
     external_real_buffer_size: 50000
     external_real_batch_fraction: 0.35
     external_real_sample_weight: 4.0
+    external_real_expert_sample_weight: 3.0
+    external_real_expert_bc_weight: 0.85
+    external_real_expert_reward_bonus: 0.04
+    external_real_expert_return_bonus: 8.0
+    external_real_expert_max_abs_gravity_x: 0.18
+    external_real_expert_max_abs_gravity_y: 0.14
     external_real_min_motion_alpha: 0.98
     external_real_bc_enabled: false
     external_real_reward_min_command_norm: 0.04

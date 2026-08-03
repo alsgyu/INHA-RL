@@ -184,6 +184,7 @@ class SIRLWorldModelRunner:
         parser.add_argument("--max_iterations", type=int, help="Training iterations.")
         parser.add_argument("--model", type=str, help="Actor model class name.")
         parser.add_argument("--real_replay_path", type=str, help="Comma-separated real robot npz trajectory file(s) to preload.")
+        parser.add_argument("--real_expert_replay_path", type=str, help="Comma-separated good real robot npz trajectory file(s) to preload as SIRL expert data.")
         parser.add_argument("--teacher_policy_path", type=str, help="Override the teacher policy/checkpoint path.")
         parser.add_argument("--disable_record_video", action="store_true", help="Disable video recording in training.")
         self.args = parser.parse_args()
@@ -208,6 +209,9 @@ class SIRLWorldModelRunner:
             elif arg == "real_replay_path":
                 paths = [path.strip() for path in str(value).split(",") if path.strip()]
                 self.cfg["algorithm"]["sirl_worldmodel"]["external_real_replay_paths"] = paths
+            elif arg == "real_expert_replay_path":
+                paths = [path.strip() for path in str(value).split(",") if path.strip()]
+                self.cfg["algorithm"]["sirl_worldmodel"]["external_real_expert_replay_paths"] = paths
             elif arg == "teacher_policy_path":
                 self.cfg["algorithm"]["sirl_worldmodel"]["teacher_policy_path"] = str(value)
             else:
@@ -473,114 +477,174 @@ class SIRLWorldModelRunner:
         reward += moving * float(cfg.get("external_real_alive_reward", 0.02))
         return reward
 
-    def _load_external_real_replay(self):
-        paths = self.wm_cfg.get("external_real_replay_paths", [])
+    @staticmethod
+    def _coerce_path_list(paths):
         if isinstance(paths, str):
-            paths = [path.strip() for path in paths.split(",") if path.strip()]
-        if not paths:
+            return [path.strip() for path in paths.split(",") if path.strip()]
+        return list(paths or [])
+
+    def _load_external_real_replay(self):
+        replay_groups = [
+            (self._coerce_path_list(self.wm_cfg.get("external_real_replay_paths", [])), False),
+            (self._coerce_path_list(self.wm_cfg.get("external_real_expert_replay_paths", [])), True),
+        ]
+        if not any(paths for paths, _ in replay_groups):
             return
 
         total_added = 0
-        for path in paths:
-            resolved = self._resolve_path(path)
-            if resolved is None:
-                print(f"[sirl-wm] real replay path not found: {path}")
-                continue
-            try:
-                data = np.load(resolved, allow_pickle=False)
-                obs = torch.as_tensor(data["obs"], dtype=torch.float)
-                action_key = "action" if "action" in data.files else "actions"
-                action = torch.as_tensor(data[action_key], dtype=torch.float)
-                command = torch.as_tensor(data["command"], dtype=torch.float) if "command" in data.files else None
-                stage = data["stage"] if "stage" in data.files else None
-                alpha = torch.as_tensor(data["motion_start_alpha"], dtype=torch.float) if "motion_start_alpha" in data.files else None
-                full_extra = {}
-                if "base_rpy" in data.files:
-                    base_rpy = np.asarray(data["base_rpy"], dtype=np.float32)
-                    if base_rpy.ndim == 2 and base_rpy.shape[1] >= 3 and base_rpy.shape[0] > 0:
-                        yaw = np.unwrap(base_rpy[:, 2].astype(np.float64))
-                        full_extra["heading_drift"] = torch.as_tensor(yaw - yaw[0], dtype=torch.float)
-                if "heading_error_yaw" in data.files:
-                    full_extra["heading_error"] = torch.as_tensor(data["heading_error_yaw"], dtype=torch.float).reshape(-1)
-                if "next_obs" in data.files:
-                    next_obs = torch.as_tensor(data["next_obs"], dtype=torch.float)
-                    keep = torch.ones(obs.shape[0], dtype=torch.bool)
-                    extra = {key: value[: obs.shape[0]] for key, value in full_extra.items()}
-                else:
-                    next_obs = obs[1:]
-                    obs = obs[:-1]
-                    action = action[:-1]
-                    command = command[:-1] if command is not None else None
-                    extra = {key: value[:-1] for key, value in full_extra.items()}
-                    keep = torch.ones(obs.shape[0], dtype=torch.bool)
-                    if stage is not None:
-                        keep &= torch.as_tensor(stage[:-1] == "rl", dtype=torch.bool)
-                        keep &= torch.as_tensor(stage[1:] == "rl", dtype=torch.bool)
-                    if alpha is not None:
-                        keep &= alpha[:-1] >= float(self.wm_cfg.get("external_real_min_motion_alpha", 0.98))
-                if command is not None and command.shape[-1] < self.replay_command_dim:
-                    padded = torch.zeros(command.shape[0], self.replay_command_dim, dtype=torch.float)
-                    padded[:, : command.shape[-1]] = command
-                    command = padded
-                elif command is not None and command.shape[-1] > self.replay_command_dim:
-                    command = command[:, : self.replay_command_dim]
-
-                if "reward" in data.files:
-                    reward = torch.as_tensor(data["reward"], dtype=torch.float).reshape(-1)
-                    if reward.shape[0] != obs.shape[0]:
-                        reward = reward[: obs.shape[0]]
-                else:
-                    reward = self._external_real_reward(obs, action, command, extra)
-
-                if "done" in data.files:
-                    done = torch.as_tensor(data["done"], dtype=torch.float).reshape(-1)[: obs.shape[0]]
-                else:
-                    fall_x = torch.abs(next_obs[:, 0]) > float(self.wm_cfg.get("external_real_done_gravity_x", 0.55))
-                    fall_y = torch.abs(next_obs[:, 1]) > float(self.wm_cfg.get("external_real_done_gravity_y", 0.55))
-                    done = (fall_x | fall_y).float()
-
-                if "sample_weight" in data.files:
-                    sample_weight = torch.as_tensor(data["sample_weight"], dtype=torch.float).reshape(-1)[: obs.shape[0]]
-                else:
-                    sample_weight = torch.full((obs.shape[0],), float(self.wm_cfg.get("external_real_sample_weight", 2.0)), dtype=torch.float)
-
-                ret = reward.clone()
-                if "return" in data.files:
-                    ret = torch.as_tensor(data["return"], dtype=torch.float).reshape(-1)[: obs.shape[0]]
-                sirl_weight = torch.zeros_like(reward)
-                if bool(self.wm_cfg.get("external_real_bc_enabled", False)):
-                    sirl_weight[:] = float(self.wm_cfg.get("external_real_bc_weight", 0.15))
-
-                keep &= torch.isfinite(obs).all(dim=-1)
-                keep &= torch.isfinite(next_obs).all(dim=-1)
-                keep &= torch.isfinite(action).all(dim=-1)
-                keep &= torch.isfinite(reward)
-                if command is not None:
-                    keep &= torch.isfinite(command).all(dim=-1)
-                if int(keep.sum().item()) <= 0:
-                    print(f"[sirl-wm] real replay had no usable transitions: {resolved}")
+        total_expert_added = 0
+        for paths, is_expert in replay_groups:
+            for path in paths:
+                resolved = self._resolve_path(path)
+                if resolved is None:
+                    print(f"[sirl-wm] real replay path not found: {path}")
                     continue
+                try:
+                    data = np.load(resolved, allow_pickle=False)
+                    obs = torch.as_tensor(data["obs"], dtype=torch.float)
+                    action_key = "action" if "action" in data.files else "actions"
+                    action = torch.as_tensor(data[action_key], dtype=torch.float)
+                    command = torch.as_tensor(data["command"], dtype=torch.float) if "command" in data.files else None
+                    stage = data["stage"] if "stage" in data.files else None
+                    alpha = torch.as_tensor(data["motion_start_alpha"], dtype=torch.float) if "motion_start_alpha" in data.files else None
+                    full_extra = {}
+                    if "base_rpy" in data.files:
+                        base_rpy = np.asarray(data["base_rpy"], dtype=np.float32)
+                        if base_rpy.ndim == 2 and base_rpy.shape[1] >= 3 and base_rpy.shape[0] > 0:
+                            yaw = np.unwrap(base_rpy[:, 2].astype(np.float64))
+                            full_extra["heading_drift"] = torch.as_tensor(yaw - yaw[0], dtype=torch.float)
+                    if "heading_error_yaw" in data.files:
+                        full_extra["heading_error"] = torch.as_tensor(data["heading_error_yaw"], dtype=torch.float).reshape(-1)
+                    if "next_obs" in data.files:
+                        next_obs = torch.as_tensor(data["next_obs"], dtype=torch.float)
+                        keep = torch.ones(obs.shape[0], dtype=torch.bool)
+                        extra = {key: value[: obs.shape[0]] for key, value in full_extra.items()}
+                    else:
+                        next_obs = obs[1:]
+                        obs = obs[:-1]
+                        action = action[:-1]
+                        command = command[:-1] if command is not None else None
+                        extra = {key: value[:-1] for key, value in full_extra.items()}
+                        keep = torch.ones(obs.shape[0], dtype=torch.bool)
+                        if stage is not None:
+                            keep &= torch.as_tensor(stage[:-1] == "rl", dtype=torch.bool)
+                            keep &= torch.as_tensor(stage[1:] == "rl", dtype=torch.bool)
+                        if alpha is not None:
+                            keep &= alpha[:-1] >= float(self.wm_cfg.get("external_real_min_motion_alpha", 0.98))
+                    if command is not None and command.shape[-1] < self.replay_command_dim:
+                        padded = torch.zeros(command.shape[0], self.replay_command_dim, dtype=torch.float)
+                        padded[:, : command.shape[-1]] = command
+                        command = padded
+                    elif command is not None and command.shape[-1] > self.replay_command_dim:
+                        command = command[:, : self.replay_command_dim]
 
-                add_kwargs = dict(
-                    obs=obs[keep],
-                    action=action[keep],
-                    reward=reward[keep],
-                    done=done[keep],
-                    next_obs=next_obs[keep],
-                    command=command[keep] if command is not None else None,
-                    ret=ret[keep],
-                    sirl_weight=sirl_weight[keep],
-                    is_model=0.0,
-                    sample_weight=sample_weight[keep],
-                )
-                added = self.real_replay.add(**add_kwargs)
-                self.external_real_replay.add(**add_kwargs)
-                total_added += int(added)
-                print(f"[sirl-wm] loaded {int(keep.sum().item())} real replay transitions from {resolved}")
-            except Exception as exc:
-                print(f"[sirl-wm] failed to load real replay '{path}': {exc}")
+                    if "reward" in data.files:
+                        reward = torch.as_tensor(data["reward"], dtype=torch.float).reshape(-1)
+                        if reward.shape[0] != obs.shape[0]:
+                            reward = reward[: obs.shape[0]]
+                    else:
+                        reward = self._external_real_reward(obs, action, command, extra)
+                    if is_expert:
+                        reward = reward + float(self.wm_cfg.get("external_real_expert_reward_bonus", 0.02))
+
+                    if "done" in data.files:
+                        done = torch.as_tensor(data["done"], dtype=torch.float).reshape(-1)[: obs.shape[0]]
+                    else:
+                        fall_x = torch.abs(next_obs[:, 0]) > float(self.wm_cfg.get("external_real_done_gravity_x", 0.55))
+                        fall_y = torch.abs(next_obs[:, 1]) > float(self.wm_cfg.get("external_real_done_gravity_y", 0.55))
+                        done = (fall_x | fall_y).float()
+
+                    if "sample_weight" in data.files:
+                        sample_weight = torch.as_tensor(data["sample_weight"], dtype=torch.float).reshape(-1)[: obs.shape[0]]
+                    else:
+                        weight_key = "external_real_expert_sample_weight" if is_expert else "external_real_sample_weight"
+                        sample_weight = torch.full(
+                            (obs.shape[0],),
+                            float(self.wm_cfg.get(weight_key, self.wm_cfg.get("external_real_sample_weight", 2.0))),
+                            dtype=torch.float,
+                        )
+
+                    ret = reward.clone()
+                    if "return" in data.files:
+                        ret = torch.as_tensor(data["return"], dtype=torch.float).reshape(-1)[: obs.shape[0]]
+                    sirl_weight = torch.zeros_like(reward)
+                    if is_expert:
+                        sirl_weight[:] = float(self.wm_cfg.get("external_real_expert_bc_weight", 0.8))
+                    elif bool(self.wm_cfg.get("external_real_bc_enabled", False)):
+                        sirl_weight[:] = float(self.wm_cfg.get("external_real_bc_weight", 0.15))
+
+                    if is_expert:
+                        max_gravity_x = float(self.wm_cfg.get("external_real_expert_max_abs_gravity_x", 0.20))
+                        max_gravity_y = float(self.wm_cfg.get("external_real_expert_max_abs_gravity_y", 0.16))
+                        keep &= torch.abs(obs[:, 0]) <= max_gravity_x
+                        keep &= torch.abs(obs[:, 1]) <= max_gravity_y
+                        keep &= done <= 0.5
+
+                    keep &= torch.isfinite(obs).all(dim=-1)
+                    keep &= torch.isfinite(next_obs).all(dim=-1)
+                    keep &= torch.isfinite(action).all(dim=-1)
+                    keep &= torch.isfinite(reward)
+                    if command is not None:
+                        keep &= torch.isfinite(command).all(dim=-1)
+                    if int(keep.sum().item()) <= 0:
+                        print(f"[sirl-wm] real replay had no usable transitions: {resolved}")
+                        continue
+
+                    obs_keep = obs[keep]
+                    action_keep = action[keep]
+                    reward_keep = reward[keep]
+                    done_keep = done[keep]
+                    next_obs_keep = next_obs[keep]
+                    command_keep = command[keep] if command is not None else None
+                    ret_keep = ret[keep]
+                    sirl_weight_keep = sirl_weight[keep]
+                    sample_weight_keep = sample_weight[keep]
+                    add_kwargs = dict(
+                        obs=obs_keep,
+                        action=action_keep,
+                        reward=reward_keep,
+                        done=done_keep,
+                        next_obs=next_obs_keep,
+                        command=command_keep,
+                        ret=ret_keep,
+                        sirl_weight=sirl_weight_keep,
+                        is_model=0.0,
+                        sample_weight=sample_weight_keep,
+                    )
+                    added = self.real_replay.add(**add_kwargs)
+                    self.external_real_replay.add(**add_kwargs)
+                    total_added += int(added)
+                    if is_expert:
+                        expert_return = torch.clamp(ret_keep.sum(), min=0.0) + float(
+                            self.wm_cfg.get("external_real_expert_return_bonus", 6.0)
+                        )
+                        expert_count = self.sirl_replay.add_segments(
+                            obs_keep.unsqueeze(1),
+                            action_keep.unsqueeze(1),
+                            reward_keep.unsqueeze(1),
+                            done_keep.unsqueeze(1),
+                            time_outs=torch.zeros_like(done_keep, dtype=torch.bool).unsqueeze(1),
+                            next_obses=next_obs_keep.unsqueeze(1),
+                            commands=command_keep.unsqueeze(1) if command_keep is not None else None,
+                            returns=torch.as_tensor([float(expert_return.item())], dtype=torch.float),
+                            bc_weights=torch.as_tensor(
+                                [float(self.wm_cfg.get("external_real_expert_bc_weight", 0.8))],
+                                dtype=torch.float,
+                            ),
+                        )
+                        total_expert_added += int(obs_keep.shape[0])
+                        print(
+                            f"[sirl-wm] loaded {int(obs_keep.shape[0])} expert real transitions "
+                            f"from {resolved} into replay and {expert_count} SIRL segment"
+                        )
+                    else:
+                        print(f"[sirl-wm] loaded {int(obs_keep.shape[0])} real replay transitions from {resolved}")
+                except Exception as exc:
+                    print(f"[sirl-wm] failed to load real replay '{path}': {exc}")
         if total_added > 0:
             print(f"[sirl-wm] external real replay preload total={total_added}")
+        if total_expert_added > 0:
+            print(f"[sirl-wm] external expert replay preload total={total_expert_added}")
 
     @staticmethod
     def _concat_batches(*batches):
