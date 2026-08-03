@@ -404,7 +404,7 @@ class SIRLWorldModelRunner:
             self.teacher_policy = checkpoint_policy
             print(f"[sirl-wm] teacher actor checkpoint loaded: {teacher_path}")
 
-    def _external_real_reward(self, obs, action, command=None):
+    def _external_real_reward(self, obs, action, command=None, extra=None):
         cfg = self.wm_cfg
         reward = torch.zeros(obs.shape[0], dtype=torch.float)
         command_norm = torch.zeros_like(reward)
@@ -428,6 +428,25 @@ class SIRLWorldModelRunner:
             torch.abs(obs[:, 5]) - float(cfg.get("external_real_yaw_rate_deadband", 0.05)),
             min=0.0,
         )
+        heading_signal = torch.zeros_like(reward)
+        if extra is not None:
+            heading_drift = extra.get("heading_drift")
+            if heading_drift is not None:
+                heading_signal = torch.maximum(heading_signal, torch.abs(heading_drift.reshape(-1)[: obs.shape[0]]))
+            heading_error = extra.get("heading_error")
+            if heading_error is not None:
+                heading_signal = torch.maximum(heading_signal, torch.abs(heading_error.reshape(-1)[: obs.shape[0]]))
+        heading_drift = torch.clamp(
+            heading_signal - float(cfg.get("external_real_heading_drift_deadband", 0.06)),
+            min=0.0,
+        )
+        if command is not None and command.numel() > 0:
+            straight_heading = (
+                (torch.abs(command[:, 1]) <= float(cfg.get("external_real_heading_max_abs_vy", 0.04)))
+                & (torch.abs(command[:, 2]) <= float(cfg.get("external_real_heading_max_abs_yaw", 0.04)))
+            ).float()
+        else:
+            straight_heading = moving
         lateral_indices = torch.as_tensor([1, 2, 5, 7, 8, 11], dtype=torch.long)
         lateral_action = torch.mean(torch.square(action[:, lateral_indices]), dim=-1) if action.shape[-1] > 11 else torch.zeros_like(reward)
         action_l2 = torch.mean(torch.square(action), dim=-1)
@@ -436,6 +455,7 @@ class SIRLWorldModelRunner:
         reward -= moving * float(cfg.get("external_real_lateral_tilt_penalty", 16.0)) * torch.square(lateral_tilt)
         reward -= moving * float(cfg.get("external_real_pitch_rate_penalty", 1.4)) * torch.square(pitch_rate)
         reward -= moving * float(cfg.get("external_real_yaw_rate_penalty", 3.2)) * torch.square(yaw_rate)
+        reward -= moving * straight_heading * float(cfg.get("external_real_heading_drift_penalty", 28.0)) * torch.square(heading_drift)
         reward -= moving * float(cfg.get("external_real_lateral_action_penalty", 0.45)) * lateral_action
         reward -= moving * float(cfg.get("external_real_action_l2_penalty", 0.05)) * action_l2
         reward += moving * float(cfg.get("external_real_alive_reward", 0.02))
@@ -462,14 +482,24 @@ class SIRLWorldModelRunner:
                 command = torch.as_tensor(data["command"], dtype=torch.float) if "command" in data.files else None
                 stage = data["stage"] if "stage" in data.files else None
                 alpha = torch.as_tensor(data["motion_start_alpha"], dtype=torch.float) if "motion_start_alpha" in data.files else None
+                full_extra = {}
+                if "base_rpy" in data.files:
+                    base_rpy = np.asarray(data["base_rpy"], dtype=np.float32)
+                    if base_rpy.ndim == 2 and base_rpy.shape[1] >= 3 and base_rpy.shape[0] > 0:
+                        yaw = np.unwrap(base_rpy[:, 2].astype(np.float64))
+                        full_extra["heading_drift"] = torch.as_tensor(yaw - yaw[0], dtype=torch.float)
+                if "heading_error_yaw" in data.files:
+                    full_extra["heading_error"] = torch.as_tensor(data["heading_error_yaw"], dtype=torch.float).reshape(-1)
                 if "next_obs" in data.files:
                     next_obs = torch.as_tensor(data["next_obs"], dtype=torch.float)
                     keep = torch.ones(obs.shape[0], dtype=torch.bool)
+                    extra = {key: value[: obs.shape[0]] for key, value in full_extra.items()}
                 else:
                     next_obs = obs[1:]
                     obs = obs[:-1]
                     action = action[:-1]
                     command = command[:-1] if command is not None else None
+                    extra = {key: value[:-1] for key, value in full_extra.items()}
                     keep = torch.ones(obs.shape[0], dtype=torch.bool)
                     if stage is not None:
                         keep &= torch.as_tensor(stage[:-1] == "rl", dtype=torch.bool)
@@ -488,7 +518,7 @@ class SIRLWorldModelRunner:
                     if reward.shape[0] != obs.shape[0]:
                         reward = reward[: obs.shape[0]]
                 else:
-                    reward = self._external_real_reward(obs, action, command)
+                    reward = self._external_real_reward(obs, action, command, extra)
 
                 if "done" in data.files:
                     done = torch.as_tensor(data["done"], dtype=torch.float).reshape(-1)[: obs.shape[0]]
