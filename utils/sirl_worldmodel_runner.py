@@ -77,6 +77,7 @@ class SIRLWorldModelRunner:
         self.last_model_ratio_used = 0.0
         self.last_update_model_count = 0
         self.last_update_real_count = 0
+        self.last_update_external_real_count = 0
 
         model_name = self.cfg["basic"].get("model", "BaseActorCritic")
         model_class = get_model_class(model_name)
@@ -146,6 +147,14 @@ class SIRLWorldModelRunner:
             privileged_obs_dim=self.replay_privileged_dim,
             command_dim=self.replay_command_dim,
         )
+        external_real_capacity = int(self.wm_cfg.get("external_real_buffer_size", 100000))
+        self.external_real_replay = OffPolicyReplayBuffer(
+            self.env.num_obs,
+            self.env.num_actions,
+            external_real_capacity,
+            privileged_obs_dim=self.replay_privileged_dim,
+            command_dim=self.replay_command_dim,
+        )
         self.model_replay = OffPolicyReplayBuffer(
             self.env.num_obs,
             self.env.num_actions,
@@ -175,6 +184,7 @@ class SIRLWorldModelRunner:
         parser.add_argument("--max_iterations", type=int, help="Training iterations.")
         parser.add_argument("--model", type=str, help="Actor model class name.")
         parser.add_argument("--real_replay_path", type=str, help="Comma-separated real robot npz trajectory file(s) to preload.")
+        parser.add_argument("--teacher_policy_path", type=str, help="Override the teacher policy/checkpoint path.")
         parser.add_argument("--disable_record_video", action="store_true", help="Disable video recording in training.")
         self.args = parser.parse_args()
 
@@ -198,6 +208,8 @@ class SIRLWorldModelRunner:
             elif arg == "real_replay_path":
                 paths = [path.strip() for path in str(value).split(",") if path.strip()]
                 self.cfg["algorithm"]["sirl_worldmodel"]["external_real_replay_paths"] = paths
+            elif arg == "teacher_policy_path":
+                self.cfg["algorithm"]["sirl_worldmodel"]["teacher_policy_path"] = str(value)
             else:
                 self.cfg["basic"][arg] = value
         if not self.test:
@@ -549,24 +561,37 @@ class SIRLWorldModelRunner:
                     print(f"[sirl-wm] real replay had no usable transitions: {resolved}")
                     continue
 
-                added = self.real_replay.add(
-                    obs[keep],
-                    action[keep],
-                    reward[keep],
-                    done[keep],
-                    next_obs[keep],
+                add_kwargs = dict(
+                    obs=obs[keep],
+                    action=action[keep],
+                    reward=reward[keep],
+                    done=done[keep],
+                    next_obs=next_obs[keep],
                     command=command[keep] if command is not None else None,
                     ret=ret[keep],
                     sirl_weight=sirl_weight[keep],
                     is_model=0.0,
                     sample_weight=sample_weight[keep],
                 )
+                added = self.real_replay.add(**add_kwargs)
+                self.external_real_replay.add(**add_kwargs)
                 total_added += int(added)
                 print(f"[sirl-wm] loaded {int(keep.sum().item())} real replay transitions from {resolved}")
             except Exception as exc:
                 print(f"[sirl-wm] failed to load real replay '{path}': {exc}")
         if total_added > 0:
             print(f"[sirl-wm] external real replay preload total={total_added}")
+
+    @staticmethod
+    def _concat_batches(*batches):
+        valid_batches = [batch for batch in batches if batch]
+        if not valid_batches:
+            return {}
+        result = {}
+        for key, value in valid_batches[0].items():
+            parts = [batch[key] for batch in valid_batches if key in batch]
+            result[key] = torch.cat(parts, dim=0) if len(parts) > 1 else parts[0]
+        return result
 
     def _teacher_action(self, obs):
         if self.teacher_policy is None:
@@ -1066,28 +1091,32 @@ class SIRLWorldModelRunner:
 
     def _sample_update_batch(self):
         batch_size = int(self.wm_cfg.get("batch_size", 1024))
+        external_fraction = float(self.wm_cfg.get("external_real_batch_fraction", 0.0))
+        external_batch_size = 0
+        external_batch = None
+        if external_fraction > 0.0 and len(self.external_real_replay) > 0 and batch_size > 1:
+            external_batch_size = min(max(1, int(batch_size * external_fraction)), batch_size - 1, len(self.external_real_replay))
+            external_batch = self.external_real_replay.sample(external_batch_size, self.device)
+        base_batch_size = max(1, batch_size - external_batch_size)
         model_ratio = self._model_batch_ratio()
         self.last_model_ratio_used = 0.0
         self.last_update_model_count = 0
-        self.last_update_real_count = batch_size
+        self.last_update_real_count = base_batch_size
+        self.last_update_external_real_count = external_batch_size
         if model_ratio <= 0.0 or len(self.model_replay) <= 0:
-            return self.real_replay.sample(batch_size, self.device)
-        model_batch_size = min(int(batch_size * model_ratio), len(self.model_replay))
+            real_batch = self.real_replay.sample(base_batch_size, self.device)
+            return self._concat_batches(real_batch, external_batch)
+        model_batch_size = min(int(base_batch_size * model_ratio), len(self.model_replay))
         if model_batch_size <= 0:
-            return self.real_replay.sample(batch_size, self.device)
-        real_batch_size = max(1, batch_size - model_batch_size)
+            real_batch = self.real_replay.sample(base_batch_size, self.device)
+            return self._concat_batches(real_batch, external_batch)
+        real_batch_size = max(1, base_batch_size - model_batch_size)
         real_batch = self.real_replay.sample(real_batch_size, self.device)
         model_batch = self.model_replay.sample(model_batch_size, self.device)
         self.last_update_real_count = real_batch_size
         self.last_update_model_count = model_batch_size
-        self.last_model_ratio_used = model_batch_size / max(real_batch_size + model_batch_size, 1)
-        batch = {}
-        for key, value in real_batch.items():
-            if key in model_batch:
-                batch[key] = torch.cat((value, model_batch[key]), dim=0)
-            else:
-                batch[key] = value
-        return batch
+        self.last_model_ratio_used = model_batch_size / max(real_batch_size + model_batch_size + external_batch_size, 1)
+        return self._concat_batches(real_batch, model_batch, external_batch)
 
     def _sac_update(self):
         if len(self.real_replay) < int(self.wm_cfg.get("learning_starts", 8192)):
@@ -1330,6 +1359,7 @@ class SIRLWorldModelRunner:
             "replay/model_ratio_used": float(self.last_model_ratio_used),
             "replay/model_batch_count": float(self.last_update_model_count),
             "replay/real_batch_count": float(self.last_update_real_count),
+            "replay/external_real_batch_count": float(self.last_update_external_real_count),
         }
 
     def _train_world_model(self):
