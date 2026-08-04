@@ -4,6 +4,7 @@ from envs.K1.kicking_k1 import KickingK1
 from envs.K1.parameter_walk_k1 import ParameterWalkK1
 from envs.K1.target_pose_walk_k1 import TargetPoseWalkK1
 from envs.K1.velocity_command_walk_k1 import VelocityCommandWalkK1
+from envs.K1.velocity_command_walk_ppo_k1 import VelocityCommandWalkPPOK1
 from envs.K1.get_up_k1 import GetUpK1
 from envs.T1.parameter_walk import ParameterWalk
 from envs.K1.base_walk_k1 import BaseWalkK1

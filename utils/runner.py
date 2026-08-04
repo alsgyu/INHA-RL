@@ -197,6 +197,25 @@ class Runner:
         self.env.is_play = test
 
         self.device = self.cfg["basic"]["rl_device"]
+        self._mirror_action_indices = torch.tensor(
+            [6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5],
+            dtype=torch.long,
+            device=self.device,
+        )
+        self._mirror_action_signs = torch.tensor(
+            [1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0],
+            dtype=torch.float,
+            device=self.device,
+        )
+        self._obs_public_command_scales = torch.tensor(
+            [
+                float(self.cfg["normalization"].get("lin_vel", 1.0)),
+                float(self.cfg["normalization"].get("lin_vel", 1.0)),
+                float(self.cfg["normalization"].get("ang_vel", 1.0)),
+            ],
+            dtype=torch.float,
+            device=self.device,
+        )
         self.learning_rate = self.cfg["algorithm"]["learning_rate"]
         self.init_learning_rate = self.learning_rate
         # Select model by config/CLI
@@ -994,6 +1013,97 @@ class Runner:
         )
         return stats
 
+    def _scheduled_algorithm_coef(self, name, iteration, default=0.0):
+        coef = float(self.cfg["algorithm"].get(name, default))
+        if coef <= 0.0:
+            return 0.0
+        prefix = name[:-5] if name.endswith("_coef") else name
+        start = int(self.cfg["algorithm"].get(f"{prefix}_start_iteration", self.cfg["algorithm"].get(f"{name}_start_iteration", 0)))
+        if iteration < start:
+            return 0.0
+        warmup = int(
+            self.cfg["algorithm"].get(
+                f"{prefix}_warmup_iterations",
+                self.cfg["algorithm"].get(f"{name}_warmup_iterations", 0),
+            )
+        )
+        if warmup > 0:
+            progress = min(1.0, max(0.0, (iteration - start + 1) / warmup))
+            coef *= progress
+        return coef
+
+    def _mirror_action(self, action):
+        if action.shape[-1] != 12:
+            return action
+        indices = self._mirror_action_indices.to(action.device)
+        signs = self._mirror_action_signs.to(action.device, dtype=action.dtype)
+        return action.index_select(action.dim() - 1, indices) * signs
+
+    def _mirror_obs(self, obs):
+        if obs.shape[-1] < 54 or self.env.num_actions != 12:
+            return obs
+        mirrored = obs.clone()
+        mirrored[..., 0] = obs[..., 0]
+        mirrored[..., 1] = -obs[..., 1]
+        mirrored[..., 2] = obs[..., 2]
+        mirrored[..., 3] = -obs[..., 3]
+        mirrored[..., 4] = obs[..., 4]
+        mirrored[..., 5] = -obs[..., 5]
+        mirrored[..., 6] = obs[..., 6]
+        mirrored[..., 7] = -obs[..., 7]
+        mirrored[..., 8] = -obs[..., 8]
+        mirrored[..., 9] = obs[..., 9]
+        mirrored[..., 10] = -obs[..., 11]
+        mirrored[..., 11] = -obs[..., 10]
+        mirrored[..., 12] = obs[..., 12]
+        mirrored[..., 13] = -obs[..., 13]
+        mirrored[..., 14] = obs[..., 14]
+        mirrored[..., 15] = -obs[..., 15]
+        mirrored[..., 16] = -obs[..., 16]
+        mirrored[..., 17] = -obs[..., 17]
+        mirrored[..., 18:30] = self._mirror_action(obs[..., 18:30])
+        mirrored[..., 30:42] = self._mirror_action(obs[..., 30:42])
+        mirrored[..., 42:54] = self._mirror_action(obs[..., 42:54])
+        return mirrored
+
+    def _obs_public_command(self, obs):
+        if obs.shape[-1] < 9:
+            return None
+        scales = self._obs_public_command_scales.to(obs.device, dtype=obs.dtype)
+        return obs[..., 6:9] / torch.clamp(scales, min=1.0e-6)
+
+    def _actor_symmetry_mask(self, obs):
+        command = self._obs_public_command(obs)
+        if command is None:
+            return None
+        min_vx = float(self.cfg["algorithm"].get("actor_symmetry_min_abs_vx", 0.03))
+        max_vy = float(self.cfg["algorithm"].get("actor_symmetry_max_abs_vy", 0.04))
+        max_yaw = float(self.cfg["algorithm"].get("actor_symmetry_max_abs_yaw", 0.08))
+        straight = (
+            (torch.abs(command[..., 0]) >= min_vx)
+            & (torch.abs(command[..., 1]) <= max_vy)
+            & (torch.abs(command[..., 2]) <= max_yaw)
+        )
+        if bool(self.cfg["algorithm"].get("actor_symmetry_include_stand", True)):
+            stand_threshold = float(self.cfg["commands"].get("adapter", {}).get("stand_command_threshold", 0.04))
+            command_norm = torch.sqrt(torch.sum(torch.square(command[..., 0:2]), dim=-1) + torch.square(command[..., 2]))
+            straight = straight | (command_norm <= stand_threshold)
+        return straight.float()
+
+    def _actor_symmetry_loss(self, obs, actor_mean):
+        if self.env.num_actions != 12 or obs.shape[-1] < 54:
+            zero = torch.tensor(0.0, dtype=torch.float, device=self.device)
+            return zero, 0.0
+        mask = self._actor_symmetry_mask(obs)
+        if mask is None or float(mask.sum().detach().item()) <= 0.0:
+            zero = torch.tensor(0.0, dtype=torch.float, device=self.device)
+            return zero, 0.0
+        mirrored_mean = self.model.act(self._mirror_obs(obs)).loc
+        mirrored_target = self._mirror_action(actor_mean).detach()
+        per_sample = torch.mean(torch.square(mirrored_mean - mirrored_target), dim=-1)
+        loss = torch.sum(per_sample * mask) / torch.clamp(torch.sum(mask), min=1.0)
+        return loss, float(mask.mean().detach().item())
+
     @staticmethod
     def _format_duration(seconds):
         seconds = max(0, int(seconds))
@@ -1190,6 +1300,9 @@ class Runner:
             mean_actor_loss = 0
             mean_bound_loss = 0
             mean_entropy = 0
+            mean_actor_symmetry_loss = 0.0
+            mean_actor_symmetry_coef = 0.0
+            mean_actor_symmetry_mask = 0.0
             mean_sirl_bc_loss = 0.0
             mean_sirl_bc_coef = 0.0
             mean_sirl_bc_weight_mean = 0.0
@@ -1219,6 +1332,14 @@ class Runner:
                 bound_loss = torch.clip(dist.loc - 1.0, min=0.0).square().mean() + torch.clip(dist.loc + 1.0, max=0.0).square().mean()
 
                 entropy = dist.entropy().sum(dim=-1)
+                actor_symmetry_coef = self._scheduled_algorithm_coef("actor_symmetry_coef", it, 0.0)
+                actor_symmetry_loss = torch.tensor(0.0, dtype=torch.float, device=self.device)
+                actor_symmetry_mask_frac = 0.0
+                if actor_symmetry_coef > 0.0:
+                    actor_symmetry_loss, actor_symmetry_mask_frac = self._actor_symmetry_loss(
+                        self.buffer["obses"],
+                        dist.loc,
+                    )
 
                 if self.cfg["algorithm"]["min_entropy"] is not None and self.cfg["algorithm"]["max_entropy"] is not None:
                     min_entropy = self.cfg["algorithm"]["min_entropy"]
@@ -1233,6 +1354,7 @@ class Runner:
                     + self.cfg["algorithm"]["bound_coef"] * bound_loss
                     + self.cfg["algorithm"]["entropy_coef"] * entropy.mean()
                     + 0.01 * loss_entropy
+                    + actor_symmetry_coef * actor_symmetry_loss
                     #+ self.cfg["algorithm"]["symmetry_coef"] * sym_loss
                 )
                 if sirl_bc_loss is not None:
@@ -1250,6 +1372,9 @@ class Runner:
                 mean_actor_loss += actor_loss.item()
                 mean_bound_loss += bound_loss.item()
                 mean_entropy += entropy.mean()
+                mean_actor_symmetry_loss += float(actor_symmetry_loss.detach().item())
+                mean_actor_symmetry_coef += actor_symmetry_coef
+                mean_actor_symmetry_mask += actor_symmetry_mask_frac
                 if sirl_bc_loss is not None:
                     mean_sirl_bc_loss += sirl_bc_loss.item()
                     mean_sirl_bc_coef += sirl_bc_coef
@@ -1288,6 +1413,9 @@ class Runner:
             mean_actor_loss /= self.cfg["runner"]["mini_epochs"]
             mean_bound_loss /= self.cfg["runner"]["mini_epochs"]
             mean_entropy /= self.cfg["runner"]["mini_epochs"]
+            mean_actor_symmetry_loss /= self.cfg["runner"]["mini_epochs"]
+            mean_actor_symmetry_coef /= self.cfg["runner"]["mini_epochs"]
+            mean_actor_symmetry_mask /= self.cfg["runner"]["mini_epochs"]
             mean_sirl_bc_loss /= self.cfg["runner"]["mini_epochs"]
             mean_sirl_bc_coef /= self.cfg["runner"]["mini_epochs"]
             if sirl_bc_update_count > 0:
@@ -1297,6 +1425,9 @@ class Runner:
                 "actor_loss": mean_actor_loss,
                 "bound_loss": mean_bound_loss,
                 "entropy": mean_entropy,
+                "actor_symmetry/loss": mean_actor_symmetry_loss,
+                "actor_symmetry/coef": mean_actor_symmetry_coef,
+                "actor_symmetry/mask_frac": mean_actor_symmetry_mask,
                 "kl_mean": kl_mean,
                 "lr": self.learning_rate,
                 "curriculum/mean_lin_vel_level": self.env.mean_lin_vel_level,

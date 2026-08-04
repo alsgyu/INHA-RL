@@ -253,7 +253,18 @@ class ParameterWalkK1(BaseTask):
         self.last_dof_targets = torch.zeros(self.num_envs, self.num_dofs, dtype=torch.float, device=self.device)
         self.lagged_dof_targets = torch.zeros(self.num_envs, self.num_dofs, dtype=torch.float, device=self.device)
         self.delay_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.delay_steps_by_index = None
+        if self.cfg["randomization"].get("dof_delay_steps") is not None:
+            self.delay_steps_by_index = torch.zeros(self.num_envs, self.num_dofs, dtype=torch.long, device=self.device)
         self.torques = torch.zeros(self.num_envs, self.num_dofs, dtype=torch.float, device=self.device)
+        self.dof_torque_strength = apply_randomization(
+            torch.ones(self.num_envs, self.num_dofs, dtype=torch.float, device=self.device),
+            self.cfg["randomization"].get("dof_torque_strength"),
+        )
+        self.dof_torque_bias = apply_randomization(
+            torch.zeros(self.num_envs, self.num_dofs, dtype=torch.float, device=self.device),
+            self.cfg["randomization"].get("dof_torque_bias"),
+        )
         self.commands = torch.zeros(self.num_envs, self.cfg["commands"]["num_commands"], dtype=torch.float, device=self.device)
         self.cmd_resample_time = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.gait_frequency = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
@@ -504,7 +515,19 @@ class ParameterWalkK1(BaseTask):
         self.cmd_resample_time[env_ids] = 0
 
         self.delay_steps[env_ids] = torch.randint(0, self.cfg["control"]["decimation"], (len(env_ids),), device=self.device)
+        if self.delay_steps_by_index is not None:
+            self.delay_steps_by_index[env_ids] = self._sample_dof_delay_steps(len(env_ids))
         self.extras["time_outs"] = self.time_out_buf
+
+    def _sample_dof_delay_steps(self, env_count):
+        delay_cfg = self.cfg["randomization"].get("dof_delay_steps")
+        if delay_cfg is None:
+            return None
+        max_delay = max(int(self.cfg["control"]["decimation"]) - 1, 0)
+        low, high = delay_cfg.get("range", [0, max_delay])
+        low = max(0, min(int(low), max_delay))
+        high = max(low, min(int(high), max_delay))
+        return torch.randint(low, high + 1, (env_count, self.num_dofs), device=self.device)
 
     def _reset_dofs(self, env_ids):
         dof_pos = self.default_dof_pos.expand(len(env_ids), -1).clone()
@@ -813,10 +836,15 @@ class ParameterWalkK1(BaseTask):
         # perform physics step
         self.torques.zero_()
         for i in range(self.cfg["control"]["decimation"]):
-            self.last_dof_targets[self.delay_steps == i] = dof_targets[self.delay_steps == i]
+            if self.delay_steps_by_index is None:
+                self.last_dof_targets[self.delay_steps == i] = dof_targets[self.delay_steps == i]
+            else:
+                update_mask = self.delay_steps_by_index == i
+                self.last_dof_targets[:] = torch.where(update_mask, dof_targets, self.last_dof_targets)
             dof_torques = self.dof_stiffness * (self.last_dof_targets - self.dof_pos) - self.dof_damping * self.dof_vel
             friction = torch.min(self.dof_friction, dof_torques.abs()) * torch.sign(dof_torques)
-            dof_torques = torch.clip(dof_torques - friction, min=-self.torque_limits, max=self.torque_limits)
+            dof_torques = (dof_torques - friction) * self.dof_torque_strength + self.dof_torque_bias
+            dof_torques = torch.clip(dof_torques, min=-self.torque_limits, max=self.torque_limits)
             self.torques += dof_torques
             self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(dof_torques))
             self.gym.simulate(self.sim)

@@ -82,6 +82,9 @@ class BaseTask:
             raise ValueError(f"Invalid physics engine backend: {sim_cfg['physics_engine']}")
 
         self.sim = self.gym.create_sim(self.sim_device_id, self.graphics_device_id, self.physics_engine, self.sim_params)
+        physics_device = sim_device if sim_device_type == "cuda" else "cpu"
+        print(f"Physics Device: {physics_device}")
+        print(f"GPU Pipeline: {'enabled' if self.sim_params.use_gpu_pipeline else 'disabled'}")
 
     def set_viewer(self):
         self.viewer = None

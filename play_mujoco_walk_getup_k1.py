@@ -108,12 +108,21 @@ class FootstepMetrics:
         np.array([0.026, 0.0, -0.038], dtype=np.float64),
     )
 
-    def __init__(self, mujoco, model, window_s=3.0, contact_debounce_s=0.035, min_summary_s=0.5):
+    def __init__(
+        self,
+        mujoco,
+        model,
+        window_s=3.0,
+        contact_debounce_s=0.035,
+        min_summary_s=0.5,
+        overtake_margin=0.015,
+    ):
         self.mujoco = mujoco
         self.model = model
         self.window_s = max(float(window_s), 1.0e-6)
         self.contact_debounce_s = max(float(contact_debounce_s), 0.0)
         self.min_summary_s = max(float(min_summary_s), 0.0)
+        self.overtake_margin = float(overtake_margin)
         self.rows = deque()
         self.stable_contact = None
         self.candidate_contact = None
@@ -138,6 +147,7 @@ class FootstepMetrics:
         raw_contact, normal_force = self._foot_contact_and_force(data)
         contact, touchdown = self._debounced_contact(float(time_s), raw_contact)
         sole_pos = self._sole_positions(data)
+        local_x, base_rpy = self._base_relative_foot_x(data, sole_pos)
         if self.prev_pos is None or self.prev_time is None:
             sole_vel = np.zeros_like(sole_pos)
         else:
@@ -153,6 +163,8 @@ class FootstepMetrics:
                     "force": normal_force.copy(),
                     "sole_pos": sole_pos.copy(),
                     "sole_vel": sole_vel.copy(),
+                    "local_x": local_x.copy(),
+                    "base_rpy": base_rpy.copy(),
                     "touchdown": touchdown.copy(),
                 }
             )
@@ -172,6 +184,8 @@ class FootstepMetrics:
         forces = np.stack([row["force"] for row in self.rows], axis=0)
         sole_pos = np.stack([row["sole_pos"] for row in self.rows], axis=0)
         sole_vel = np.stack([row["sole_vel"] for row in self.rows], axis=0)
+        local_x = np.stack([row["local_x"] for row in self.rows], axis=0)
+        base_rpy = np.stack([row["base_rpy"] for row in self.rows], axis=0)
         touchdowns = np.stack([row["touchdown"] for row in self.rows], axis=0)
         duration = max(float(times[-1] - times[0]), 1.0e-6)
         if duration < self.min_summary_s:
@@ -183,15 +197,29 @@ class FootstepMetrics:
         stance_xy_speed = np.zeros(2, dtype=np.float64)
         swing_clearance = np.zeros(2, dtype=np.float64)
         contact_force = np.zeros(2, dtype=np.float64)
+        touchdown_step_ahead = np.full(2, np.nan, dtype=np.float64)
+        touchdown_overtake = np.zeros(2, dtype=np.float64)
+        swing_overtake = np.zeros(2, dtype=np.float64)
+        body_overtake = np.zeros(2, dtype=np.float64)
+        swing_forward_range = np.zeros(2, dtype=np.float64)
         for side in range(2):
             swing_mask = swing[:, side]
             stance_mask = contacts[:, side]
+            touchdown_mask = touchdowns[:, side]
             if np.any(swing_mask):
                 swing_xy_speed[side] = float(np.mean(foot_xy_speed[swing_mask, side]))
                 swing_clearance[side] = float(np.mean(np.maximum(sole_pos[swing_mask, side, 2], 0.0)))
+                rel_x = local_x[swing_mask, side] - local_x[swing_mask, 1 - side]
+                swing_overtake[side] = float(np.mean(rel_x > self.overtake_margin))
+                body_overtake[side] = float(np.mean(local_x[swing_mask, side] > 0.0))
+                swing_forward_range[side] = float(np.max(local_x[swing_mask, side]) - np.min(local_x[swing_mask, side]))
             if np.any(stance_mask):
                 stance_xy_speed[side] = float(np.mean(foot_xy_speed[stance_mask, side]))
                 contact_force[side] = float(np.mean(forces[stance_mask, side]))
+            if np.any(touchdown_mask):
+                step_ahead = local_x[touchdown_mask, side] - local_x[touchdown_mask, 1 - side]
+                touchdown_step_ahead[side] = float(np.mean(step_ahead))
+                touchdown_overtake[side] = float(np.mean(step_ahead > self.overtake_margin))
 
         return {
             "duration": duration,
@@ -203,6 +231,15 @@ class FootstepMetrics:
             "swing_xy_speed": swing_xy_speed,
             "stance_xy_speed": stance_xy_speed,
             "contact_force": contact_force,
+            "local_x_mean": local_x.mean(axis=0),
+            "touchdown_step_ahead": touchdown_step_ahead,
+            "touchdown_overtake": touchdown_overtake,
+            "swing_overtake": swing_overtake,
+            "body_overtake": body_overtake,
+            "swing_forward_range": swing_forward_range,
+            "base_pitch_mean": float(np.mean(base_rpy[:, 1])),
+            "base_pitch_max": float(np.max(base_rpy[:, 1])),
+            "base_pitch_min": float(np.min(base_rpy[:, 1])),
         }
 
     def report(self, summary, gait_frequency):
@@ -217,16 +254,30 @@ class FootstepMetrics:
         cadence_ratio = total_rate / expected_total_rate
         duty = summary["duty"] * 100.0
         clearance_cm = summary["swing_clearance"] * 100.0
+        touchdown_overtake = summary["touchdown_overtake"] * 100.0
+        swing_overtake = summary["swing_overtake"] * 100.0
+        body_overtake = summary["body_overtake"] * 100.0
+        touchdown_step_cm = summary["touchdown_step_ahead"] * 100.0
+        foot_x_cm = summary["local_x_mean"] * 100.0
+        swing_range_cm = summary["swing_forward_range"] * 100.0
         return (
             "foot="
             f"td/s(L={touchdown_rate[0]:.2f},R={touchdown_rate[1]:.2f},T={total_rate:.2f},"
             f"ratio={cadence_ratio:.2f}) "
             f"duty(L={duty[0]:.0f}%,R={duty[1]:.0f}%,air={summary['both_air']*100.0:.0f}%,"
             f"both={summary['both_contact']*100.0:.0f}%) "
+            f"step_cm(L={touchdown_step_cm[0]:+.1f},R={touchdown_step_cm[1]:+.1f}) "
+            f"overtake(tdL={touchdown_overtake[0]:.0f}%,tdR={touchdown_overtake[1]:.0f}%,"
+            f"swL={swing_overtake[0]:.0f}%,swR={swing_overtake[1]:.0f}%,"
+            f"bodyL={body_overtake[0]:.0f}%,bodyR={body_overtake[1]:.0f}%) "
+            f"foot_x_cm(L={foot_x_cm[0]:+.1f},R={foot_x_cm[1]:+.1f}) "
+            f"sw_dx_cm(L={swing_range_cm[0]:.1f},R={swing_range_cm[1]:.1f}) "
             f"zsw_cm(L={clearance_cm[0]:.1f},R={clearance_cm[1]:.1f}) "
             f"fxy_sw(L={summary['swing_xy_speed'][0]:.2f},R={summary['swing_xy_speed'][1]:.2f}) "
             f"fxy_st(L={summary['stance_xy_speed'][0]:.2f},R={summary['stance_xy_speed'][1]:.2f}) "
-            f"fN(L={summary['contact_force'][0]:.0f},R={summary['contact_force'][1]:.0f})"
+            f"fN(L={summary['contact_force'][0]:.0f},R={summary['contact_force'][1]:.0f}) "
+            f"pitch(mean={summary['base_pitch_mean']:+.2f},max={summary['base_pitch_max']:+.2f},"
+            f"min={summary['base_pitch_min']:+.2f})"
         )
 
     def _foot_contact_and_force(self, data):
@@ -283,6 +334,14 @@ class FootstepMetrics:
             body_mat = np.asarray(data.xmat[body_id], dtype=np.float64).reshape(3, 3)
             positions[side] = body_pos + body_mat @ self.SOLE_OFFSETS[side]
         return positions
+
+    def _base_relative_foot_x(self, data, sole_pos):
+        base_xy = np.asarray(data.qpos[0:2], dtype=np.float64)
+        base_rpy = quat_to_euler(np.asarray(data.qpos[3:7], dtype=np.float32)).astype(np.float64)
+        yaw = float(base_rpy[2])
+        delta = sole_pos[:, 0:2] - base_xy.reshape(1, 2)
+        local_x = np.cos(yaw) * delta[:, 0] + np.sin(yaw) * delta[:, 1]
+        return local_x.astype(np.float64), base_rpy
 
 
 def quat_to_mat(q):
@@ -759,9 +818,17 @@ def main():
     parser.add_argument("--metrics_warmup_s", type=float, default=1.0)
     parser.add_argument("--metrics_csv", default=None)
     parser.add_argument("--metrics_csv_sample_s", type=float, default=0.05)
-    parser.add_argument("--foot_metrics", action="store_true", help="Enable MuJoCo foot contact/cadence diagnostics.")
+    parser.add_argument(
+        "--foot_metrics",
+        dest="foot_metrics",
+        action="store_true",
+        default=True,
+        help="Enable MuJoCo foot contact/cadence diagnostics.",
+    )
+    parser.add_argument("--no_foot_metrics", dest="foot_metrics", action="store_false", help="Disable MuJoCo foot diagnostics.")
     parser.add_argument("--foot_metrics_window_s", type=float, default=3.0)
     parser.add_argument("--foot_contact_debounce_s", type=float, default=0.035)
+    parser.add_argument("--foot_overtake_margin", type=float, default=0.015)
     args = parser.parse_args()
     if args.cmd_pose6 is not None:
         (
@@ -873,6 +940,7 @@ def main():
             model,
             window_s=args.foot_metrics_window_s,
             contact_debounce_s=args.foot_contact_debounce_s,
+            overtake_margin=args.foot_overtake_margin,
         )
         if args.foot_metrics
         else None
@@ -946,7 +1014,7 @@ def main():
         f"{args.ground_rolling_friction:.4f}) ground_condim={args.ground_condim}"
     )
     if foot_metrics is None:
-        print("[mujoco] foot metrics disabled; pass --foot_metrics to enable cadence/contact diagnostics")
+        print("[mujoco] foot metrics disabled")
     else:
         print(
             "[mujoco] foot metrics "
@@ -954,7 +1022,8 @@ def main():
             f"ground_geom_id={foot_metrics.ground_geom_id} "
             f"foot_body_ids={[int(body_id) for body_id in foot_metrics.foot_body_ids]} "
             f"window_s={args.foot_metrics_window_s:.1f} "
-            f"debounce_s={args.foot_contact_debounce_s:.3f}"
+            f"debounce_s={args.foot_contact_debounce_s:.3f} "
+            f"overtake_margin={args.foot_overtake_margin:.3f}"
         )
     l_hip, l_knee, l_ankle, r_hip, r_knee, r_ankle = leg_default_summary(default_qpos)
     print(
