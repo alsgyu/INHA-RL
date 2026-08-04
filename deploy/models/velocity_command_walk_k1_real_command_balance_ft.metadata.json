@@ -19,10 +19,10 @@
   ],
   "zero_command_behavior": "stand still with gait_frequency=0 and zero phase features",
   "task": "K1/VelocityCommandWalkRealCommandBalanceFineTune",
-  "checkpoint_path": "logs/K1/K1/VelocityCommandWalkSIRLRealCommandBalanceFineTune/2026-08-02-22-52-15/nn/model_7000.pth",
-  "checkpoint_sha1": "3e03417129fa53acf4c2e4bde85d5e6a9ae014ec",
-  "exported_policy_path": "logs/K1/K1/VelocityCommandWalkSIRLRealCommandBalanceFineTune/2026-08-02-22-52-15/nn/model_7000.pt",
-  "exported_policy_sha1": "0bcdda46d440283e4e9689712f09841b2829e9b2",
+  "checkpoint_path": "logs/K1/K1/VelocityCommandWalkSIRLRealCommandBalanceFineTune/2026-08-03-18-14-16/nn/model_6000.pth",
+  "checkpoint_sha1": "800c1877ac8a9165e18bfa810a08efd31b0798d9",
+  "exported_policy_path": "logs/K1/K1/VelocityCommandWalkSIRLRealCommandBalanceFineTune/2026-08-03-18-14-16/nn/model_6000.pt",
+  "exported_policy_sha1": "019b65c9106658ec5c05e8a13f9568c6a8e76f7c",
   "model_class": "BaseActorCritic",
   "num_actions": 12,
   "num_observations": 54,
@@ -288,7 +288,7 @@
         ],
         "lin_vel_x": [
           0.06,
-          0.9
+          0.95
         ],
         "lin_vel_y": [
           -0.08,
@@ -301,7 +301,7 @@
         "straight": {
           "lin_vel_x": [
             0.06,
-            0.9
+            0.95
           ],
           "lin_vel_y": 0.0,
           "ang_vel_yaw": 0.0
@@ -309,7 +309,7 @@
         "adapter": {
           "gait_frequency_min": 1.5,
           "gait_frequency_max": 1.5,
-          "gait_frequency_speed_max": 0.9
+          "gait_frequency_speed_max": 0.95
         },
         "transition_probes": {
           "proportion": 0.34,
@@ -318,9 +318,10 @@
             0.1,
             0.2,
             0.4,
+            0.5,
             0.6,
             0.8,
-            0.9
+            0.95
           ],
           "decel_proportion": 0.32,
           "decel_targets": [
@@ -338,11 +339,11 @@
         "command_slew_rate": 1.35,
         "still_proportion": 0.3,
         "straight_proportion": 0.92,
-        "high_speed_proportion": 0.02,
+        "high_speed_proportion": 0.04,
         "high_speed": {
           "lin_vel_x": [
-            0.95,
-            1.05
+            1.05,
+            1.25
           ],
           "lin_vel_y": 0.0,
           "ang_vel_yaw": 0.0
@@ -353,7 +354,7 @@
         ],
         "lin_vel_x": [
           0.06,
-          1.05
+          1.2
         ],
         "lin_vel_y": [
           -0.1,
@@ -366,7 +367,7 @@
         "straight": {
           "lin_vel_x": [
             0.06,
-            1.0
+            1.2
           ],
           "lin_vel_y": 0.0,
           "ang_vel_yaw": 0.0
@@ -374,7 +375,7 @@
         "adapter": {
           "gait_frequency_min": 1.5,
           "gait_frequency_max": 1.5,
-          "gait_frequency_speed_max": 1.05
+          "gait_frequency_speed_max": 1.2
         },
         "transition_probes": {
           "proportion": 0.32,
@@ -383,9 +384,80 @@
             0.1,
             0.2,
             0.4,
+            0.5,
             0.6,
             0.8,
-            1.0
+            1.0,
+            1.2
+          ],
+          "decel_proportion": 0.3,
+          "decel_targets": [
+            0.0,
+            0.1,
+            0.2,
+            0.4,
+            0.6,
+            0.8
+          ]
+        }
+      },
+      {
+        "start_iteration": 11000,
+        "disturbance_scale": 0.0,
+        "command_slew_rate": 1.35,
+        "still_proportion": 0.28,
+        "straight_proportion": 0.92,
+        "high_speed_proportion": 0.06,
+        "high_speed": {
+          "lin_vel_x": [
+            1.25,
+            1.5
+          ],
+          "lin_vel_y": 0.0,
+          "ang_vel_yaw": 0.0
+        },
+        "resampling_time_s": [
+          3.2,
+          5.5
+        ],
+        "lin_vel_x": [
+          0.06,
+          1.5
+        ],
+        "lin_vel_y": [
+          -0.1,
+          0.1
+        ],
+        "ang_vel_yaw": [
+          -0.16,
+          0.16
+        ],
+        "straight": {
+          "lin_vel_x": [
+            0.06,
+            1.35
+          ],
+          "lin_vel_y": 0.0,
+          "ang_vel_yaw": 0.0
+        },
+        "adapter": {
+          "gait_frequency_min": 1.5,
+          "gait_frequency_max": 1.5,
+          "gait_frequency_speed_max": 1.5
+        },
+        "transition_probes": {
+          "proportion": 0.3,
+          "speeds": [
+            0.0,
+            0.1,
+            0.2,
+            0.4,
+            0.5,
+            0.6,
+            0.8,
+            1.0,
+            1.2,
+            1.5
           ],
           "decel_proportion": 0.3,
           "decel_targets": [
@@ -431,20 +503,20 @@
       ],
       "body_pitch_gain": 0.0,
       "body_pitch_target_clip": [
-        -0.03,
-        0.018
+        -0.055,
+        0.014
       ],
       "body_roll_gain": -0.06,
       "body_roll_target_clip": [
         -0.06,
         0.06
       ],
-      "body_pitch_offset": -0.006,
+      "body_pitch_offset": -0.012,
       "forward_pitch_vx_comp_enabled": true,
-      "forward_pitch_vx_comp_deadband": 0.02,
-      "forward_pitch_vx_comp_gain": 1.2,
-      "forward_pitch_vx_comp_max": 0.14,
-      "forward_pitch_vx_comp_min_vx": 0.03,
+      "forward_pitch_vx_comp_deadband": 0.012,
+      "forward_pitch_vx_comp_gain": 1.7,
+      "forward_pitch_vx_comp_max": 0.22,
+      "forward_pitch_vx_comp_min_vx": 0.02,
       "heading_correction_enabled": false,
       "heading_correction_min_abs_vx": 0.08,
       "heading_correction_max_abs_vy_command": 0.04,
@@ -467,7 +539,7 @@
       "decel_gait_hold_command_margin": 0.06,
       "decel_gait_hold_drive": 0.22,
       "decel_gait_frequency": 1.5,
-      "body_pitch_balance_gain": 0.35
+      "body_pitch_balance_gain": 0.55
     },
     "randomize_gait_phase_on_start": false,
     "high_speed_proportion": 0.1,
