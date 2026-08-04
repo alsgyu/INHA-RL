@@ -110,6 +110,9 @@ class VelocityCommandWalkPPOK1(VelocityCommandWalkK1):
         active = (command_norm.squeeze(-1) > float(self.cfg["rewards"].get("xy_perpendicular_command_deadband", 0.05))).float()
         return torch.sum(torch.square(velocity_perp), dim=-1) * active
 
+    def _reward_root_feet_lateral_diff(self):
+        return self._root_feet_lateral_diff_value(torch.ones(self.num_envs, dtype=torch.float, device=self.device))
+
     def _joint_index(self, name):
         if name in self.dof_names:
             return self.dof_names.index(name)

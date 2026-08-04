@@ -1297,8 +1297,10 @@ class ParameterWalkK1(BaseTask):
         # Get forward velocity (x-direction) from commands
         forward_vel = self.commands[:, 0]  # lin_vel_x
         
-        # Get maximum forward velocity from config
-        max_forward_vel = max(abs(self.cfg["commands"]["lin_vel_x"][0]), abs(self.cfg["commands"]["lin_vel_x"][1]))
+        max_forward_vel = self.cfg["rewards"].get("feet_offset_max_forward_vel")
+        if max_forward_vel is None:
+            max_forward_vel = max(abs(self.cfg["commands"]["lin_vel_x"][0]), abs(self.cfg["commands"]["lin_vel_x"][1]))
+        max_forward_vel = max(float(max_forward_vel), 1.0e-6)
         
         # Calculate velocity scaling factor: 1.0 at vel=0, 0.0 at vel=max_vel
         # Use absolute value of velocity for symmetric scaling
@@ -1327,8 +1329,10 @@ class ParameterWalkK1(BaseTask):
         # Get lateral velocity (y-direction) from commands
         lateral_vel = self.commands[:, 1]  # lin_vel_y
         
-        # Get maximum lateral velocity from config
-        max_lateral_vel = max(abs(self.cfg["commands"]["lin_vel_y"][0]), abs(self.cfg["commands"]["lin_vel_y"][1]))
+        max_lateral_vel = self.cfg["rewards"].get("feet_offset_max_lateral_vel")
+        if max_lateral_vel is None:
+            max_lateral_vel = max(abs(self.cfg["commands"]["lin_vel_y"][0]), abs(self.cfg["commands"]["lin_vel_y"][1]))
+        max_lateral_vel = max(float(max_lateral_vel), 1.0e-6)
         
         # Calculate velocity scaling factor: 1.0 at vel=0, 0.0 at vel=max_vel
         # Use absolute value of velocity for symmetric scaling

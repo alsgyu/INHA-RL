@@ -192,21 +192,21 @@ randomization:
     distribution: "gaussian"
   kick_interval_s: 4.0
   kick_lin_vel:
-    range: [0.0, 0.10]
+    range: [0.0, 0.05]
     operation: "additive"
     distribution: "gaussian"
   kick_ang_vel:
-    range: [0.0, 0.03]
+    range: [0.0, 0.01]
     operation: "additive"
     distribution: "gaussian"
-  push_interval_s: 5.0
-  push_duration_s: 1.0
+  push_interval_s: 8.0
+  push_duration_s: 0.2
   push_force:
-    range: [0.0, 10.0]
+    range: [0.0, 1.5]
     operation: "additive"
     distribution: "gaussian"
   push_torque:
-    range: [0.0, 1.5]
+    range: [0.0, 0.15]
     operation: "additive"
     distribution: "gaussian"
   dof_stiffness:
@@ -245,11 +245,11 @@ randomization:
     operation: "additive"
     distribution: "uniform"
   base_com:
-    range: [-0.02, 0.02]
+    range: [-0.05, 0.05]
     operation: "additive"
     distribution: "uniform"
   base_mass:
-    range: [0.85, 1.15]
+    range: [0.80, 1.20]
     operation: "scaling"
     distribution: "uniform"
   other_com:
@@ -284,6 +284,7 @@ rewards:
     pure_y_yaw_drift: -4.0
     zero_yaw_command_ang_vel: -3.0
     xy_perpendicular_velocity: -1.0
+    root_feet_lateral_diff: -0.5
     base_height: -20.0
     foot_yaw_L: -1.0
     foot_yaw_R: -1.0
@@ -313,9 +314,9 @@ rewards:
     feet_distance: -1.0
     feet_offset_x: -4.0
     feet_offset_y: -4.0
-    feet_swing: 2.0
+    feet_swing: 3.0
     swing_clearance: 1.5
-    footswing_trajectory: -0.8
+    footswing_trajectory: -1.0
     scuff_clearance: -18.0
     straight_feet_overtake: -35.0
     straight_right_foot_body_lag: -18.0
@@ -337,9 +338,9 @@ rewards:
   terminate_contacts_on: []
   penalize_contacts_on: ["Trunk", "H1", "H2", "AL", "AR", "Waist", "Hip", "Shank", "Ankle"]
   only_positive_rewards: false
-  tracking_sigma: 0.12
+  tracking_sigma: 0.25
   command_threshold: 0.05
-  velocity_alignment_scales: [1.0, 1.0, 1.0]
+  velocity_alignment_scales: [1.5, 1.5, 1.5]
   base_height_target: 0.52
   soft_dof_pos_limit: 1.0
   soft_dof_vel_limit: 1.0
@@ -360,6 +361,14 @@ rewards:
   stand_min_planted_contact_quality: 1.20
   min_stance_foot_contacts: 1.0
   feet_distance_ref: 0.18
+  feet_offset_max_forward_vel: 1.0
+  feet_offset_max_lateral_vel: 1.0
+  root_feet_lateral_deadzone: 0.03
+  root_feet_lateral_vy_deadzone_gain: 0.04
+  root_feet_lateral_yaw_deadzone_gain: 0.03
+  root_feet_lateral_max_vy: 1.5
+  root_feet_lateral_max_yaw: 1.6
+  root_feet_lateral_min_contacts: 2.0
   straight_min_speed: 0.035
   straight_max_abs_y_command: 0.035
   straight_max_abs_yaw_command: 0.06
@@ -368,15 +377,15 @@ rewards:
   pure_axis_zero_deadband: 0.05
   heading_drift_yaw_command_deadband: 0.10
   xy_perpendicular_command_deadband: 0.05
-  footswing_maximum_height: 0.055
-  footswing_height_kappa: 4.0
+  footswing_maximum_height: 0.105
+  footswing_height_kappa: 1.0
   footswing_stance_fraction: 0.5
   footswing_velocity_error_gain: 0.18
   footswing_height_error_scale: 5.0
   footswing_hip_local_pos: [[0.0, 0.09], [0.0, -0.09]]
   straight_feet_overtake_margin: 0.015
   straight_feet_overtake_side_weights: [1.0, 1.30]
-  right_foot_body_min_x: 0.010
+  right_foot_body_min_x: 0.015
   contact_duty_deadband: 0.050
   right_contact_duty_deadband: 0.040
   joint_roll_yaw_symmetry_pairs:
