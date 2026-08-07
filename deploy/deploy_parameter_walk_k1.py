@@ -141,6 +141,7 @@ class Controller:
         args = args or object()
         self.policy_metadata_path = None
         self.policy_metadata_task = None
+        self.policy_metadata_commands = {}
         self.policy_metadata_synced = False
         self._apply_policy_path_override(args)
         self._sync_policy_metadata_from_policy_path()
@@ -252,6 +253,7 @@ class Controller:
         metadata_path = os.path.splitext(policy_path)[0] + ".metadata.json"
         self.policy_metadata_path = metadata_path if os.path.exists(metadata_path) else None
         self.policy_metadata_task = None
+        self.policy_metadata_commands = {}
         if self.policy_metadata_path is None:
             self.policy_metadata_synced = False
             return False
@@ -262,6 +264,7 @@ class Controller:
 
         changed = False
         commands = metadata.get("commands", {})
+        self.policy_metadata_commands = commands if isinstance(commands, dict) else {}
         if "command_slew_rate" in commands and self.cfg["policy"].get("command_slew_rate") != commands["command_slew_rate"]:
             self.cfg["policy"]["command_slew_rate"] = commands["command_slew_rate"]
             changed = True
@@ -303,6 +306,10 @@ class Controller:
         if deploy_profile == "training_exact":
             policy_cfg = self.cfg["policy"]
             adapter = policy_cfg.setdefault("command_adapter", {})
+            metadata_adapter = self.policy_metadata_commands.get("adapter")
+            if isinstance(metadata_adapter, dict):
+                adapter.clear()
+                adapter.update(metadata_adapter)
             policy_cfg["deploy_action_clip"] = 1.0
             policy_cfg["deploy_action_scale"] = 1.0
             policy_cfg["deploy_scale_actions_in_policy"] = True
@@ -315,8 +322,7 @@ class Controller:
             policy_cfg["rl_publish_mode"] = "policy_step"
             policy_cfg["rl_target_filter_alpha"] = 1.0
             policy_cfg["motion_start_action_ramp_s"] = 0.0
-            adapter["gait_frequency_min"] = 1.15
-            adapter["body_pitch_offset"] = 0.0
+            adapter["body_pitch_offset"] = float(adapter.get("body_pitch_offset", 0.0))
             adapter["forward_pitch_vx_comp_enabled"] = False
             adapter["heading_correction_enabled"] = False
             reload_policy = True
