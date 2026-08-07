@@ -18,7 +18,7 @@ from holosoma.utils.safe_torch_import import torch
 class BoosterSdk2Bridge(BasicSdk2Bridge):
     """Booster SDK2Py bridge implementation."""
 
-    SUPPORTED_ROBOT_TYPES = {"t1_23dof", "t1_29dof"}
+    SUPPORTED_ROBOT_TYPES = {"t1_23dof", "t1_29dof", "k1_12dof"}
 
     def _init_sdk_components(self):
         """Initialize Booster SDK-specific components."""
