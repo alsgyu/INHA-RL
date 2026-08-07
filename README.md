@@ -147,6 +147,7 @@ $ python train.py --task=T1/BaseWalk
 #### Available Task Options:
 - **T1 Platform**: `T1/BaseWalk`, `T1/ParameterWalk`, `T1/Kicking`
 - **K1 Platform**: `K1/ParameterWalk`
+- **K1 FastSAC**: `K1/VelocityCommandWalkFastStableFastSAC` for stable fast forward walking, or `K1/VelocityCommandWalkFastSAC` for broader velocity-command walking.
 
 Training logs and saved models will be stored in `logs/<robot_type>/<task_name>/<timestamp>/`.
 

@@ -7,6 +7,7 @@ import yaml
 import argparse
 import torch
 from utils.models.BaseAC import *
+from utils.fast_sac import EmpiricalNormalizer, FastSACActor, FastSACPolicyWrapper
 
 
 def merge_dicts(base, override):
@@ -59,6 +60,55 @@ def file_sha1(path):
             digest.update(chunk)
     return digest.hexdigest()
 
+
+def torch_load_checkpoint(path, map_location="cpu"):
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
+def action_scale_from_cfg(cfg):
+    sac_cfg = cfg.get("algorithm", {}).get("fast_sac", {})
+    configured = sac_cfg.get("action_scale")
+    num_actions = cfg["env"]["num_actions"]
+    if configured is not None:
+        if isinstance(configured, (list, tuple)):
+            return torch.tensor(configured, dtype=torch.float)
+        return torch.full((num_actions,), float(configured), dtype=torch.float)
+    clip_actions = float(cfg.get("normalization", {}).get("clip_actions", 1.0))
+    return torch.full((num_actions,), clip_actions, dtype=torch.float)
+
+
+def export_fast_sac(model_dict, cfg, checkpoint_path):
+    metadata_cfg = model_dict.get("task_cfg") if isinstance(model_dict.get("task_cfg"), dict) else cfg
+    sac_cfg = metadata_cfg.get("algorithm", {}).get("fast_sac", {})
+    actor = FastSACActor(
+        metadata_cfg["env"]["num_observations"],
+        metadata_cfg["env"]["num_actions"],
+        hidden_dim=int(sac_cfg.get("actor_hidden_dim", 512)),
+        log_std_min=float(sac_cfg.get("log_std_min", -5.0)),
+        log_std_max=float(sac_cfg.get("log_std_max", 0.0)),
+        use_tanh=bool(sac_cfg.get("use_tanh", True)),
+        use_layer_norm=bool(sac_cfg.get("use_layer_norm", True)),
+        action_scale=action_scale_from_cfg(metadata_cfg),
+        device="cpu",
+    )
+    actor.load_state_dict(model_dict["actor_state_dict"])
+
+    obs_normalizer = None
+    if bool(sac_cfg.get("obs_normalization", True)) and model_dict.get("obs_normalizer_state") is not None:
+        obs_normalizer = EmpiricalNormalizer(metadata_cfg["env"]["num_observations"], "cpu")
+        obs_normalizer.load_state_dict(model_dict["obs_normalizer_state"])
+    wrapper = FastSACPolicyWrapper(actor, obs_normalizer)
+    wrapper.eval()
+    save_path = os.path.splitext(checkpoint_path)[0] + ".pt"
+    dummy_obs = torch.zeros(1, metadata_cfg["env"]["num_observations"], dtype=torch.float32)
+    script_module = torch.jit.trace(wrapper, dummy_obs)
+    script_module.save(save_path)
+    print(f"Saved FastSAC policy to {save_path}")
+    return save_path, metadata_cfg
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", required=True, type=str, help="Name of the task to run.")
@@ -100,21 +150,25 @@ if __name__ == "__main__":
                 # Fallback: all logs if no robot-specific models found
                 cfg["basic"]["checkpoint"] = sorted(glob.glob(os.path.join("logs", "**/*.pth"), recursive=True), key=os.path.getmtime)[-1]
     print("Loading model from {}".format(cfg["basic"]["checkpoint"]))
-    model_dict = torch.load(cfg["basic"]["checkpoint"], map_location="cpu", weights_only=True)
-    checkpoint_cfg = model_dict.get("task_cfg")
-    metadata_cfg = checkpoint_cfg if isinstance(checkpoint_cfg, dict) else cfg
-    model = BaseActorCritic(
-        metadata_cfg["env"]["num_actions"],
-        metadata_cfg["env"]["num_observations"],
-        metadata_cfg["env"]["num_privileged_obs"],
-    )
-    model.load_state_dict(model_dict["model"])
+    model_dict = torch_load_checkpoint(cfg["basic"]["checkpoint"], map_location="cpu")
+    fast_sac_checkpoint = bool(model_dict.get("fast_sac", False) or "actor_state_dict" in model_dict)
+    if fast_sac_checkpoint:
+        save_path, metadata_cfg = export_fast_sac(model_dict, cfg, cfg["basic"]["checkpoint"])
+    else:
+        metadata_cfg = model_dict.get("task_cfg")
+        metadata_cfg = metadata_cfg if isinstance(metadata_cfg, dict) else cfg
+        model = BaseActorCritic(
+            metadata_cfg["env"]["num_actions"],
+            metadata_cfg["env"]["num_observations"],
+            metadata_cfg["env"]["num_privileged_obs"],
+        )
+        model.load_state_dict(model_dict["model"])
 
-    model.eval()
-    script_module = torch.jit.script(model.actor)
-    save_path = os.path.splitext(cfg["basic"]["checkpoint"])[0] + ".pt"
-    script_module.save(save_path)
-    print(f"Saved model to {save_path}")
+        model.eval()
+        script_module = torch.jit.script(model.actor)
+        save_path = os.path.splitext(cfg["basic"]["checkpoint"])[0] + ".pt"
+        script_module.save(save_path)
+        print(f"Saved model to {save_path}")
 
     metadata = metadata_cfg.get("metadata", {}).copy()
     metadata["task"] = args.task
@@ -122,7 +176,10 @@ if __name__ == "__main__":
     metadata["checkpoint_sha1"] = file_sha1(cfg["basic"]["checkpoint"])
     metadata["exported_policy_path"] = save_path
     metadata["exported_policy_sha1"] = file_sha1(save_path)
-    metadata["model_class"] = metadata_cfg.get("basic", {}).get("model", "BaseActorCritic")
+    metadata["model_class"] = "FastSACActor" if fast_sac_checkpoint else metadata_cfg.get("basic", {}).get("model", "BaseActorCritic")
+    metadata["algorithm"] = "fast_sac" if fast_sac_checkpoint else "ppo"
+    if fast_sac_checkpoint:
+        metadata["global_step"] = int(model_dict.get("global_step", 0))
     metadata["num_actions"] = metadata_cfg["env"]["num_actions"]
     metadata["num_observations"] = metadata_cfg["env"]["num_observations"]
     metadata["num_privileged_obs"] = metadata_cfg["env"]["num_privileged_obs"]
