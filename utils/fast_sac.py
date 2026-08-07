@@ -8,6 +8,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+torch.set_float32_matmul_precision("high")
+
 
 class EmpiricalNormalizer(nn.Module):
     """Running mean/std normalizer used by the FastSAC actor and critic."""

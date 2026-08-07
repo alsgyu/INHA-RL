@@ -7,33 +7,33 @@ Holosoma implementation:
 - Project page: https://younggyo.me/fastsac-humanoid/
 - Code: https://github.com/amazon-far/holosoma
 
-The implementation keeps the existing K1 `VelocityCommandWalkK1` reward design
-intact. It changes the learner and training recipe: off-policy replay, a
-distributional double-Q critic, observation normalization, LayerNorm/SiLU actor
-and critic networks, symmetry augmentation, tanh-bounded actions, and an
-action-rate penalty curriculum.
+The implementation uses the existing K1 `VelocityCommandWalkK1` environment and
+asset, while mapping the Holosoma FastSAC locomotion recipe onto it:
+off-policy replay, a distributional double-Q critic, observation normalization,
+LayerNorm/SiLU actor and critic networks, symmetry augmentation, tanh-bounded
+actions, mixed terrain/randomization, a minimal paper-style reward set, and an
+action-rate/tilt penalty curriculum.
 
 ## Train
 
 ```bash
-python train_fastsac_k1.py --task=K1/VelocityCommandWalkFastStableFastSAC
+python train_fastsac_k1.py --task=K1/VelocityCommandWalkFastSAC
 ```
 
 Useful overrides:
 
 ```bash
 python train_fastsac_k1.py \
-  --task=K1/VelocityCommandWalkFastStableFastSAC \
+  --task=K1/VelocityCommandWalkFastSAC \
   --num_envs=2048 \
   --max_iterations=50000
 ```
 
-`K1/VelocityCommandWalkFastStableFastSAC` is the recommended preset when the
-target behavior is stable, fast forward walking. It keeps lateral/yaw commands
-at zero, ramps forward speed up to the 1.2-1.45 m/s band, and uses a mild
-rough-terrain/contact-randomization curriculum. `K1/VelocityCommandWalkFastSAC`
-remains available for broader velocity-command walking with lateral and yaw
-commands.
+`K1/VelocityCommandWalkFastSAC` keeps the Booster K1 environment and asset but
+uses the Holosoma FastSAC recipe as directly as this repository's env API
+allows: 4096 envs, global batch 8192, 8 updates per step, compiled update
+functions, mixed terrain, push-style velocity perturbations, action delay, PD
+gain/mass/friction randomization, and a minimal paper-style reward mapping.
 
 The default config targets one RTX 4090 style setup:
 
@@ -62,21 +62,23 @@ paper baseline.
 FastSAC checkpoints are saved under:
 
 ```text
-logs/K1/K1/VelocityCommandWalkFastStableFastSAC/<timestamp>/nn/
+logs/K1/K1/VelocityCommandWalkFastSAC/<timestamp>/nn/
 ```
 
-Replay snapshots are saved under:
+Replay snapshots are optional and are off by default to avoid IO overhead during
+paper-style fast runs. If `algorithm.fast_sac.save_replay_interval` is enabled,
+snapshots are saved under:
 
 ```text
-logs/K1/K1/VelocityCommandWalkFastStableFastSAC/<timestamp>/replay/
+logs/K1/K1/VelocityCommandWalkFastSAC/<timestamp>/replay/
 ```
 
 To warm start from preserved transitions:
 
 ```bash
 python train_fastsac_k1.py \
-  --task=K1/VelocityCommandWalkFastStableFastSAC \
-  --replay_path=logs/K1/K1/VelocityCommandWalkFastStableFastSAC/<run>/replay/replay_5000.npz
+  --task=K1/VelocityCommandWalkFastSAC \
+  --replay_path=logs/K1/K1/VelocityCommandWalkFastSAC/<run>/replay/replay_5000.npz
 ```
 
 The preload path accepts `.npz` files containing at least:
@@ -96,7 +98,7 @@ The runner can imitate an existing TorchScript policy during early training:
 
 ```bash
 python train_fastsac_k1.py \
-  --task=K1/VelocityCommandWalkFastStableFastSAC \
+  --task=K1/VelocityCommandWalkFastSAC \
   --teacher_policy_path=deploy/models/velocity_command_walk_k1.pt
 ```
 
@@ -108,7 +110,7 @@ The default is `0.0`, so the paper-style FastSAC path is the default.
 After training:
 
 ```bash
-python export_model.py --task=K1/VelocityCommandWalkFastStableFastSAC --checkpoint=-1
+python export_model.py --task=K1/VelocityCommandWalkFastSAC --checkpoint=-1
 ```
 
 For FastSAC checkpoints, `export_model.py` exports a TorchScript wrapper that
@@ -122,7 +124,7 @@ obs -> action
 The config metadata sets:
 
 ```text
-policy_name: velocity_command_walk_k1_fast_stable_fastsac
+policy_name: velocity_command_walk_k1_fastsac
 ```
 
 so export copies the final artifacts into `deploy/models/`.

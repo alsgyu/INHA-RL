@@ -884,12 +884,22 @@ class ParameterWalkK1(BaseTask):
         self._check_termination()
         self._compute_reward()
 
+        capture_final_obs = "fast_sac" in self.cfg.get("algorithm", {})
+        if capture_final_obs:
+            self._compute_observations()
+            final_obs_buf = self.obs_buf.clone()
+            final_privileged_obs_buf = self.privileged_obs_buf.clone()
+
         env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
         self._reset_idx(env_ids)
         self._teleport_robot()
         self._resample_commands()
 
         self._compute_observations()
+        self.extras["time_outs"] = self.time_out_buf
+        if capture_final_obs:
+            self.extras["final_obs"] = final_obs_buf
+            self.extras["final_privileged_obs"] = final_privileged_obs_buf
 
         self.last_actions[:] = self.actions
         self.last_dof_vel[:] = self.dof_vel

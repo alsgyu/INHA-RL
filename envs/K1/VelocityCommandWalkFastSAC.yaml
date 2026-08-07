@@ -8,7 +8,7 @@ basic:
   sim_device: "cuda:0"
   rl_device: "cuda:0"
   max_iterations: 100000
-  description: "K1 velocity walking with Holosoma-style FastSAC, replay preservation, command curriculum, and strong sim-to-real randomization."
+  description: "Booster K1 velocity-command locomotion using the Holosoma FastSAC recipe. Only the robot environment/asset stays K1-specific."
 
 env:
   num_envs: 4096
@@ -17,7 +17,7 @@ runner:
   save_interval: 1000
   progress_interval: 100
   use_wandb: false
-  log_reward_terms: true
+  log_reward_terms: false
 
 algorithm:
   fast_sac:
@@ -26,6 +26,7 @@ algorithm:
     actor_learning_rate: 3.0e-4
     alpha_learning_rate: 3.0e-4
     buffer_size: 1024
+    num_steps: 1
     gamma: 0.97
     tau: 0.125
     batch_size: 8192
@@ -44,7 +45,7 @@ algorithm:
     use_tanh: true
     log_std_max: 0.0
     log_std_min: -5.0
-    compile: false
+    compile: true
     obs_normalization: true
     use_layer_norm: true
     use_privileged_critic: true
@@ -56,103 +57,83 @@ algorithm:
     save_interval: 1000
     logging_interval: 100
     checkpoint_replay: false
-    save_replay_interval: 5000
-    save_final_replay: true
+    load_replay_from_checkpoint: false
+    save_replay_interval: 0
+    save_final_replay: false
     max_replay_export_transitions: 1000000
     teacher_bc_coef: 0.0
     teacher_policy_path: null
     penalty_curriculum:
       enabled: true
-      terms: [action_rate]
+      terms: [ang_vel_xy, orientation, action_rate]
       initial_scale: 0.5
       final_scale: 1.0
       warmup_steps: 30000
 
 commands:
   training_mode: sampled
-  still_proportion: 0.25
-  straight_proportion: 0.65
-  lin_vel_x: [-0.45, 1.10]
-  lin_vel_y: [-0.25, 0.25]
-  ang_vel_yaw: [-1.00, 1.00]
-  resampling_time_s: [3.0, 8.0]
-  training_phases:
-    - start_iteration: 0
-      disturbance_scale: 0.0
-      still_proportion: 0.50
-      straight_proportion: 1.00
-      resampling_time_s: [5.0, 8.0]
-      lin_vel_x: [0.04, 0.14]
-      lin_vel_y: [0.0, 0.0]
-      ang_vel_yaw: [0.0, 0.0]
-      adapter:
-        gait_frequency_max: 1.35
-    - start_iteration: 10000
-      disturbance_scale: 0.10
-      still_proportion: 0.45
-      straight_proportion: 0.98
-      resampling_time_s: [4.0, 8.0]
-      lin_vel_x: [0.04, 0.24]
-      lin_vel_y: [0.0, 0.0]
-      ang_vel_yaw: [0.0, 0.0]
-      adapter:
-        gait_frequency_max: 1.50
-    - start_iteration: 30000
-      disturbance_scale: 0.35
-      still_proportion: 0.40
-      straight_proportion: 0.92
-      resampling_time_s: [3.5, 7.0]
-      lin_vel_x: [0.04, 0.40]
-      lin_vel_y: [-0.04, 0.04]
-      ang_vel_yaw: [-0.16, 0.16]
-      adapter:
-        gait_frequency_max: 1.70
-    - start_iteration: 60000
-      disturbance_scale: 0.70
-      still_proportion: 0.30
-      straight_proportion: 0.80
-      resampling_time_s: [3.0, 6.0]
-      lin_vel_x: [-0.10, 0.75]
-      lin_vel_y: [-0.12, 0.12]
-      ang_vel_yaw: [-0.45, 0.45]
-      adapter:
-        gait_frequency_max: 1.85
-    - start_iteration: 80000
-      disturbance_scale: 1.00
-      still_proportion: 0.25
-      straight_proportion: 0.65
-      resampling_time_s: [3.0, 6.0]
-      lin_vel_x: [-0.45, 1.10]
-      lin_vel_y: [-0.25, 0.25]
-      ang_vel_yaw: [-1.00, 1.00]
-      adapter:
-        gait_frequency_max: 1.95
+  curriculum: false
+  still_proportion: 0.20
+  straight_proportion: 0.0
+  high_speed_proportion: 0.0
+  command_slew_rate: 0.0
+  lin_vel_x: [-1.0, 1.0]
+  lin_vel_y: [-1.0, 1.0]
+  ang_vel_yaw: [-1.0, 1.0]
+  gait_frequency: [1.1, 1.9]
+  foot_yaw_L: [0.0, 0.0]
+  foot_yaw_R: [0.0, 0.0]
+  body_pitch_target: [0.0, 0.0]
+  body_roll_target: [0.0, 0.0]
+  feet_offset_x_target: [0.0, 0.0]
+  feet_offset_y_target: [0.0, 0.0]
+  resampling_time_s: [10.0, 10.0]
+  training_phases: []
+  fixed:
+    lin_vel_x: 0.0
+    lin_vel_y: 0.0
+    ang_vel_yaw: 0.0
+  play:
+    lin_vel_x: 0.4
+    lin_vel_y: 0.0
+    ang_vel_yaw: 0.0
+    fixed_yaw: true
+    no_disturbance: true
 
 terrain:
   type: "trimesh"
-  terrain_proportions: [0.25, 0.15, 0.35, 0.25]
-  slope: 0.08
-  random_height: 0.06
-  discrete_height: 0.015
+  terrain_length: 8.0
+  terrain_width: 8.0
+  border_size: 40.0
+  num_terrains: 20
+  terrain_proportions: [0.20, 0.0, 0.60, 0.20]
+  slope: 0.30
+  random_height: 0.05
+  discrete_height: 0.05
+  horizontal_scale: 0.1
+  vertical_scale: 0.005
+  static_friction: 1.0
+  dynamic_friction: 1.0
+  restitution: 0.0
 
 randomization:
-  kick_interval_s: 4.0
+  kick_interval_s: 7.5
   kick_lin_vel:
-    range: [0.0, 0.25]
+    range: [0.0, 1.0]
     operation: "additive"
     distribution: "gaussian"
   kick_ang_vel:
-    range: [0.0, 0.08]
+    range: [0.0, 0.0]
     operation: "additive"
     distribution: "gaussian"
-  push_interval_s: 3.0
-  push_duration_s: 0.5
+  push_interval_s: 7.5
+  push_duration_s: 0.25
   push_force:
-    range: [0.0, 30.0]
+    range: [0.0, 0.0]
     operation: "additive"
     distribution: "gaussian"
   push_torque:
-    range: [0.0, 4.0]
+    range: [0.0, 0.0]
     operation: "additive"
     distribution: "gaussian"
   dof_delay_steps:
@@ -168,15 +149,15 @@ randomization:
     operation: "scaling"
     distribution: "uniform"
   dof_friction:
-    range: [0.0, 2.0]
+    range: [0.0, 0.0]
     operation: "additive"
     distribution: "uniform"
   dof_torque_strength:
-    range: [0.90, 1.10]
+    range: [1.0, 1.0]
     operation: "scaling"
     distribution: "uniform"
   dof_torque_bias:
-    range: [-0.25, 0.25]
+    range: [0.0, 0.0]
     operation: "additive"
     distribution: "uniform"
   friction:
@@ -188,28 +169,84 @@ randomization:
     operation: "additive"
     distribution: "uniform"
   restitution:
-    range: [0.0, 0.5]
+    range: [0.0, 0.0]
     operation: "additive"
     distribution: "uniform"
   base_com:
-    range: [-0.015, 0.015]
+    range: [0.0, 0.0]
     operation: "additive"
     distribution: "uniform"
   base_mass:
-    range: [0.85, 1.15]
+    range: [0.90, 1.20]
     operation: "scaling"
     distribution: "uniform"
   other_com:
-    range: [-0.005, 0.005]
+    range: [0.0, 0.0]
     operation: "additive"
     distribution: "uniform"
   other_mass:
-    range: [0.95, 1.05]
+    range: [0.90, 1.20]
     operation: "scaling"
     distribution: "uniform"
+
+rewards:
+  scales:
+    survival: 0.0
+    tracking_lin_vel_x: 2.0
+    tracking_lin_vel_y: 2.0
+    tracking_ang_vel: 1.5
+    lin_vel_x_error: 0.0
+    lin_vel_y_error: 0.0
+    ang_vel_yaw_error: 0.0
+    heading_tracking: 0.0
+    path_lateral: 0.0
+    straight_path_lateral: 0.0
+    straight_heading: 0.0
+    straight_lateral_vel: 0.0
+    straight_yaw_vel: 0.0
+    base_height: 0.0
+    foot_yaw_L: 0.0
+    foot_yaw_R: 0.0
+    orientation: -10.0
+    torques: 0.0
+    torque_tiredness: 0.0
+    power: 0.0
+    lin_vel_z: 0.0
+    ang_vel_xy: -1.0
+    dof_vel: 0.0
+    dof_acc: 0.0
+    root_acc: 0.0
+    action_rate: -2.0
+    dof_pos_limits: 0.0
+    dof_vel_limits: 0.0
+    torque_limits: 0.0
+    collision: 0.0
+    feet_slip: 0.0
+    feet_vel_z: 0.0
+    stance_feet_xy_vel: 0.0
+    fast_stance_feet_xy_vel: 0.0
+    stance_feet_yaw: 0.0
+    stance_feet_roll: 0.0
+    feet_yaw_diff: 0.0
+    feet_yaw_mean: 0.0
+    feet_roll: 0.0
+    feet_pitch: 0.0
+    feet_offset_x: 0.0
+    feet_offset_y: 0.0
+    feet_swing: 5.0
+    swing_clearance: 0.0
+    scuff_clearance: 0.0
+    command_stand_still: 0.0
+    command_stand_action: 0.0
+    command_stand_default_pose: 0.0
+    command_stand_feet_slip: 0.0
+  only_positive_rewards: false
+  tracking_sigma: 0.25
+  swing_period: 0.22
 
 metadata:
   policy_name: "velocity_command_walk_k1_fastsac"
   algorithm: "fast_sac"
   source_repo: "https://github.com/amazon-far/holosoma"
+  source_experiment: "t1_29dof_fast_sac"
   paper: "Learning Sim-to-Real Humanoid Locomotion in 15 Minutes"

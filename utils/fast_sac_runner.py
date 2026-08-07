@@ -157,7 +157,7 @@ class FastSACK1Runner:
             "use_tanh": True,
             "log_std_max": 0.0,
             "log_std_min": -5.0,
-            "compile": False,
+            "compile": True,
             "obs_normalization": True,
             "use_layer_norm": True,
             "use_privileged_critic": True,
@@ -168,8 +168,9 @@ class FastSACK1Runner:
             "weight_decay": 0.001,
             "save_interval": self.cfg.get("runner", {}).get("save_interval", 1000),
             "logging_interval": self.cfg.get("runner", {}).get("progress_interval", 100),
+            "num_steps": 1,
             "save_replay_interval": 0,
-            "save_final_replay": True,
+            "save_final_replay": False,
             "max_replay_export_transitions": 1000000,
             "teacher_bc_coef": 0.0,
             "teacher_bc_start_step": 0,
@@ -290,6 +291,50 @@ class FastSACK1Runner:
         if not bool(self.sac_cfg.get("obs_normalization", True)):
             return obs
         return self.critic_obs_normalizer(obs, update=update)
+
+    def _policy(self, obs, dones=None):
+        return self.actor.explore(obs, deterministic=False)
+
+    @staticmethod
+    def _identity_normalize(obs, update=True):
+        return obs
+
+    def _compiled_runtime(self):
+        policy = self._policy
+        update_critic_and_alpha = self._update_critic_and_alpha
+        update_actor = self._update_actor
+        if bool(self.sac_cfg.get("obs_normalization", True)):
+            normalize_obs = self.obs_normalizer.forward
+            normalize_critic_obs = self.critic_obs_normalizer.forward
+        else:
+            normalize_obs = self._identity_normalize
+            normalize_critic_obs = self._identity_normalize
+        if not bool(self.sac_cfg.get("compile", True)):
+            return policy, normalize_obs, normalize_critic_obs, update_critic_and_alpha, update_actor
+        if not hasattr(torch, "compile"):
+            print("[fastsac] torch.compile unavailable; running without compilation.")
+            return policy, normalize_obs, normalize_critic_obs, update_critic_and_alpha, update_actor
+        try:
+            return (
+                torch.compile(policy),
+                torch.compile(normalize_obs),
+                torch.compile(normalize_critic_obs),
+                torch.compile(update_critic_and_alpha),
+                torch.compile(update_actor),
+            )
+        except Exception as exc:
+            print(f"[fastsac] torch.compile setup failed; running uncompiled: {exc}")
+            return policy, normalize_obs, normalize_critic_obs, update_critic_and_alpha, update_actor
+
+    def _warn_if_not_fast_path(self):
+        sim_device = str(self.cfg["basic"].get("sim_device", ""))
+        rl_device = str(self.cfg["basic"].get("rl_device", self.device))
+        if not sim_device.startswith("cuda") or not rl_device.startswith("cuda") or not torch.cuda.is_available():
+            print(
+                "[fastsac] WARNING: the 15-minute paper result assumes GPU physics and GPU learning "
+                "on a single RTX 4090-class device. Current devices: "
+                f"sim_device={sim_device}, rl_device={rl_device}, cuda_available={torch.cuda.is_available()}."
+            )
 
     def _load_teacher_policy(self):
         path = self.sac_cfg.get("teacher_policy_path")
@@ -514,7 +559,11 @@ class FastSACK1Runner:
             "raw_observations": torch.cat((batch["observations"], self._mirror_obs(batch["observations"])), dim=0),
         }
 
-    def _prepare_update_batches(self):
+    def _prepare_update_batches(self, normalize_obs=None, normalize_critic_obs=None):
+        if normalize_obs is None:
+            normalize_obs = self._normalize_obs
+        if normalize_critic_obs is None:
+            normalize_critic_obs = self._normalize_critic_obs
         batch_size = int(self.sac_cfg.get("batch_size", 8192))
         num_updates = int(self.sac_cfg.get("num_updates", 8))
         per_env_batch = max(batch_size // self.env.num_envs, 1)
@@ -523,10 +572,10 @@ class FastSACK1Runner:
             large_batch["raw_observations"] = large_batch["observations"]
         large_batch = self._augment_batch(large_batch)
         raw_obs = large_batch["raw_observations"]
-        large_batch["observations"] = self._normalize_obs(large_batch["observations"], update=True)
-        large_batch["next_observations"] = self._normalize_obs(large_batch["next_observations"], update=True)
-        large_batch["critic_observations"] = self._normalize_critic_obs(large_batch["critic_observations"], update=True)
-        large_batch["next_critic_observations"] = self._normalize_critic_obs(
+        large_batch["observations"] = normalize_obs(large_batch["observations"], update=True)
+        large_batch["next_observations"] = normalize_obs(large_batch["next_observations"], update=True)
+        large_batch["critic_observations"] = normalize_critic_obs(large_batch["critic_observations"], update=True)
+        large_batch["next_critic_observations"] = normalize_critic_obs(
             large_batch["next_critic_observations"],
             update=True,
         )
@@ -694,6 +743,8 @@ class FastSACK1Runner:
 
     def train(self):
         recorder = Recorder(self.cfg)
+        self._warn_if_not_fast_path()
+        policy, normalize_obs, normalize_critic_obs, update_critic_and_alpha, update_actor = self._compiled_runtime()
         obs, infos = self.env.reset()
         obs = obs.to(self.device)
         privileged_obs = infos["privileged_obs"].to(self.device)
@@ -711,6 +762,7 @@ class FastSACK1Runner:
             f"batch={self.sac_cfg.get('batch_size', 8192)} updates={self.sac_cfg.get('num_updates', 8)}"
         )
 
+        dones_for_policy = None
         while self.global_step < max_iterations:
             if hasattr(self.env, "update_training_curriculum"):
                 self.env.update_training_curriculum(self.global_step)
@@ -718,14 +770,16 @@ class FastSACK1Runner:
 
             critic_obs = self._critic_obs(obs, privileged_obs)
             with torch.no_grad(), self._maybe_amp():
-                norm_obs = self._normalize_obs(obs, update=False)
-                action = self.actor.explore(norm_obs, deterministic=False)
+                norm_obs = normalize_obs(obs, update=False)
+                action = policy(norm_obs, dones_for_policy)
             next_obs, reward, done, infos = self.env.step(action.float())
             next_obs = next_obs.to(self.device)
             reward = reward.to(self.device)
             done = done.to(self.device)
             next_privileged_obs = infos["privileged_obs"].to(self.device)
-            next_critic_obs = self._critic_obs(next_obs, next_privileged_obs)
+            final_obs = infos.get("final_obs", next_obs).to(self.device)
+            final_privileged_obs = infos.get("final_privileged_obs", next_privileged_obs).to(self.device)
+            final_critic_obs = self._critic_obs(final_obs, final_privileged_obs)
             time_outs = infos["time_outs"].to(self.device)
             truncations = time_outs
             self.replay.extend(
@@ -734,9 +788,9 @@ class FastSACK1Runner:
                 reward,
                 done,
                 truncations,
-                next_obs,
+                final_obs,
                 critic_obs,
-                next_critic_obs,
+                final_critic_obs,
             )
 
             ep_info = {"reward": reward}
@@ -746,20 +800,21 @@ class FastSACK1Runner:
 
             obs = next_obs
             privileged_obs = next_privileged_obs
+            dones_for_policy = done
             self.global_step += 1
 
-            if len(self.replay) > learning_starts:
+            if self.global_step > learning_starts:
                 update_start = time.time()
-                prepared_batches = self._prepare_update_batches()
+                prepared_batches = self._prepare_update_batches(normalize_obs, normalize_critic_obs)
                 for update_idx, batch in enumerate(prepared_batches):
-                    critic_metrics = self._update_critic_and_alpha(batch)
+                    critic_metrics = update_critic_and_alpha(batch)
                     self._metric_add({f"sac/{key}": value for key, value in critic_metrics.items()})
                     should_update_actor = (
                         (len(prepared_batches) > 1 and update_idx % policy_frequency == 1)
                         or (len(prepared_batches) == 1 and self.global_step % policy_frequency == 0)
                     )
                     if should_update_actor:
-                        actor_metrics = self._update_actor(batch)
+                        actor_metrics = update_actor(batch)
                         self._metric_add({f"sac/{key}": value for key, value in actor_metrics.items()})
                     self._soft_update_targets()
                 update_time = max(time.time() - update_start, 1.0e-9)
