@@ -2,6 +2,7 @@
 
 from holosoma.config_types.curriculum import CurriculumManagerCfg
 from holosoma.config_values.loco.g1.curriculum import g1_29dof_curriculum, g1_29dof_curriculum_fast_sac
+from holosoma.config_values.loco.k1.curriculum import k1_12dof_curriculum, k1_12dof_curriculum_fast_sac
 from holosoma.config_values.loco.t1.curriculum import t1_29dof_curriculum, t1_29dof_curriculum_fast_sac
 from holosoma.config_values.wbt.g1.curriculum import g1_29dof_wbt_curriculum
 from holosoma.utils.config_registry import ConfigRegistry
@@ -11,8 +12,10 @@ CURRICULUM_REGISTRY = ConfigRegistry(CurriculumManagerCfg, group="holosoma.confi
 none = CURRICULUM_REGISTRY.add("none", None)
 CURRICULUM_REGISTRY.add("t1_29dof", t1_29dof_curriculum)
 CURRICULUM_REGISTRY.add("g1_29dof", g1_29dof_curriculum)
+CURRICULUM_REGISTRY.add("k1_12dof", k1_12dof_curriculum)
 CURRICULUM_REGISTRY.add("t1_29dof_fast_sac", t1_29dof_curriculum_fast_sac)
 CURRICULUM_REGISTRY.add("g1_29dof_fast_sac", g1_29dof_curriculum_fast_sac)
+CURRICULUM_REGISTRY.add("k1_12dof_fast_sac", k1_12dof_curriculum_fast_sac)
 CURRICULUM_REGISTRY.add("g1_29dof_wbt_curriculum", g1_29dof_wbt_curriculum)
 
 from holosoma.utils.config_registry import (  # noqa: E402
