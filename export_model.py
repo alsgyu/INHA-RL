@@ -69,7 +69,6 @@ if __name__ == "__main__":
     if args.checkpoint is not None:
         cfg["basic"]["checkpoint"] = args.checkpoint
 
-    model = BaseActorCritic(cfg["env"]["num_actions"], cfg["env"]["num_observations"], cfg["env"]["num_privileged_obs"])
     if not cfg["basic"]["checkpoint"] or (cfg["basic"]["checkpoint"] == "-1") or (cfg["basic"]["checkpoint"] == -1):
         # Look for models in hierarchical structure: logs/robot_type/task_name/**/*.pth
         task_name = cfg["basic"].get("log_task", args.task)
@@ -102,6 +101,13 @@ if __name__ == "__main__":
                 cfg["basic"]["checkpoint"] = sorted(glob.glob(os.path.join("logs", "**/*.pth"), recursive=True), key=os.path.getmtime)[-1]
     print("Loading model from {}".format(cfg["basic"]["checkpoint"]))
     model_dict = torch.load(cfg["basic"]["checkpoint"], map_location="cpu", weights_only=True)
+    checkpoint_cfg = model_dict.get("task_cfg")
+    metadata_cfg = checkpoint_cfg if isinstance(checkpoint_cfg, dict) else cfg
+    model = BaseActorCritic(
+        metadata_cfg["env"]["num_actions"],
+        metadata_cfg["env"]["num_observations"],
+        metadata_cfg["env"]["num_privileged_obs"],
+    )
     model.load_state_dict(model_dict["model"])
 
     model.eval()
@@ -110,21 +116,21 @@ if __name__ == "__main__":
     script_module.save(save_path)
     print(f"Saved model to {save_path}")
 
-    metadata = cfg.get("metadata", {}).copy()
+    metadata = metadata_cfg.get("metadata", {}).copy()
     metadata["task"] = args.task
     metadata["checkpoint_path"] = cfg["basic"]["checkpoint"]
     metadata["checkpoint_sha1"] = file_sha1(cfg["basic"]["checkpoint"])
     metadata["exported_policy_path"] = save_path
     metadata["exported_policy_sha1"] = file_sha1(save_path)
-    metadata["model_class"] = cfg.get("basic", {}).get("model", "BaseActorCritic")
-    metadata["num_actions"] = cfg["env"]["num_actions"]
-    metadata["num_observations"] = cfg["env"]["num_observations"]
-    metadata["num_privileged_obs"] = cfg["env"]["num_privileged_obs"]
-    metadata["normalization"] = cfg.get("normalization", {})
-    metadata["control"] = cfg.get("control", {})
-    metadata["init_state"] = cfg.get("init_state", {})
-    if "commands" in cfg:
-        metadata["commands"] = cfg["commands"]
+    metadata["model_class"] = metadata_cfg.get("basic", {}).get("model", "BaseActorCritic")
+    metadata["num_actions"] = metadata_cfg["env"]["num_actions"]
+    metadata["num_observations"] = metadata_cfg["env"]["num_observations"]
+    metadata["num_privileged_obs"] = metadata_cfg["env"]["num_privileged_obs"]
+    metadata["normalization"] = metadata_cfg.get("normalization", {})
+    metadata["control"] = metadata_cfg.get("control", {})
+    metadata["init_state"] = metadata_cfg.get("init_state", {})
+    if "commands" in metadata_cfg:
+        metadata["commands"] = metadata_cfg["commands"]
     metadata_path = os.path.splitext(save_path)[0] + ".metadata.json"
     with open(metadata_path, "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)

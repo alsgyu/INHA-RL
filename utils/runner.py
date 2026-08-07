@@ -1,5 +1,6 @@
 import os
 import glob
+import copy
 import yaml
 import argparse
 import numpy as np
@@ -1179,6 +1180,7 @@ class Runner:
         state = {
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
+            "task_cfg": copy.deepcopy(self.cfg),
             "curriculum": self.env.curriculum_prob,
             "ball_curriculum_level": getattr(self.env, 'ball_curriculum_global_level', 0),
         }

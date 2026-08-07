@@ -550,6 +550,45 @@ def sync_real_like_walk_deploy_profile(cfg, deploy_cfg_path):
     return True
 
 
+def sync_legacy_walk_replay_profile(cfg):
+    walk_cfg = cfg["walk_policy"]
+    cfg["common"]["stiffness"] = apply_task_joint_map_to_vector(
+        cfg["common"]["stiffness"],
+        {"Hip": 100.0, "Knee": 100.0, "Ankle": 50.0},
+    )
+    cfg["common"]["damping"] = apply_task_joint_map_to_vector(
+        cfg["common"]["damping"],
+        {"Hip": 2.0, "Knee": 2.0, "Ankle": 1.0},
+    )
+    walk_cfg["command_slew_rate"] = 2.0
+    walk_cfg.pop("deploy_default_qpos_source", None)
+    walk_cfg.pop("deploy_target_default_blend", None)
+    walk_control = walk_cfg.setdefault("control", {})
+    for key in (
+        "action_clip_by_index",
+        "action_scale_by_index",
+        "action_lower_by_index",
+        "action_upper_by_index",
+        "action_rate_limit",
+        "action_rate_limit_by_index",
+    ):
+        walk_control.pop(key, None)
+    walk_cfg.setdefault("normalization", {})["clip_actions"] = 1.0
+
+
+def task_config_path(task):
+    return os.path.join("envs", f"{task}.yaml")
+
+
+def checkpoint_older_than_task_config(checkpoint_path, task):
+    if not checkpoint_path or not os.path.exists(checkpoint_path):
+        return False
+    cfg_path = task_config_path(task)
+    if not os.path.exists(cfg_path):
+        return False
+    return os.path.getmtime(checkpoint_path) < os.path.getmtime(cfg_path)
+
+
 def robot_type(task_name):
     return task_name.split("/", 1)[0] if "/" in task_name else "Unknown"
 
@@ -577,18 +616,20 @@ def resolve_checkpoint(task, checkpoint):
 def load_checkpoint_actor(task, checkpoint, action_clip_override=None):
     checkpoint_path = resolve_checkpoint(task, checkpoint)
     if checkpoint_path is None:
-        return None, None, None
+        return None, None, None, None
 
-    task_cfg = load_task_config(os.path.join("envs", f"{task}.yaml"))
-    model = BaseActorCritic(
-        task_cfg["env"]["num_actions"],
-        task_cfg["env"]["num_observations"],
-        task_cfg["env"]["num_privileged_obs"],
-    )
+    task_cfg = load_task_config(task_config_path(task))
     try:
         model_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     except TypeError:
         model_dict = torch.load(checkpoint_path, map_location="cpu")
+    checkpoint_cfg = model_dict.get("task_cfg")
+    model_cfg = checkpoint_cfg if isinstance(checkpoint_cfg, dict) else task_cfg
+    model = BaseActorCritic(
+        model_cfg["env"]["num_actions"],
+        model_cfg["env"]["num_observations"],
+        model_cfg["env"]["num_privileged_obs"],
+    )
     model.load_state_dict(model_dict["model"], strict=False)
     model.actor.eval()
     action_clip = action_clip_override
@@ -596,11 +637,11 @@ def load_checkpoint_actor(task, checkpoint, action_clip_override=None):
     if action_clip is None and learner.startswith("sirl_worldmodel"):
         action_clip = model_dict.get("deploy_action_clip")
         if action_clip is None:
-            wm_cfg = task_cfg.get("algorithm", {}).get("sirl_worldmodel", {})
+            wm_cfg = model_cfg.get("algorithm", {}).get("sirl_worldmodel", {})
             action_clip = wm_cfg.get("deploy_action_clip", wm_cfg.get("collect_action_clip", wm_cfg.get("action_clip")))
     actor = ClampedActor(model.actor, action_clip) if action_clip is not None else model.actor
     actor.eval()
-    return actor, checkpoint_path, action_clip
+    return actor, checkpoint_path, action_clip, checkpoint_cfg if isinstance(checkpoint_cfg, dict) else None
 
 
 def quat_to_euler(q):
@@ -870,7 +911,7 @@ def main():
     parser.add_argument("--command_slew_rate", type=float, default=None)
     parser.add_argument("--walk_action_clip", type=float, default=None)
     parser.add_argument("--walk_action_scale", type=float, default=None)
-    parser.add_argument("--deploy_profile", choices=["real_like", "task_exact"], default="real_like")
+    parser.add_argument("--deploy_profile", choices=["auto", "legacy_replay", "task_exact", "real_like"], default="auto")
     parser.add_argument("--walk_deploy_config", default="deploy/configs/Velocity_Command_Walk_K1.yaml")
     parser.add_argument("--kp_scale", type=float, default=1.0)
     parser.add_argument("--kd_scale", type=float, default=1.0)
@@ -921,24 +962,36 @@ def main():
     enable_getup = (not args.walk_only) and (args.enable_getup or args.start_fallen or args.force_fall_after_s >= 0.0)
     checkpoint_actor = None
     checkpoint_action_clip = None
+    checkpoint_cfg = None
+    checkpoint_path = None
     requested_task = args.task
     checkpoint_task = infer_task_from_checkpoint(args.checkpoint) or requested_task
     synced_task = None
+    resolved_deploy_profile = args.deploy_profile
     policy_source = args.walk_policy or cfg["walk_policy"]["policy_path"]
     checkpoint_warning = None
     if args.walk_policy:
         cfg["walk_policy"]["policy_path"] = args.walk_policy
     else:
-        checkpoint_actor, checkpoint_path, checkpoint_action_clip = load_checkpoint_actor(
+        checkpoint_actor, checkpoint_path, checkpoint_action_clip, checkpoint_cfg = load_checkpoint_actor(
             checkpoint_task,
             args.checkpoint,
             action_clip_override=args.checkpoint_action_clip,
         )
         if checkpoint_actor is not None:
             policy_source = checkpoint_path
-            task_cfg = load_task_config(os.path.join("envs", f"{checkpoint_task}.yaml"))
+            task_cfg = checkpoint_cfg if checkpoint_cfg is not None else load_task_config(task_config_path(checkpoint_task))
             sync_walk_policy_from_task_config(cfg, task_cfg)
-            if args.deploy_profile == "real_like":
+            if args.deploy_profile == "auto":
+                if checkpoint_cfg is not None:
+                    resolved_deploy_profile = "task_exact"
+                elif checkpoint_older_than_task_config(checkpoint_path, checkpoint_task):
+                    resolved_deploy_profile = "legacy_replay"
+                else:
+                    resolved_deploy_profile = "task_exact"
+            if resolved_deploy_profile == "legacy_replay":
+                sync_legacy_walk_replay_profile(cfg)
+            elif resolved_deploy_profile == "real_like":
                 sync_real_like_walk_deploy_profile(cfg, args.walk_deploy_config)
             apply_default_pose_overrides(cfg, args)
             apply_walk_cli_overrides(cfg, args)
@@ -1034,7 +1087,7 @@ def main():
         print(f"[mujoco] inferred checkpoint task={checkpoint_task} from requested task={requested_task}")
     if synced_task is not None:
         print(f"[mujoco] synced walk config from task={synced_task}")
-    print(f"[mujoco] deploy_profile={args.deploy_profile} walk_deploy_config={args.walk_deploy_config}")
+    print(f"[mujoco] deploy_profile={args.deploy_profile}->{resolved_deploy_profile} walk_deploy_config={args.walk_deploy_config}")
     print(f"[mujoco] walk policy source={policy.walk_policy_path}")
     if checkpoint_actor is not None and checkpoint_action_clip is not None:
         print(f"[mujoco] checkpoint action clip={float(checkpoint_action_clip):.3f}")
