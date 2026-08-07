@@ -206,6 +206,13 @@ class Controller:
         except Exception:
             return 0.0
 
+    @staticmethod
+    def _parse_float_vector(text, expected_len, arg_name):
+        parts = str(text).replace(",", " ").split()
+        if len(parts) != expected_len:
+            raise ValueError(f"{arg_name} must contain {expected_len} values, got {len(parts)}")
+        return [float(part) for part in parts]
+
     def _resolve_policy_path(self, policy_path):
         if not policy_path:
             return policy_path
@@ -384,6 +391,30 @@ class Controller:
         if rl_publish_mode is not None:
             self.cfg["policy"]["rl_publish_mode"] = str(rl_publish_mode)
 
+        target_offset = self.cfg["policy"].setdefault(
+            "deploy_target_offset_by_action_index",
+            [0.0] * int(self.cfg["policy"]["num_actions"]),
+        )
+        target_offset_by_action = getattr(args, "target_offset_by_action", None)
+        if target_offset_by_action is not None:
+            target_offset[:] = self._parse_float_vector(
+                target_offset_by_action,
+                int(self.cfg["policy"]["num_actions"]),
+                "--target_offset_by_action",
+            )
+            reload_policy = True
+        target_offset_overrides = {
+            "target_left_hip_yaw_offset": 2,
+            "target_left_ankle_roll_offset": 5,
+            "target_right_hip_yaw_offset": 8,
+            "target_right_ankle_roll_offset": 11,
+        }
+        for arg_name, index in target_offset_overrides.items():
+            value = getattr(args, arg_name, None)
+            if value is not None:
+                target_offset[int(index)] = float(value)
+                reload_policy = True
+
         motion_ramp = getattr(args, "motion_start_action_ramp_s", None)
         if motion_ramp is not None:
             self.cfg["policy"]["motion_start_action_ramp_s"] = float(motion_ramp)
@@ -553,6 +584,7 @@ class Controller:
         if isinstance(phase_bias, dict):
             left_bias = phase_bias.get("left_swing_bias_by_index", [])
             right_bias = phase_bias.get("right_swing_bias_by_index", [])
+            target_offset = self.cfg["policy"].get("deploy_target_offset_by_action_index", [])
             print(
                 "[deploy-startup] "
                 f"stride_balance={phase_bias.get('enabled', False)} "
@@ -561,7 +593,11 @@ class Controller:
                 f"L(h={self._bias_value(left_bias, 0):+.3f},k={self._bias_value(left_bias, 3):+.3f},"
                 f"a={self._bias_value(left_bias, 4):+.3f}) "
                 f"R(h={self._bias_value(right_bias, 6):+.3f},k={self._bias_value(right_bias, 9):+.3f},"
-                f"a={self._bias_value(right_bias, 10):+.3f})"
+                f"a={self._bias_value(right_bias, 10):+.3f}) "
+                f"target_offset(Lhy={self._bias_value(target_offset, 2):+.3f},"
+                f"LaR={self._bias_value(target_offset, 5):+.3f},"
+                f"Rhy={self._bias_value(target_offset, 8):+.3f},"
+                f"RaR={self._bias_value(target_offset, 11):+.3f})"
             )
         print(
             "[deploy-startup] "
@@ -947,6 +983,12 @@ class Controller:
         )
         action_sample = [float(x) for x in self.policy.actions]
         command_block = [float(x) for x in getattr(self.policy, "command_block", [])]
+        target_offset = getattr(self.policy, "target_offset_by_action_index", np.zeros_like(self.policy.actions))
+        action_joint_names = getattr(self.policy, "policy_joint_names", [f"act_{i}" for i in range(len(action_dof_indexes))])
+        action_error = leg_target - leg_actual
+        worst_index = int(np.argmax(np.abs(action_error))) if action_error.size else 0
+        worst_joint = action_joint_names[worst_index] if worst_index < len(action_joint_names) else f"act_{worst_index}"
+        worst_error = float(action_error[worst_index]) if action_error.size else 0.0
         print(
             "[deploy-debug] "
             f"cmd=({self.remoteControlService.get_vx_cmd():+.2f},"
@@ -985,6 +1027,8 @@ class Controller:
             f"lat_act_max={lateral_action_abs_max:.3f} "
             f"raw_lat_act_max={raw_lateral_action_abs_max:.3f} "
             f"stride_bias_max={float(np.max(np.abs(getattr(self.policy, 'phase_action_bias', np.zeros_like(self.policy.actions))))):.3f} "
+            f"target_offset_max={float(np.max(np.abs(target_offset))):.3f} "
+            f"worst_joint={worst_joint}:{worst_error:+.3f} "
             f"act={[round(x, 3) for x in action_sample]} "
             f"kp={[round(x, 1) for x in kp]} "
             f"kd={[round(x, 1) for x in kd]} "
@@ -1351,6 +1395,16 @@ if __name__ == "__main__":
     parser.add_argument("--cmd_max_vx", type=float, default=None, help="Override stdin/keyboard vx command limit.")
     parser.add_argument("--cmd_max_vy", type=float, default=None, help="Override stdin/keyboard vy command limit.")
     parser.add_argument("--cmd_max_vyaw", type=float, default=None, help="Override stdin/keyboard vyaw command limit.")
+    parser.add_argument(
+        "--target_offset_by_action",
+        type=str,
+        default=None,
+        help="Comma/space separated 12-value target offset vector in policy action order.",
+    )
+    parser.add_argument("--target_left_hip_yaw_offset", type=float, default=None)
+    parser.add_argument("--target_left_ankle_roll_offset", type=float, default=None)
+    parser.add_argument("--target_right_hip_yaw_offset", type=float, default=None)
+    parser.add_argument("--target_right_ankle_roll_offset", type=float, default=None)
     parser.add_argument(
         "--record_real_npz",
         nargs="?",

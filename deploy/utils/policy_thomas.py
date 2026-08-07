@@ -62,6 +62,10 @@ class Policy:
         self.heading_correction_yaw = 0.0
         self.heading_error_yaw = 0.0
         self.dof_targets = np.copy(self.target_default_dof_pos)
+        self.target_offset_by_action_index = np.asarray(
+            self.cfg["policy"].get("deploy_target_offset_by_action_index", [0.0] * self.cfg["policy"]["num_actions"]),
+            dtype=np.float32,
+        )
         self.obs = np.zeros(self.cfg["policy"]["num_observations"], dtype=np.float32)
         self.raw_actions = np.zeros(self.cfg["policy"]["num_actions"], dtype=np.float32)
         self.actions = np.zeros(self.cfg["policy"]["num_actions"], dtype=np.float32)
@@ -75,6 +79,7 @@ class Policy:
         self._validate_action_vector("deploy_action_rate_limit_by_index")
         self._validate_action_vector("deploy_action_lower_by_index")
         self._validate_action_vector("deploy_action_upper_by_index")
+        self._validate_action_vector("deploy_target_offset_by_action_index")
         phase_bias_cfg = self.cfg["policy"].get("deploy_phase_action_bias", {})
         if isinstance(phase_bias_cfg, dict):
             self._validate_phase_action_vector(phase_bias_cfg, "left_swing_bias_by_index")
@@ -534,5 +539,6 @@ class Policy:
             self.actions[:] += np.clip(desired_actions - self.actions, -max_delta, max_delta)
         self.dof_targets[:] = self.target_default_dof_pos
         self.dof_targets[self.action_dof_indexes] += self.cfg["policy"]["control"]["action_scale"] * self.actions
+        self.dof_targets[self.action_dof_indexes] += self.target_offset_by_action_index
 
         return self.dof_targets
