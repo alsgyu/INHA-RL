@@ -121,6 +121,8 @@ if __name__ == "__main__":
     metadata["num_observations"] = cfg["env"]["num_observations"]
     metadata["num_privileged_obs"] = cfg["env"]["num_privileged_obs"]
     metadata["normalization"] = cfg.get("normalization", {})
+    metadata["control"] = cfg.get("control", {})
+    metadata["init_state"] = cfg.get("init_state", {})
     if "commands" in cfg:
         metadata["commands"] = cfg["commands"]
     metadata_path = os.path.splitext(save_path)[0] + ".metadata.json"

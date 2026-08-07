@@ -485,6 +485,71 @@ def sync_walk_policy_from_task_config(cfg, task_cfg):
             walk_cfg["stand_command_threshold"] = adapter["stand_command_threshold"]
 
 
+def sync_real_like_walk_deploy_profile(cfg, deploy_cfg_path):
+    if not deploy_cfg_path:
+        return False
+    if not os.path.exists(deploy_cfg_path):
+        print(f"[mujoco] warning: deploy profile config not found: {deploy_cfg_path}")
+        return False
+
+    with open(deploy_cfg_path, "r", encoding="utf-8") as f:
+        deploy_cfg = yaml.load(f.read(), Loader=yaml.FullLoader)
+
+    deploy_common = deploy_cfg.get("common", {})
+    for key in ("stiffness", "damping", "torque_limit", "default_qpos"):
+        if key in deploy_common:
+            cfg["common"][key] = list(deploy_common[key])
+    if "default_base_height" in deploy_common:
+        cfg["common"]["default_base_height"] = float(deploy_common["default_base_height"])
+    deploy_prepare = deploy_cfg.get("prepare", {})
+    if deploy_prepare:
+        prepare_cfg = cfg.setdefault("prepare", {})
+        for key in ("stiffness", "damping", "default_qpos"):
+            if key in deploy_prepare:
+                prepare_cfg[key] = list(deploy_prepare[key])
+
+    deploy_policy = deploy_cfg.get("policy", {})
+    walk_cfg = cfg["walk_policy"]
+    walk_control = walk_cfg.setdefault("control", {})
+    if "default_qpos" in deploy_common:
+        walk_cfg["default_qpos"] = list(deploy_common["default_qpos"])
+    if "normalization" in deploy_policy:
+        walk_cfg.setdefault("normalization", {}).update(deploy_policy["normalization"])
+    if "control" in deploy_policy:
+        for key in ("action_scale", "decimation"):
+            if key in deploy_policy["control"]:
+                walk_control[key] = deploy_policy["control"][key]
+    for key in ("deploy_default_qpos_source", "deploy_target_default_blend"):
+        if key in deploy_policy:
+            walk_cfg[key] = deploy_policy[key]
+    for src, dst in (
+        ("deploy_action_clip_by_index", "action_clip_by_index"),
+        ("deploy_action_scale_by_index", "action_scale_by_index"),
+        ("deploy_action_lower_by_index", "action_lower_by_index"),
+        ("deploy_action_upper_by_index", "action_upper_by_index"),
+        ("deploy_action_rate_limit_by_index", "action_rate_limit_by_index"),
+        ("deploy_action_rate_limit", "action_rate_limit"),
+    ):
+        if src in deploy_policy:
+            walk_control[dst] = deploy_policy[src]
+    if "deploy_action_clip" in deploy_policy:
+        walk_cfg["normalization"]["clip_actions"] = float(deploy_policy["deploy_action_clip"])
+    for key in ("command_slew_rate", "command_change_threshold", "stand_action_decay"):
+        if key in deploy_policy:
+            walk_cfg[key] = deploy_policy[key]
+    adapter = deploy_policy.get("command_adapter")
+    if isinstance(adapter, dict):
+        walk_adapter = walk_cfg.setdefault("velocity_command_adapter", {})
+        walk_adapter.update(adapter)
+        walk_adapter["enabled"] = True
+    adapter_override = deploy_policy.get("deploy_command_adapter_override")
+    if isinstance(adapter_override, dict):
+        walk_adapter = walk_cfg.setdefault("velocity_command_adapter", {})
+        walk_adapter.update(adapter_override)
+        walk_adapter["enabled"] = True
+    return True
+
+
 def robot_type(task_name):
     return task_name.split("/", 1)[0] if "/" in task_name else "Unknown"
 
@@ -708,7 +773,9 @@ def apply_default_pose_overrides(cfg, args):
     if not any(value is not None for value in pitch_overrides.values()):
         return
 
-    for section_name in ("common", "walk_policy"):
+    for section_name in ("common", "walk_policy", "prepare"):
+        if "default_qpos" not in cfg.get(section_name, {}):
+            continue
         qpos = cfg[section_name]["default_qpos"]
         for leg_offset, value in pitch_overrides.items():
             if value is not None:
@@ -803,6 +870,8 @@ def main():
     parser.add_argument("--command_slew_rate", type=float, default=None)
     parser.add_argument("--walk_action_clip", type=float, default=None)
     parser.add_argument("--walk_action_scale", type=float, default=None)
+    parser.add_argument("--deploy_profile", choices=["real_like", "task_exact"], default="real_like")
+    parser.add_argument("--walk_deploy_config", default="deploy/configs/Velocity_Command_Walk_K1.yaml")
     parser.add_argument("--kp_scale", type=float, default=1.0)
     parser.add_argument("--kd_scale", type=float, default=1.0)
     parser.add_argument("--torque_scale", type=float, default=1.0)
@@ -869,6 +938,8 @@ def main():
             policy_source = checkpoint_path
             task_cfg = load_task_config(os.path.join("envs", f"{checkpoint_task}.yaml"))
             sync_walk_policy_from_task_config(cfg, task_cfg)
+            if args.deploy_profile == "real_like":
+                sync_real_like_walk_deploy_profile(cfg, args.walk_deploy_config)
             apply_default_pose_overrides(cfg, args)
             apply_walk_cli_overrides(cfg, args)
             default_base_height = resolve_default_base_height(cfg, args)
@@ -963,6 +1034,7 @@ def main():
         print(f"[mujoco] inferred checkpoint task={checkpoint_task} from requested task={requested_task}")
     if synced_task is not None:
         print(f"[mujoco] synced walk config from task={synced_task}")
+    print(f"[mujoco] deploy_profile={args.deploy_profile} walk_deploy_config={args.walk_deploy_config}")
     print(f"[mujoco] walk policy source={policy.walk_policy_path}")
     if checkpoint_actor is not None and checkpoint_action_clip is not None:
         print(f"[mujoco] checkpoint action clip={float(checkpoint_action_clip):.3f}")
@@ -972,6 +1044,8 @@ def main():
         f"action_scale={float(cfg['walk_policy']['control']['action_scale']):.3f} "
         f"command_slew_rate={float(cfg['walk_policy'].get('command_slew_rate', 1.0)):.3f} "
         f"velocity_adapter={bool(cfg['walk_policy'].get('velocity_command_adapter', {}).get('enabled', False))} "
+        f"default_source={cfg['walk_policy'].get('deploy_default_qpos_source', 'walk_policy')} "
+        f"target_blend={cfg['walk_policy'].get('deploy_target_default_blend', 'none')} "
         f"action_by_index={walk_control.get('action_clip_by_index') is not None} "
         f"rate_limit_by_index={walk_control.get('action_rate_limit_by_index') is not None}"
     )

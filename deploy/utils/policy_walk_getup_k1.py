@@ -49,15 +49,24 @@ class Policy:
 
     def _init_inference_variables(self):
         self.default_dof_pos = np.array(self.cfg["common"]["default_qpos"], dtype=np.float32)
+        walk_cfg = self.cfg["walk_policy"]
         self.walk_default_dof_pos = np.array(
-            self.cfg["walk_policy"].get("default_qpos", self.cfg["common"]["default_qpos"]),
+            self._resolve_walk_default_qpos(walk_cfg),
             dtype=np.float32,
         )
+        target_default_blend = walk_cfg.get("deploy_target_default_blend")
+        if target_default_blend is not None and "default_qpos" in self.cfg.get("prepare", {}):
+            blend = float(np.clip(float(target_default_blend), 0.0, 1.0))
+            prepare_default = np.array(self.cfg["prepare"]["default_qpos"], dtype=np.float32)
+            common_default = np.array(self.cfg["common"]["default_qpos"], dtype=np.float32)
+            self.walk_target_default_dof_pos = prepare_default + blend * (common_default - prepare_default)
+        else:
+            self.walk_target_default_dof_pos = np.copy(self.walk_default_dof_pos)
         self.getup_default_dof_pos = np.array(
             self.cfg["getup_policy"].get("default_qpos", self.cfg["common"]["default_qpos"]),
             dtype=np.float32,
         )
-        self.dof_targets = np.copy(self.default_dof_pos)
+        self.dof_targets = np.copy(self.walk_target_default_dof_pos)
         self.mode = "walk"
         self.recovered_time = 0.0
 
@@ -78,11 +87,26 @@ class Policy:
         self.walk_heading_initialized = False
         self.walk_heading_correction_yaw = 0.0
         self.policy_interval = self.cfg["common"]["dt"] * self.cfg["walk_policy"]["control"]["decimation"]
+        adapter_override = self.cfg["walk_policy"].get("deploy_command_adapter_override")
+        if isinstance(adapter_override, dict):
+            adapter = self.cfg["walk_policy"].setdefault("velocity_command_adapter", {})
+            adapter.update(adapter_override)
+            adapter["enabled"] = True
         self._validate_walk_action_vector("action_clip_by_index")
         self._validate_walk_action_vector("action_scale_by_index")
         self._validate_walk_action_vector("action_lower_by_index")
         self._validate_walk_action_vector("action_upper_by_index")
         self._validate_walk_action_vector("action_rate_limit_by_index")
+
+    def _resolve_walk_default_qpos(self, walk_cfg):
+        source = str(walk_cfg.get("deploy_default_qpos_source", "walk_policy")).lower()
+        if source == "prepare":
+            return self.cfg.get("prepare", {}).get("default_qpos", self.cfg["common"]["default_qpos"])
+        if source == "common":
+            return self.cfg["common"]["default_qpos"]
+        if source in ("walk_policy", "policy"):
+            return walk_cfg.get("default_qpos", self.cfg["common"]["default_qpos"])
+        raise ValueError(f"Unsupported walk deploy_default_qpos_source '{source}'")
 
     def _validate_walk_action_vector(self, key):
         values = self.cfg["walk_policy"].get("control", {}).get(key)
@@ -361,15 +385,19 @@ class Policy:
             output = self.walk_policy(torch.from_numpy(self.walk_obs).unsqueeze(0)).detach().numpy()[0]
         desired_actions = np.clip(output, -norm["clip_actions"], norm["clip_actions"])
         control_cfg = walk_cfg.get("control", {})
-        action_clip_by_index = control_cfg.get("action_clip_by_index")
+        if "deploy_action_clip" in walk_cfg:
+            deploy_clip = float(walk_cfg["deploy_action_clip"])
+            desired_actions = np.clip(desired_actions, -deploy_clip, deploy_clip)
+        action_clip_by_index = control_cfg.get("action_clip_by_index", walk_cfg.get("deploy_action_clip_by_index"))
         if action_clip_by_index is not None:
             action_clip = np.asarray(action_clip_by_index, dtype=np.float32)
             desired_actions = np.clip(desired_actions, -action_clip, action_clip)
-        action_scale_by_index = control_cfg.get("action_scale_by_index")
+        desired_actions *= float(walk_cfg.get("deploy_action_scale", 1.0))
+        action_scale_by_index = control_cfg.get("action_scale_by_index", walk_cfg.get("deploy_action_scale_by_index"))
         if action_scale_by_index is not None:
             desired_actions *= np.asarray(action_scale_by_index, dtype=np.float32)
-        action_lower_by_index = control_cfg.get("action_lower_by_index")
-        action_upper_by_index = control_cfg.get("action_upper_by_index")
+        action_lower_by_index = control_cfg.get("action_lower_by_index", walk_cfg.get("deploy_action_lower_by_index"))
+        action_upper_by_index = control_cfg.get("action_upper_by_index", walk_cfg.get("deploy_action_upper_by_index"))
         if action_lower_by_index is not None or action_upper_by_index is not None:
             lower = (
                 np.asarray(action_lower_by_index, dtype=np.float32)
@@ -382,8 +410,8 @@ class Policy:
                 else np.full(walk_cfg["num_actions"], np.inf, dtype=np.float32)
             )
             desired_actions = np.clip(desired_actions, lower, upper)
-        action_rate_limit_by_index = control_cfg.get("action_rate_limit_by_index")
-        action_rate_limit = control_cfg.get("action_rate_limit")
+        action_rate_limit_by_index = control_cfg.get("action_rate_limit_by_index", walk_cfg.get("deploy_action_rate_limit_by_index"))
+        action_rate_limit = control_cfg.get("action_rate_limit", walk_cfg.get("deploy_action_rate_limit"))
         if action_rate_limit_by_index is not None:
             max_delta = np.asarray(action_rate_limit_by_index, dtype=np.float32) * self.policy_interval
             self.walk_actions[:] += np.clip(desired_actions - self.walk_actions, -max_delta, max_delta)
@@ -392,9 +420,9 @@ class Policy:
             self.walk_actions[:] += np.clip(desired_actions - self.walk_actions, -max_delta, max_delta)
         else:
             self.walk_actions[:] = desired_actions
-        self.dof_targets[:] = self.default_dof_pos
+        self.dof_targets[:] = self.walk_target_default_dof_pos
         self.dof_targets[leg_start:leg_end] = (
-            self.walk_default_dof_pos[leg_start:leg_end]
+            self.walk_target_default_dof_pos[leg_start:leg_end]
             + float(walk_cfg["control"]["action_scale"]) * self.walk_actions
         )
         return self.dof_targets
