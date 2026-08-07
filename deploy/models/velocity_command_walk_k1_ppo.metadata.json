@@ -1,0 +1,528 @@
+{
+  "policy_name": "velocity_command_walk_k1_ppo",
+  "public_command_order": [
+    "lin_vel_x",
+    "lin_vel_y",
+    "ang_vel_yaw"
+  ],
+  "internal_command_order": [
+    "lin_vel_x",
+    "lin_vel_y",
+    "ang_vel_yaw",
+    "gait_frequency",
+    "foot_yaw_L",
+    "foot_yaw_R",
+    "body_pitch_target",
+    "body_roll_target",
+    "feet_offset_x_target",
+    "feet_offset_y_target"
+  ],
+  "zero_command_behavior": "stand still with gait_frequency=0 and zero phase features",
+  "training_start": "fresh PPO; no teacher checkpoint and no real-replay imitation target",
+  "task": "K1/VelocityCommandWalkPPO",
+  "checkpoint_path": "logs/K1/K1/VelocityCommandWalkPPO/2026-08-04-15-57-21/nn/model_60000.pth",
+  "checkpoint_sha1": "3bdd9b487026599c355a15cdbd42b268bbc68e09",
+  "exported_policy_path": "logs/K1/K1/VelocityCommandWalkPPO/2026-08-04-15-57-21/nn/model_60000.pt",
+  "exported_policy_sha1": "d9ad8b122afcd4799b7c48e0f808887f271bd374",
+  "model_class": "BaseActorCritic",
+  "num_actions": 12,
+  "num_observations": 54,
+  "num_privileged_obs": 14,
+  "normalization": {
+    "gravity": 1.0,
+    "lin_vel": 1.0,
+    "ang_vel": 1.0,
+    "gait_frequency": 1.0,
+    "foot_yaw": 1.0,
+    "body_pitch_target": 1.0,
+    "body_roll_target": 1.0,
+    "feet_offset_x_target": 1.0,
+    "feet_offset_y_target": 1.0,
+    "dof_pos": 1.0,
+    "dof_vel": 0.1,
+    "filter_weight": 0.1,
+    "push_force": 0.1,
+    "push_torque": 0.5,
+    "clip_actions": 1.0
+  },
+  "control": {
+    "stiffness": {
+      "Hip": 100.0,
+      "Knee": 100.0,
+      "Ankle": 50.0,
+      "Hip_Pitch": 100.0,
+      "Hip_Roll": 100.0,
+      "Hip_Yaw": 100.0,
+      "Knee_Pitch": 100.0,
+      "Ankle_Pitch": 120.0,
+      "Ankle_Roll": 90.0
+    },
+    "damping": {
+      "Hip": 2.0,
+      "Knee": 2.0,
+      "Ankle": 1.0,
+      "Hip_Pitch": 2.0,
+      "Hip_Roll": 2.2,
+      "Hip_Yaw": 2.0,
+      "Knee_Pitch": 2.0,
+      "Ankle_Pitch": 4.0,
+      "Ankle_Roll": 2.5
+    },
+    "action_scale": 1.0,
+    "decimation": 10,
+    "action_clip_by_index": [
+      0.7,
+      0.35,
+      0.08,
+      0.75,
+      0.55,
+      0.28,
+      0.7,
+      0.35,
+      0.08,
+      0.75,
+      0.55,
+      0.28
+    ],
+    "action_scale_by_index": [
+      0.85,
+      0.75,
+      0.2,
+      0.85,
+      0.8,
+      0.75,
+      0.85,
+      0.75,
+      0.2,
+      0.85,
+      0.8,
+      0.75
+    ],
+    "action_lower_by_index": [
+      -0.6,
+      -0.28,
+      -0.04,
+      -0.3,
+      -0.45,
+      -0.22,
+      -0.6,
+      -0.28,
+      -0.04,
+      -0.3,
+      -0.45,
+      -0.22
+    ],
+    "action_upper_by_index": [
+      0.45,
+      0.28,
+      0.04,
+      0.56,
+      0.16,
+      0.22,
+      0.45,
+      0.28,
+      0.04,
+      0.56,
+      0.16,
+      0.22
+    ],
+    "action_rate_limit_by_index": [
+      4.0,
+      3.0,
+      0.5,
+      5.0,
+      4.0,
+      3.0,
+      4.0,
+      3.0,
+      0.5,
+      5.0,
+      4.0,
+      3.0
+    ],
+    "target_lag_alpha_by_index": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  "init_state": {
+    "pos": [
+      0.0,
+      0.0,
+      0.58
+    ],
+    "rot": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "lin_vel": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "ang_vel": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "default_joint_angles": {
+      "Hip_Pitch": -0.2,
+      "Knee_Pitch": 0.4,
+      "Ankle_Pitch": -0.25,
+      "default": 0.0
+    }
+  },
+  "commands": {
+    "num_commands": 10,
+    "command_order": [
+      "lin_vel_x",
+      "lin_vel_y",
+      "ang_vel_yaw",
+      "gait_frequency",
+      "foot_yaw_L",
+      "foot_yaw_R",
+      "body_pitch_target",
+      "body_roll_target",
+      "feet_offset_x_target",
+      "feet_offset_y_target"
+    ],
+    "training_mode": "sampled",
+    "fixed": {
+      "lin_vel_x": 0.0,
+      "lin_vel_y": 0.0,
+      "ang_vel_yaw": 0.0,
+      "gait_frequency": 1.5,
+      "foot_yaw_L": 0.0,
+      "foot_yaw_R": 0.0,
+      "body_pitch_target": 0.0,
+      "body_roll_target": 0.0,
+      "feet_offset_x_target": 0.0,
+      "feet_offset_y_target": 0.0
+    },
+    "play": {
+      "lin_vel_x": 0.2,
+      "lin_vel_y": 0.0,
+      "ang_vel_yaw": 0.0,
+      "gait_frequency": 1.5,
+      "foot_yaw_L": 0.0,
+      "foot_yaw_R": 0.0,
+      "body_pitch_target": 0.0,
+      "body_roll_target": 0.0,
+      "feet_offset_x_target": 0.0,
+      "feet_offset_y_target": 0.0,
+      "fixed_yaw": true,
+      "no_disturbance": true
+    },
+    "still_proportion": 0.55,
+    "straight_proportion": 1.0,
+    "straight": {
+      "lin_vel_x": [
+        0.1,
+        0.3
+      ],
+      "lin_vel_y": 0.0,
+      "ang_vel_yaw": 0.0,
+      "gait_frequency": [
+        1.1,
+        1.9
+      ],
+      "foot_yaw_L": 0.0,
+      "foot_yaw_R": 0.0,
+      "body_pitch_target": 0.0,
+      "body_roll_target": 0.0,
+      "feet_offset_x_target": 0.0,
+      "feet_offset_y_target": 0.0
+    },
+    "lin_vel_x": [
+      0.0,
+      0.3
+    ],
+    "lin_vel_y": [
+      0.0,
+      0.0
+    ],
+    "ang_vel_yaw": [
+      0.0,
+      0.0
+    ],
+    "gait_frequency": [
+      0.0,
+      0.0
+    ],
+    "foot_yaw_L": [
+      0.0,
+      0.0
+    ],
+    "foot_yaw_R": [
+      0.0,
+      0.0
+    ],
+    "body_pitch_target": [
+      0.0,
+      0.0
+    ],
+    "body_roll_target": [
+      0.0,
+      0.0
+    ],
+    "feet_offset_x_target": [
+      0.0,
+      0.0
+    ],
+    "feet_offset_y_target": [
+      0.0,
+      0.0
+    ],
+    "resampling_time_s": [
+      5.0,
+      9.0
+    ],
+    "training_phases": [
+      {
+        "start_iteration": 0,
+        "disturbance_scale": 0.0,
+        "still_proportion": 0.65,
+        "straight_proportion": 1.0,
+        "resampling_time_s": [
+          6.0,
+          10.0
+        ],
+        "lin_vel_x": [
+          0.04,
+          0.18
+        ],
+        "lin_vel_y": [
+          0.0,
+          0.0
+        ],
+        "ang_vel_yaw": [
+          0.0,
+          0.0
+        ],
+        "straight": {
+          "lin_vel_x": [
+            0.06,
+            0.18
+          ]
+        }
+      },
+      {
+        "start_iteration": 4000,
+        "disturbance_scale": 0.0,
+        "still_proportion": 0.55,
+        "straight_proportion": 1.0,
+        "resampling_time_s": [
+          5.0,
+          9.0
+        ],
+        "lin_vel_x": [
+          0.08,
+          0.3
+        ],
+        "lin_vel_y": [
+          0.0,
+          0.0
+        ],
+        "ang_vel_yaw": [
+          0.0,
+          0.0
+        ],
+        "straight": {
+          "lin_vel_x": [
+            0.1,
+            0.3
+          ]
+        }
+      },
+      {
+        "start_iteration": 12000,
+        "disturbance_scale": 0.05,
+        "still_proportion": 0.4,
+        "straight_proportion": 1.0,
+        "resampling_time_s": [
+          5.0,
+          8.0
+        ],
+        "lin_vel_x": [
+          0.12,
+          0.5
+        ],
+        "lin_vel_y": [
+          0.0,
+          0.0
+        ],
+        "ang_vel_yaw": [
+          0.0,
+          0.0
+        ],
+        "straight": {
+          "lin_vel_x": [
+            0.15,
+            0.5
+          ]
+        }
+      },
+      {
+        "start_iteration": 22000,
+        "disturbance_scale": 0.1,
+        "still_proportion": 0.3,
+        "straight_proportion": 1.0,
+        "resampling_time_s": [
+          4.0,
+          8.0
+        ],
+        "lin_vel_x": [
+          0.2,
+          0.8
+        ],
+        "lin_vel_y": [
+          0.0,
+          0.0
+        ],
+        "ang_vel_yaw": [
+          0.0,
+          0.0
+        ],
+        "straight": {
+          "lin_vel_x": [
+            0.25,
+            0.8
+          ]
+        }
+      },
+      {
+        "start_iteration": 34000,
+        "disturbance_scale": 0.18,
+        "still_proportion": 0.2,
+        "straight_proportion": 0.7,
+        "resampling_time_s": [
+          4.0,
+          8.0
+        ],
+        "lin_vel_x": [
+          -0.1,
+          0.85
+        ],
+        "lin_vel_y": [
+          -0.12,
+          0.12
+        ],
+        "ang_vel_yaw": [
+          -0.35,
+          0.35
+        ],
+        "straight": {
+          "lin_vel_x": [
+            0.2,
+            0.8
+          ],
+          "lin_vel_y": 0.0,
+          "ang_vel_yaw": 0.0
+        }
+      },
+      {
+        "start_iteration": 46000,
+        "disturbance_scale": 0.25,
+        "still_proportion": 0.15,
+        "straight_proportion": 0.55,
+        "resampling_time_s": [
+          3.0,
+          8.0
+        ],
+        "lin_vel_x": [
+          -0.2,
+          1.05
+        ],
+        "lin_vel_y": [
+          -0.25,
+          0.25
+        ],
+        "ang_vel_yaw": [
+          -0.6,
+          0.6
+        ],
+        "straight": {
+          "lin_vel_x": [
+            0.2,
+            0.9
+          ],
+          "lin_vel_y": 0.0,
+          "ang_vel_yaw": 0.0
+        }
+      }
+    ],
+    "curriculum": false,
+    "update_rate": 0.1,
+    "lin_vel_levels": 10,
+    "ang_vel_levels": 10,
+    "lin_vel_x_resolution": 0.2,
+    "lin_vel_y_resolution": 0.1,
+    "ang_vel_resolution": 0.2,
+    "episode_length_toler": 0.1,
+    "lin_vel_x_toler": 0.4,
+    "lin_vel_y_toler": 0.2,
+    "ang_vel_yaw_toler": 0.2,
+    "num_public_commands": 3,
+    "public_command_order": [
+      "lin_vel_x",
+      "lin_vel_y",
+      "ang_vel_yaw"
+    ],
+    "command_slew_rate": 3.0,
+    "command_change_threshold": 0.0001,
+    "high_speed_proportion": 0.0,
+    "randomize_gait_phase_on_start": true,
+    "adapter": {
+      "stand_command_threshold": 0.035,
+      "gait_frequency_min": 1.5,
+      "gait_frequency_max": 1.5,
+      "gait_frequency_speed_min": 0.04,
+      "gait_frequency_speed_max": 0.3,
+      "max_yaw_speed_for_drive": 0.9,
+      "foot_yaw_from_yaw_gain": 0.1,
+      "foot_yaw_target_clip": [
+        -0.18,
+        0.18
+      ],
+      "body_pitch_gain": 0.0,
+      "body_pitch_offset": 0.0,
+      "body_pitch_target_clip": [
+        -0.03,
+        0.03
+      ],
+      "body_roll_gain": -0.06,
+      "body_roll_target_clip": [
+        -0.06,
+        0.06
+      ]
+    },
+    "transition_probes": {
+      "proportion": 0.08,
+      "decel_proportion": 0.08,
+      "speeds": [
+        0.0,
+        0.2,
+        0.3
+      ],
+      "decel_targets": [
+        0.0,
+        0.1,
+        0.2
+      ],
+      "min_delta": 0.1,
+      "straight_only": true
+    }
+  }
+}
