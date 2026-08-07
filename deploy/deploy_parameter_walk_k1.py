@@ -403,6 +403,10 @@ class Controller:
             "adapter_stand_command_threshold": "stand_command_threshold",
             "adapter_gait_frequency_min": "gait_frequency_min",
             "adapter_gait_frequency_max": "gait_frequency_max",
+            "adapter_gait_frequency_speed_min": "gait_frequency_speed_min",
+            "adapter_gait_frequency_speed_max": "gait_frequency_speed_max",
+            "adapter_max_yaw_speed_for_drive": "max_yaw_speed_for_drive",
+            "adapter_foot_yaw_from_yaw_gain": "foot_yaw_from_yaw_gain",
             "adapter_forward_pitch_vx_comp_deadband": "forward_pitch_vx_comp_deadband",
             "adapter_forward_pitch_vx_comp_gain": "forward_pitch_vx_comp_gain",
             "adapter_forward_pitch_vx_comp_max": "forward_pitch_vx_comp_max",
@@ -1294,6 +1298,10 @@ if __name__ == "__main__":
     parser.add_argument("--adapter_stand_command_threshold", type=float, default=None)
     parser.add_argument("--adapter_gait_frequency_min", type=float, default=None)
     parser.add_argument("--adapter_gait_frequency_max", type=float, default=None)
+    parser.add_argument("--adapter_gait_frequency_speed_min", type=float, default=None)
+    parser.add_argument("--adapter_gait_frequency_speed_max", type=float, default=None)
+    parser.add_argument("--adapter_max_yaw_speed_for_drive", type=float, default=None)
+    parser.add_argument("--adapter_foot_yaw_from_yaw_gain", type=float, default=None)
     parser.add_argument("--adapter_forward_pitch_vx_comp_deadband", type=float, default=None)
     parser.add_argument("--adapter_forward_pitch_vx_comp_gain", type=float, default=None)
     parser.add_argument("--adapter_forward_pitch_vx_comp_max", type=float, default=None)
