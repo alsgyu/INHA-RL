@@ -390,3 +390,96 @@ def alive(env) -> torch.Tensor:
         Reward tensor [num_envs]
     """
     return torch.ones(env.num_envs, dtype=torch.float, device=env.device)
+
+
+# ================================================================================================
+# Stability Rewards (adapted from INHA-LAB K1 locomotion)
+# ================================================================================================
+
+
+def heading_drift(env, deadband: float = 0.1) -> torch.Tensor:
+    """Penalize accumulated yaw drift when not commanded to turn.
+
+    Stores a reference yaw at episode start and on turning commands,
+    then penalizes squared deviation from that reference when the
+    yaw-rate command is below ``deadband``.
+
+    This prevents the robot from gradually drifting off-course during
+    straight-line walking — a common cause of zigzag behaviour.
+
+    Args:
+        env: The environment instance.
+        deadband: Yaw-rate command magnitude below which the robot is
+            considered to be walking straight (rad/s).
+
+    Returns:
+        Reward tensor [num_envs].
+    """
+    commands = env.command_manager.commands
+    base_quat = env.simulator.base_quat  # xyzw
+
+    # Extract yaw from base quaternion (w-last).
+    qw = base_quat[:, 3]
+    qx = base_quat[:, 0]
+    qy = base_quat[:, 1]
+    qz = base_quat[:, 2]
+    yaw = torch.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+
+    if not hasattr(env, "ref_yaw"):
+        env.ref_yaw = yaw.clone()
+
+    turning = torch.abs(commands[:, 2]) >= deadband
+    # Reset reference on episode start *and* when a turn command is active.
+    reset = (env.episode_length_buf <= 1) | turning
+    env.ref_yaw[reset] = yaw[reset]
+
+    yaw_error = torch.atan2(torch.sin(yaw - env.ref_yaw), torch.cos(yaw - env.ref_yaw))
+    no_turn = ~turning
+    return torch.square(yaw_error) * no_turn.float()
+
+
+def stand_feet_flat(env, command_threshold: float = 0.05, speed_threshold: float = 0.2) -> torch.Tensor:
+    """Penalize non-flat foot orientation when the robot should be standing.
+
+    Activated only when **both** the velocity command is effectively zero
+    *and* the robot's actual base linear velocity is below the speed
+    threshold.  This avoids penalising natural foot tilt during gait
+    transitions while still enforcing flat-foot contact during stationary
+    standing.
+
+    Args:
+        env: The environment instance.
+        command_threshold: L2-norm of the 3-D velocity command below which
+            the robot is considered to be commanded to stand.
+        speed_threshold: L2-norm of the base xy linear velocity below
+            which the robot is considered to be actually stationary.
+
+    Returns:
+        Reward tensor [num_envs].
+    """
+    commands = env.command_manager.commands
+    base_lin_vel = get_base_lin_vel(env)
+
+    command_is_zero = torch.linalg.vector_norm(commands[:, :3], dim=1) <= command_threshold
+    nearly_stopped = torch.linalg.vector_norm(base_lin_vel[:, :2], dim=1) <= speed_threshold
+    activate = command_is_zero & nearly_stopped
+
+    # Foot quaternions (xyzw).
+    foot_quat = env.simulator._rigid_body_rot[:, env.feet_indices, :]
+
+    # Roll from quaternion: atan2(2*(qw*qx + qy*qz), 1 - 2*(qx^2 + qy^2)).
+    roll = torch.atan2(
+        2.0 * (foot_quat[..., 3] * foot_quat[..., 0] + foot_quat[..., 1] * foot_quat[..., 2]),
+        1.0 - 2.0 * (foot_quat[..., 0] ** 2 + foot_quat[..., 1] ** 2),
+    )
+    # Pitch from quaternion: asin(2*(qw*qy - qz*qx)).
+    pitch = torch.asin(
+        torch.clamp(
+            2.0 * (foot_quat[..., 3] * foot_quat[..., 1] - foot_quat[..., 2] * foot_quat[..., 0]),
+            -1.0,
+            1.0,
+        )
+    )
+
+    error = torch.sum(torch.square(roll) + torch.square(pitch), dim=1)
+    return error * activate.float()
