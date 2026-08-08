@@ -443,34 +443,40 @@ class SymmetryUtils:
     def mirror_obs_sin_phase(self, sin_phase: torch.Tensor) -> torch.Tensor:
         """Mirrors the sine phase for gait timing.
 
+        Swaps left/right phase channels so that the mirrored observation
+        represents the same gait state with the robot's left-right roles
+        exchanged.
+
         Parameters
         ----------
         sin_phase : torch.Tensor
-            Sine of gait phase with layout [sin(φ_left), sin(φ_right), ...].
+            Sine of gait phase with layout [sin(φ_left), sin(φ_right)].
 
         Returns
         -------
         torch.Tensor
-            Mirrored phase with first component negated: [-sin(φ_left), sin(φ_right), ...].
+            Mirrored phase with left and right channels swapped.
         """
-        sin_phase[..., 0] = -sin_phase[..., 0]
-        return sin_phase
+        return sin_phase[..., [1, 0]]
 
     def mirror_obs_cos_phase(self, cos_phase: torch.Tensor) -> torch.Tensor:
         """Mirrors the cosine phase for gait timing.
 
+        Swaps left/right phase channels so that the mirrored observation
+        represents the same gait state with the robot's left-right roles
+        exchanged.
+
         Parameters
         ----------
         cos_phase : torch.Tensor
-            Cosine of gait phase with layout [cos(φ_left), cos(φ_right), ...].
+            Cosine of gait phase with layout [cos(φ_left), cos(φ_right)].
 
         Returns
         -------
         torch.Tensor
-            Mirrored phase with first component negated: [-cos(φ_left), cos(φ_right), ...].
+            Mirrored phase with left and right channels swapped.
         """
-        cos_phase[..., 0] = -cos_phase[..., 0]
-        return cos_phase
+        return cos_phase[..., [1, 0]]
 
     def mirror_obs_dof_pos(self, dof_pos: torch.Tensor) -> torch.Tensor:
         """Mirrors the joint positions using joint mapping and sign flipping.

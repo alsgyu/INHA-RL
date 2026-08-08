@@ -117,8 +117,9 @@ class ObservationManager:
             # 1. Compute base observation
             obs = self._compute_term(group_name, term_name, term_cfg)
 
-            # 2. Apply noise (matches direct: noise before scaling)
-            if group_cfg.enable_noise and term_cfg.noise > 0:
+            # 2. Apply noise (matches direct: noise before scaling).
+            # Skip noise during evaluation for deterministic behaviour.
+            if group_cfg.enable_noise and term_cfg.noise > 0 and not getattr(self.env, "is_evaluating", False):
                 obs = self._apply_noise(obs, term_cfg.noise)
 
             # 3. Apply scaling (matches direct: scale after noise). Skip the multiply when the
