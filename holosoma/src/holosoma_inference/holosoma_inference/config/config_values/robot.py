@@ -280,9 +280,9 @@ k1_12dof = RobotConfig(
     left_hand_link_name=None,
     right_hand_link_name=None,
 
-    # Control gains are loaded from ONNX metadata
-    motor_kp=None,
-    motor_kd=None,
+    # Control gains — matching holosoma training config (INHA-LAB verified values)
+    motor_kp=(80, 80, 80, 80, 30, 30, 80, 80, 80, 80, 30, 30),
+    motor_kd=(2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2),
     default_per_joint_action_scale=None,
 
     # Unitree-specific — not applicable to K1
