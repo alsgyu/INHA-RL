@@ -67,9 +67,27 @@ safety_locomotion_g1 = TaskConfig(
     joystick_device=0,
 )
 
+# K1 locomotion — action_scale=1.0 matches the holosoma FastSAC training config
+loco_k1_12dof = TaskConfig(
+    model_path="",  # Must be provided by user
+    rl_rate=50,
+    policy_action_scale=1.0,
+    use_phase=True,
+    gait_period=1.0,
+    desired_base_height=0.52,
+    residual_upper_body_action=False,
+    domain_id=0,
+    interface="lo",
+    velocity_input="keyboard",
+    state_input="keyboard",
+    joystick_type="xbox",
+    joystick_device=0,
+)
+
 TASK_REGISTRY.add("locomotion", locomotion)
 TASK_REGISTRY.add("wbt", wbt)
 TASK_REGISTRY.add("safety_locomotion_g1", safety_locomotion_g1)
+TASK_REGISTRY.add("loco-k1-12dof", loco_k1_12dof)
 
 __getattr__ = deprecated_defaults_alias(__name__, TASK_REGISTRY)
 get_defaults = deprecated_get_defaults(__name__, TASK_REGISTRY)

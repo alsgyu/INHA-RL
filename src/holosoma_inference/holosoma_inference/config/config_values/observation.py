@@ -152,9 +152,51 @@ wbt = ObservationConfig(
 # Default Configurations Dictionary
 # =============================================================================
 
+loco_k1_12dof = ObservationConfig(
+    obs_dict={
+        "actor_obs": [
+            "base_ang_vel",
+            "projected_gravity",
+            "command_lin_vel",
+            "command_ang_vel",
+            "dof_pos",
+            "dof_vel",
+            "actions",
+            "sin_phase",
+            "cos_phase",
+        ]
+    },
+    obs_dims={
+        "base_ang_vel": 3,
+        "projected_gravity": 3,
+        "command_lin_vel": 2,
+        "command_ang_vel": 1,
+        "dof_pos": 12,
+        "dof_vel": 12,
+        "actions": 12,
+        "sin_phase": 2,
+        "cos_phase": 2,
+    },
+    obs_scales={
+        "base_ang_vel": 1.0,
+        "projected_gravity": 1.0,
+        "command_lin_vel": 1.0,
+        "command_ang_vel": 1.0,
+        "dof_pos": 1.0,
+        "dof_vel": 0.1,
+        "actions": 1.0,
+        "sin_phase": 1.0,
+        "cos_phase": 1.0,
+    },
+    history_length_dict={
+        "actor_obs": 1,
+    },
+)
+
 # Register core presets. Keys use hyphen-case naming convention for CLI compatibility.
 OBSERVATION_REGISTRY.add("loco-g1-29dof", loco_g1_29dof)
 OBSERVATION_REGISTRY.add("loco-t1-29dof", loco_t1_29dof)
+OBSERVATION_REGISTRY.add("loco-k1-12dof", loco_k1_12dof)
 OBSERVATION_REGISTRY.add("wbt", wbt)
 
 __getattr__ = deprecated_defaults_alias(__name__, OBSERVATION_REGISTRY)

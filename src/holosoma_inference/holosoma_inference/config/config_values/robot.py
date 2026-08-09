@@ -229,12 +229,77 @@ t1_29dof = RobotConfig(
 
 
 # =============================================================================
+# K1 Robot Config
+# =============================================================================
+
+k1_12dof = RobotConfig(
+    # Identity
+    robot_type="k1_12dof",
+    robot="k1",
+
+    # SDK Configuration
+    sdk_type="booster",
+    motor_type="serial",
+    message_type="HG",
+    use_sensor=False,
+
+    # Dimensions (12 leg joints, no upper body)
+    num_motors=12,
+    num_joints=12,
+    num_upper_body_joints=0,
+
+    # Default Positions — matches holosoma training config
+    default_dof_angles=(
+        -0.2, 0.0, 0.0, 0.4, -0.25, 0.0,   # left leg
+        -0.2, 0.0, 0.0, 0.4, -0.25, 0.0,   # right leg
+    ),
+    default_motor_angles=(
+        -0.2, 0.0, 0.0, 0.4, -0.25, 0.0,
+        -0.2, 0.0, 0.0, 0.4, -0.25, 0.0,
+    ),
+
+    # Mappings
+    motor2joint=tuple(range(12)),
+    joint2motor=tuple(range(12)),
+    dof_names=(
+        "Left_Hip_Pitch", "Left_Hip_Roll", "Left_Hip_Yaw",
+        "Left_Knee_Pitch", "Left_Ankle_Pitch", "Left_Ankle_Roll",
+        "Right_Hip_Pitch", "Right_Hip_Roll", "Right_Hip_Yaw",
+        "Right_Knee_Pitch", "Right_Ankle_Pitch", "Right_Ankle_Roll",
+    ),
+    dof_names_upper_body=(),
+    dof_names_lower_body=(
+        "Left_Hip_Pitch", "Left_Hip_Roll", "Left_Hip_Yaw",
+        "Left_Knee_Pitch", "Left_Ankle_Pitch", "Left_Ankle_Roll",
+        "Right_Hip_Pitch", "Right_Hip_Roll", "Right_Hip_Yaw",
+        "Right_Knee_Pitch", "Right_Ankle_Pitch", "Right_Ankle_Roll",
+    ),
+
+    # Link Names
+    torso_link_name="Trunk",
+    left_hand_link_name=None,
+    right_hand_link_name=None,
+
+    # Control gains are loaded from ONNX metadata
+    motor_kp=None,
+    motor_kd=None,
+    default_per_joint_action_scale=None,
+
+    # Unitree-specific — not applicable to K1
+    unitree_legged_const=None,
+    weak_motor_joint_index=None,
+    motion=None,
+)
+
+
+# =============================================================================
 # Default Configurations Dictionary
 # =============================================================================
 
 # Register core presets. Keys use hyphen-case naming convention for CLI compatibility.
 ROBOT_REGISTRY.add("g1-29dof", g1_29dof)
 ROBOT_REGISTRY.add("t1-29dof", t1_29dof)
+ROBOT_REGISTRY.add("k1-12dof", k1_12dof)
 
 __getattr__ = deprecated_defaults_alias(__name__, ROBOT_REGISTRY)
 get_defaults = deprecated_get_defaults(__name__, ROBOT_REGISTRY)

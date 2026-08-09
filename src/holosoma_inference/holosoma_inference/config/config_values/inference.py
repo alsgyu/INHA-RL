@@ -37,6 +37,12 @@ t1_29dof_loco = InferenceConfig(
     task=task.locomotion,
 )
 
+k1_12dof_loco = InferenceConfig(
+    robot=robot.k1_12dof,
+    observation=observation.loco_k1_12dof,
+    task=task.loco_k1_12dof,
+)
+
 # fmt: off
 _g1_29dof_wbt_robot = replace(
     robot.g1_29dof,
@@ -74,6 +80,7 @@ g1_29dof_wbt = InferenceConfig(
 # Register core presets. Keys use hyphen-case naming convention for CLI compatibility.
 INFERENCE_REGISTRY.add("g1-29dof-loco", g1_29dof_loco)
 INFERENCE_REGISTRY.add("t1-29dof-loco", t1_29dof_loco)
+INFERENCE_REGISTRY.add("k1-12dof-loco", k1_12dof_loco)
 INFERENCE_REGISTRY.add("g1-29dof-wbt", g1_29dof_wbt)
 
 
