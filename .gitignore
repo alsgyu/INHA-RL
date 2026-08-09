@@ -4,7 +4,7 @@
 *.log
 * ONNX files
 *.onnx
-!deploy/*.onnx
+!holosoma/deploy/*.onnx
 # IDE files
 .idea/
 .ipynb_checkpoints/
