@@ -32,6 +32,8 @@ class BoosterCommandSender(BasicCommandSender):
             self.create_prepare_cmd(self.low_cmd, self.config)
             self._send_cmd(self.low_cmd)
             self.client.ChangeMode(RobotMode.kCustom)
+            from loguru import logger
+            logger.info(f"ChangeMode(kCustom) called for {robot_type} — check robot LED should turn blue")
             self.dof_names = self.config.dof_names
             self.dof_names_parallel_mech = self.config.dof_names_parallel_mech
             self.parallel_mech_indexes = [self.dof_names.index(name) for name in self.dof_names_parallel_mech]
