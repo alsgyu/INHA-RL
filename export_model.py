@@ -83,8 +83,33 @@ def action_scale_from_cfg(cfg):
 def export_fast_sac(model_dict, cfg, checkpoint_path):
     metadata_cfg = model_dict.get("task_cfg") if isinstance(model_dict.get("task_cfg"), dict) else cfg
     sac_cfg = metadata_cfg.get("algorithm", {}).get("fast_sac", {})
+
+    actor_state = model_dict["actor_state_dict"]
+    # Detect old-format checkpoint (fc_mu was Sequential, had action_bias)
+    is_old_format = "fc_mu.0.weight" in actor_state
+    if is_old_format:
+        remapped = {}
+        for key, value in actor_state.items():
+            if key == "fc_mu.0.weight":
+                remapped["fc_mu.weight"] = value
+            elif key == "fc_mu.0.bias":
+                pass  # old inner bias, discard
+            elif key == "fc_logstd.0.weight":
+                remapped["fc_logstd.weight"] = value
+            elif key == "fc_logstd.0.bias":
+                remapped["fc_logstd.bias"] = value
+            elif key == "action_bias":
+                remapped["fc_mu.bias"] = value
+            else:
+                remapped[key] = value
+        actor_state = remapped
+
+    # Determine actual obs_dim from checkpoint weights
+    net0_weight = actor_state.get("net.0.weight")
+    obs_dim = net0_weight.shape[1] if net0_weight is not None else metadata_cfg["env"]["num_observations"]
+
     actor = FastSACActor(
-        metadata_cfg["env"]["num_observations"],
+        obs_dim,
         metadata_cfg["env"]["num_actions"],
         hidden_dim=int(sac_cfg.get("actor_hidden_dim", 512)),
         log_std_min=float(sac_cfg.get("log_std_min", -5.0)),
@@ -94,16 +119,16 @@ def export_fast_sac(model_dict, cfg, checkpoint_path):
         action_scale=action_scale_from_cfg(metadata_cfg),
         device="cpu",
     )
-    actor.load_state_dict(model_dict["actor_state_dict"])
+    actor.load_state_dict(actor_state, strict=False)
 
     obs_normalizer = None
     if bool(sac_cfg.get("obs_normalization", True)) and model_dict.get("obs_normalizer_state") is not None:
-        obs_normalizer = EmpiricalNormalizer(metadata_cfg["env"]["num_observations"], "cpu")
+        obs_normalizer = EmpiricalNormalizer(obs_dim, "cpu")
         obs_normalizer.load_state_dict(model_dict["obs_normalizer_state"])
     wrapper = FastSACPolicyWrapper(actor, obs_normalizer)
     wrapper.eval()
     save_path = os.path.splitext(checkpoint_path)[0] + ".pt"
-    dummy_obs = torch.zeros(1, metadata_cfg["env"]["num_observations"], dtype=torch.float32)
+    dummy_obs = torch.zeros(1, obs_dim, dtype=torch.float32)
     script_module = torch.jit.trace(wrapper, dummy_obs)
     script_module.save(save_path)
     print(f"Saved FastSAC policy to {save_path}")
