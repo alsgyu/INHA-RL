@@ -13,7 +13,7 @@ class BoosterStateProcessor(BasicStateProcessor):
 
         robot_type = self.config.robot_type
 
-        if robot_type in {"t1_23dof", "t1_29dof"}:
+        if robot_type in {"t1_23dof", "t1_29dof", "k1_12dof"}:
             self.robot_lowstate_subscriber = B1LowStateSubscriber(self.low_state_handler_b1)
             self.robot_lowstate_subscriber.InitChannel()
         else:

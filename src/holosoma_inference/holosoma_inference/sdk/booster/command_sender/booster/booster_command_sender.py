@@ -20,7 +20,7 @@ class BoosterCommandSender(BasicCommandSender):
 
         robot_type = self.config.robot_type
 
-        if robot_type in ["t1_23dof", "t1_29dof"]:
+        if robot_type in ["t1_23dof", "t1_29dof", "k1_12dof"]:
             self.LowCmd = LowCmd
             self.LowCmdType = LowCmdType
             self.MotorCmd = MotorCmd
