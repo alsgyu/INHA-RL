@@ -52,6 +52,10 @@ _STABILITY_TERMS: dict[str, RewardTermCfg] = {
         weight=-1.0,
         params={"command_threshold": 0.05, "speed_threshold": 0.2},
     ),
+    "dof_acc": RewardTermCfg(
+        func="holosoma.managers.reward.terms.locomotion:dof_acc_l2",
+        weight=-1.0e-7,
+    ),
 }
 
 k1_12dof_loco_fast_sac = replace(

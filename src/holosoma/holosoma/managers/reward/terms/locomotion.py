@@ -483,3 +483,21 @@ def stand_feet_flat(env, command_threshold: float = 0.05, speed_threshold: float
 
     error = torch.sum(torch.square(roll) + torch.square(pitch), dim=1)
     return error * activate.float()
+
+
+def dof_acc_l2(env) -> torch.Tensor:
+    """Penalize squared joint accelerations to suppress high-frequency trembling.
+
+    Using the simulator's joint acceleration buffer. A small negative weight
+    (e.g. -1e-7) smooths the policy output without affecting tracking
+    performance.
+
+    Adapted from INHA-LAB K1 locomotion.
+
+    Args:
+        env: The environment instance.
+
+    Returns:
+        Reward tensor [num_envs].
+    """
+    return torch.sum(torch.square(env.simulator.dof_acc), dim=1)
