@@ -660,6 +660,9 @@ class BasePolicy:
         with self.latency_tracker.measure("read_state"):
             robot_state_data = self.interface.get_low_state()
 
+        if robot_state_data is None:
+            return  # wait for first state message from robot
+
         # Stage 2: Pre-processing
         with self.latency_tracker.measure("preprocessing"):
             # Determine target joint positions
