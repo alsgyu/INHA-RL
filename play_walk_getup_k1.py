@@ -102,14 +102,17 @@ def set_fallen_state(env, pose):
     _set_dofs(env, env.default_dof_pos.repeat(env.num_envs, 1))
 
 
-def make_walk_obs(env, walk_actions, gait_process, vx, vy, vyaw):
+def make_walk_obs(env, walk_actions, gait_process, vx, vy, vyaw, obs_dim=None):
     gait_frequency = 1.3 if abs(vx) + abs(vy) + abs(vyaw) > 1.0e-5 else 0.0
-    commands = torch.zeros(env.num_envs, 10, dtype=torch.float, device=env.device)
+    # Support both 54-dim (10 commands) and 49-dim (5 commands) observation formats
+    num_cmds = 5 if (obs_dim is not None and obs_dim <= 49) else 10
+    commands = torch.zeros(env.num_envs, num_cmds, dtype=torch.float, device=env.device)
     commands[:, 0] = vx
     commands[:, 1] = vy
     commands[:, 2] = vyaw
-    commands[:, 3] = gait_frequency
-    commands_scale = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], device=env.device)
+    if num_cmds >= 4:
+        commands[:, 3] = gait_frequency
+    commands_scale = torch.ones(num_cmds, device=env.device)
     leg_slice = slice(LEG_START_INDEX, LEG_START_INDEX + 12)
     return torch.cat(
         (
@@ -234,6 +237,19 @@ def main():
         f"base_z={args.default_base_height:.3f}"
     )
 
+    # Auto-detect observation dimension expected by the walk policy
+    for test_dim in (49, 54):
+        test_obs = torch.zeros(1, test_dim, dtype=torch.float, device=env.device)
+        try:
+            walk_policy(test_obs)
+            walk_obs_dim = test_dim
+            break
+        except RuntimeError:
+            continue
+    else:
+        walk_obs_dim = 54  # fallback
+    print(f"[gym] detected walk policy obs_dim={walk_obs_dim}")
+
     for step_idx in range(int(args.duration_s / env.dt)):
         sim_time = step_idx * env.dt
         if enable_getup and args.force_fall_after_s >= 0.0 and (not forced_fall) and sim_time >= args.force_fall_after_s:
@@ -276,7 +292,7 @@ def main():
             else:
                 gait_frequency = 1.3 if abs(args.vx) + abs(args.vy) + abs(args.vyaw) > 1.0e-5 else 0.0
                 gait_process[:] = torch.fmod(gait_process + env.dt * gait_frequency, 1.0)
-                walk_obs = make_walk_obs(env, walk_actions, gait_process, args.vx, args.vy, args.vyaw)
+                walk_obs = make_walk_obs(env, walk_actions, gait_process, args.vx, args.vy, args.vyaw, obs_dim=walk_obs_dim)
                 walk_actions[:] = torch.clamp(walk_policy(walk_obs), -1.0, 1.0)
                 actions[:, LEG_START_INDEX : LEG_START_INDEX + 12] = walk_actions
 
